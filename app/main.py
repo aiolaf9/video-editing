@@ -36,7 +36,7 @@ def _save_upload(upload: UploadFile, dst: Path) -> None:
 
 def _project_view(meta: dict) -> dict:
     data = dict(meta)
-    data["jobs"] = [j.to_dict() for j in jobs.for_project(meta["id"])]
+    data["jobs"] = [jobs.view(j) for j in jobs.for_project(meta["id"])]
     return data
 
 
@@ -64,7 +64,7 @@ def upload_project(file: UploadFile = File(...), language: Optional[str] = Form(
     _save_upload(file, storage.project_dir(pid) / f"source{ext}")
     storage.update_project(pid, source=f"source{ext}", status="antre")
     job = jobs.submit("analisis", pid, lambda j: pipeline.safe_analyze(j, pid, language or None), "Analisis video")
-    return {"project": storage.load_project(pid), "job": job.to_dict()}
+    return {"project": storage.load_project(pid), "job": jobs.view(job)}
 
 
 @app.post("/api/projects/from-url")
@@ -74,9 +74,13 @@ def import_url(body: UrlImport):
     meta = storage.create_project("Mengunduh...")
     pid = meta["id"]
     storage.update_project(pid, status="antre", url=body.url)
-    job = jobs.submit("analisis", pid,
-                      lambda j: pipeline.import_and_analyze(j, pid, body.url, body.language), "Unduh & analisis")
-    return {"project": storage.load_project(pid), "job": job.to_dict()}
+
+    def run(job):
+        pipeline.download(job, pid, body.url)
+        jobs.submit("analisis", pid, lambda j: pipeline.safe_analyze(j, pid, body.language), "Analisis video")
+
+    job = jobs.submit("analisis", pid, run, "Unduh video", pool="unduh")
+    return {"project": storage.load_project(pid), "job": jobs.view(job)}
 
 
 @app.get("/api/projects/{pid}")
@@ -97,7 +101,7 @@ def delete_project(pid: str):
 def reanalyze(pid: str, language: Optional[str] = None):
     _project_or_404(pid)
     job = jobs.submit("analisis", pid, lambda j: pipeline.safe_analyze(j, pid, language), "Analisis ulang")
-    return job.to_dict()
+    return jobs.view(job)
 
 
 @app.get("/api/projects/{pid}/transcript")
@@ -156,7 +160,7 @@ def render_clip(pid: str, body: RenderRequest):
         raise HTTPException(400, "Titik awal klip melebihi durasi video.")
     label = body.title or f"Klip {body.start:.0f}s-{body.end:.0f}s"
     job = jobs.submit("render", pid, lambda j: pipeline.render(j, pid, body), label)
-    return job.to_dict()
+    return jobs.view(job)
 
 
 @app.get("/api/projects/{pid}/renders/{file}")
@@ -175,7 +179,7 @@ def get_job(job_id: str):
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(404, "Pekerjaan tidak ditemukan.")
-    return job.to_dict()
+    return jobs.view(job)
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

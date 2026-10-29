@@ -23,6 +23,7 @@ class Job:
         self.result: Any = None
         self.error: Optional[str] = None
         self.created = time.time()
+        self.pool = "berat"
 
     def update(self, progress: Optional[float] = None, message: Optional[str] = None) -> None:
         if progress is not None:
@@ -45,16 +46,32 @@ class Job:
 
 class JobManager:
     def __init__(self, workers: int = 1):
-        self._pool = ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="job")
+        # "berat" untuk analisis/render (CPU/GPU), "unduh" untuk unduhan (jaringan)
+        # supaya unduhan yang lambat tidak menahan antrean render.
+        self._pools = {
+            "berat": ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="job"),
+            "unduh": ThreadPoolExecutor(max_workers=2, thread_name_prefix="dl"),
+        }
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def submit(self, kind: str, project_id: str, fn: Callable[[Job], Any], label: str = "") -> Job:
+    def submit(self, kind: str, project_id: str, fn: Callable[[Job], Any], label: str = "",
+               pool: str = "berat") -> Job:
         job = Job(kind, project_id, label)
+        job.pool = pool
         with self._lock:
             self._jobs[job.id] = job
-        self._pool.submit(self._run, job, fn)
+        self._pools[pool].submit(self._run, job, fn)
         return job
+
+    def view(self, job: Job) -> dict:
+        data = job.to_dict()
+        if job.status == "antre":
+            ahead = sum(1 for j in self._jobs.values()
+                        if j.pool == job.pool and j.created < job.created and j.status in ("antre", "jalan"))
+            if ahead:
+                data["message"] = f"Menunggu giliran ({ahead} pekerjaan lain sedang/akan diproses)..."
+        return data
 
     def _run(self, job: Job, fn: Callable[[Job], Any]) -> None:
         job.status = "jalan"

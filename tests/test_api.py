@@ -59,3 +59,46 @@ def test_rejects_bad_input():
     assert client.get("/api/projects/../../etc").status_code == 404
     assert client.get("/api/projects/zzzzzzzzzzzz").status_code == 404
     assert client.post("/api/projects/from-url", json={"url": "ftp://example.com/x"}).status_code == 400
+
+
+def test_url_import_downloads_then_analyzes(sample_video, fake_transcript, monkeypatch):
+    import shutil
+
+    from app import pipeline, storage
+
+    def fake_download(job, pid, url):
+        shutil.copy(sample_video, storage.project_dir(pid) / "source.mp4")
+        storage.update_project(pid, source="source.mp4", status="antre", name="Video dari link")
+        job.update(100, "Unduhan selesai!")
+
+    monkeypatch.setattr(pipeline, "download", fake_download)
+    monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
+    client = TestClient(main.app)
+    res = client.post("/api/projects/from-url", json={"url": "https://example.com/v"}).json()
+    pid = res["project"]["id"]
+    assert _wait(client, res["job"]["id"])["status"] == "selesai"
+
+    deadline = time.time() + 60
+    while client.get(f"/api/projects/{pid}").json()["status"] != "siap":
+        assert time.time() < deadline, client.get(f"/api/projects/{pid}").json()
+        time.sleep(0.3)
+    project = client.get(f"/api/projects/{pid}").json()
+    assert project["name"] == "Video dari link"
+    assert [j["kind"] for j in project["jobs"]] == ["analisis", "analisis"]
+
+
+def test_failed_download_marks_project(monkeypatch):
+    import yt_dlp
+
+    class Boom:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def extract_info(self, *a, **k): raise yt_dlp.utils.DownloadError("ERROR: Video unavailable")
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Boom)
+    client = TestClient(main.app)
+    res = client.post("/api/projects/from-url", json={"url": "https://youtube.com/watch?v=x"}).json()
+    job = _wait(client, res["job"]["id"])
+    assert job["status"] == "gagal" and "Video unavailable" in job["error"]
+    assert client.get(f"/api/projects/{res['project']['id']}").json()["status"] == "gagal"

@@ -1,4 +1,5 @@
 """Alur kerja utama: impor video, analisis (preview + transkrip + kandidat klip), dan render."""
+import logging
 import time
 from pathlib import Path
 from typing import Optional
@@ -9,6 +10,8 @@ from .render import build_command, output_size
 from .schemas import RenderRequest
 from .subtitles import SubtitleOptions, build_ass
 
+log = logging.getLogger("video-editing.pipeline")
+
 
 def source_path(pid: str) -> Path:
     meta = storage.load_project(pid)
@@ -17,18 +20,42 @@ def source_path(pid: str) -> Path:
     return storage.project_dir(pid) / meta["source"]
 
 
+class _YtdlpLogger:
+    """Meneruskan pesan yt-dlp ke log server agar error terlihat di jendela terminal."""
+
+    def debug(self, msg: str) -> None:
+        if not msg.startswith("[download]"):
+            log.debug("yt-dlp: %s", msg)
+
+    def info(self, msg: str) -> None:
+        log.info("yt-dlp: %s", msg)
+
+    def warning(self, msg: str) -> None:
+        log.warning("yt-dlp: %s", msg)
+
+    def error(self, msg: str) -> None:
+        log.error("yt-dlp: %s", msg)
+
+
 def download(job: Job, pid: str, url: str) -> str:
     """Mengunduh video dari link (YouTube, Instagram, TikTok, dll.) dengan yt-dlp."""
     import yt_dlp
 
     folder = storage.project_dir(pid)
-    job.update(0, "Mengunduh video...")
+    storage.update_project(pid, status="mengunduh")
+    job.update(0, "Menghubungi situs video...")
 
     def hook(d: dict) -> None:
-        if d.get("status") == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-            if total:
-                job.update(20 * d.get("downloaded_bytes", 0) / total)
+        if d.get("status") != "downloading":
+            if d.get("status") == "finished":
+                job.update(99, "Menggabungkan video dan audio...")
+            return
+        done = d.get("downloaded_bytes") or 0
+        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+        if total:
+            job.update(98 * done / total, f"Mengunduh video... {done / 1e6:.1f} / {total / 1e6:.1f} MB")
+        else:
+            job.update(None, f"Mengunduh video... {done / 1e6:.1f} MB")
 
     opts = {
         "outtmpl": str(folder / "source.%(ext)s"),
@@ -36,58 +63,60 @@ def download(job: Job, pid: str, url: str) -> str:
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
-        "no_warnings": True,
+        "noprogress": True,
+        "logger": _YtdlpLogger(),
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
         "progress_hooks": [hook],
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except Exception as exc:
+        storage.update_project(pid, status="gagal", name="Unduhan gagal")
+        msg = str(exc).replace("ERROR: ", "")
+        if "instagram" in url.lower() and ("login" in msg.lower() or "cookies" in msg.lower()):
+            msg += "\n\nInstagram sering meminta login. Unduh videonya manual lalu unggah filenya."
+        raise RuntimeError(msg) from exc
     files = sorted(folder.glob("source.*"), key=lambda p: p.stat().st_size, reverse=True)
     if not files:
+        storage.update_project(pid, status="gagal", name="Unduhan gagal")
         raise RuntimeError("Unduhan selesai tetapi file video tidak ditemukan.")
-    storage.update_project(pid, source=files[0].name, name=(info.get("title") or "Video")[:120])
+    storage.update_project(pid, source=files[0].name, status="antre", name=(info.get("title") or "Video")[:120])
+    job.update(100, "Unduhan selesai!")
     return files[0].name
 
 
-def analyze(job: Job, pid: str, language: Optional[str] = None, offset: float = 0.0) -> dict:
+def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     """Probe -> preview 480p -> energi audio -> transkrip Whisper -> kandidat klip."""
-    span = 100 - offset
     src = source_path(pid)
     folder = storage.project_dir(pid)
     storage.update_project(pid, status="dianalisis")
 
-    job.update(offset, "Membaca info video...")
+    job.update(0, "Membaca info video...")
     info = media.probe(src)
     storage.update_project(pid, **info)
 
     media.make_preview(src, folder / "preview.mp4", info["duration"], info["has_audio"],
-                       job.stage(offset, offset + span * 0.2, "Membuat preview..."))
+                       job.stage(0, 20, "Membuat preview..."))
 
     energy: list[float] = []
     transcript: dict = {"language": None, "segments": []}
     if info["has_audio"]:
-        job.update(offset + span * 0.22, "Menganalisis audio...")
+        job.update(22, "Menganalisis audio...")
         energy = media.audio_energy(src)
-        progress = job.stage(offset + span * 0.25, offset + span * 0.92,
-                             "Membuat transkrip dengan Whisper (bisa beberapa menit)...")
+        progress = job.stage(25, 92, "Membuat transkrip dengan Whisper (bisa beberapa menit)...")
         transcript = transcribe.transcribe(src, info["duration"], language, progress)
     storage.write_data(pid, "energy", energy)
     storage.write_data(pid, "transcript", transcript)
 
-    job.update(offset + span * 0.95, "Mencari momen terbaik...")
+    job.update(95, "Mencari momen terbaik...")
     clips = clipper.suggest(transcript, energy, info["duration"])
     storage.write_data(pid, "clips", clips)
     storage.update_project(pid, status="siap", language=transcript.get("language"))
     job.update(100, "Analisis selesai!")
     return {"clips": len(clips)}
-
-
-def import_and_analyze(job: Job, pid: str, url: str, language: Optional[str]) -> dict:
-    try:
-        download(job, pid, url)
-    except Exception:
-        storage.update_project(pid, status="gagal")
-        raise
-    return analyze(job, pid, language, offset=20)
 
 
 def safe_analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:

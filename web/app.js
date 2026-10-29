@@ -192,7 +192,7 @@ function startPolling() {
     const p = state.project;
     if (!p) return;
     const active = (p.jobs || []).some((j) => j.status === "antre" || j.status === "jalan");
-    if (!active && p.status !== "antre" && p.status !== "dianalisis") return;
+    if (!active && !["antre", "mengunduh", "dianalisis"].includes(p.status)) return;
     try {
       const wasReady = p.status === "siap";
       state.project = await api(`/api/projects/${p.id}`);

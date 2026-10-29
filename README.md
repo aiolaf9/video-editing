@@ -30,9 +30,14 @@ winget install Gyan.FFmpeg
 ```
 Tutup lalu buka lagi terminal setelah instalasi.
 
+Untuk mengambil video dari **link YouTube**, pasang juga Deno (dibutuhkan yt-dlp):
+```powershell
+winget install DenoLand.Deno
+```
+
 **Mac**:
 ```bash
-brew install python ffmpeg
+brew install python ffmpeg deno
 ```
 
 **Linux (Ubuntu/Debian)**:
@@ -63,6 +68,12 @@ Setelah itu buka **http://localhost:8000** di browser.
 3. Di tab **Klip pilihan AI**, klik klip untuk memutarnya. Centang klip yang Anda suka.
 4. Atur gaya di panel kanan: format, filter, subtitle, dan musik. Subtitle bisa dilihat langsung di preview.
 5. Klik **Render yang dicentang** atau **Render klip ini**. Hasilnya muncul di tab **Hasil render** dan bisa diunduh.
+
+## Jika ada masalah
+
+- **Proyek tertahan di "Menunggu giliran"**: pekerjaan sebelumnya masih berjalan. Klik proyek lain di daftar untuk melihat progresnya, dan lihat jendela terminal untuk pesan error.
+- **Link YouTube gagal**: pastikan Deno terpasang, lalu perbarui yt-dlp: `.venv\Scripts\pip install -U "yt-dlp[default]"`.
+- **Link Instagram gagal**: Instagram sering meminta login. Unduh videonya manual, lalu unggah filenya.
 
 ## Pengaturan lanjutan
 
