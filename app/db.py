@@ -102,7 +102,7 @@ jobs = Table(
     Column("unit_id", String(12), nullable=True, index=True),
     Column("label", String(200), nullable=False, default=""),
     Column("payload", Text, nullable=False, default="{}"),
-    Column("status", String(10), nullable=False, index=True),  # antre | jalan | selesai | gagal
+    Column("status", String(10), nullable=False, index=True),  # antre|jalan|berhenti|selesai|gagal|batal (maks 10)
     Column("progress", Float, nullable=False, default=0),
     Column("message", String(300), nullable=False, default=""),
     Column("result", Text, nullable=True),

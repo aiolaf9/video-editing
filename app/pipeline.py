@@ -5,7 +5,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clipper, faces, media, overlays, storage, transcribe
+from . import clipper, faces, jobcontrol, media, overlays, storage, transcribe
+from .config import ANALYZE_TIMEOUT_BASE, ANALYZE_TIMEOUT_PER_MIN, JOB_TIMEOUT_MAX
 from .jobs import Job
 from .render import build_command, output_size
 from .schemas import RenderRequest
@@ -74,6 +75,12 @@ def download(job: Job, pid: str, url: str) -> str:
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
+    except jobcontrol.JobCancelled:
+        # Unduhan dihentikan: buang file setengah jadi (*.part, *.ytdl, potongan format).
+        for leftover in folder.glob("source.*"):
+            leftover.unlink(missing_ok=True)
+        storage.update_project(pid, status="batal", name="Unduhan dibatalkan")
+        raise
     except Exception as exc:
         storage.update_project(pid, status="gagal", name="Unduhan gagal")
         msg = str(exc).replace("ERROR: ", "")
@@ -98,6 +105,7 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     job.update(0, "Membaca info video...")
     info = media.probe(src)
     storage.update_project(pid, **info)
+    _limit_analysis_time(info["duration"])
 
     media.make_preview(src, folder / "preview.mp4", info["duration"], info["has_audio"],
                        job.stage(0, 18, "Membuat preview..."))
@@ -134,9 +142,24 @@ def track_faces(pid: str, progress=None) -> list:
     return data
 
 
+def _limit_analysis_time(duration: float) -> None:
+    """Batas waktu analisis sebanding durasi video (dihitung setelah probe)."""
+    control = jobcontrol.current()
+    if control is not None:
+        control.extend_deadline(min(JOB_TIMEOUT_MAX,
+                                    ANALYZE_TIMEOUT_BASE + ANALYZE_TIMEOUT_PER_MIN * max(duration, 0) / 60))
+        control.check()
+
+
 def safe_analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
+    previous = storage.load_project(pid).get("status")
     try:
         return analyze(job, pid, language)
+    except jobcontrol.JobCancelled:
+        # Analisis ulang yang dibatalkan: hasil lama (transkrip, preview) masih utuh, kembalikan ke "siap".
+        had_result = previous == "siap" and storage.read_data(pid, "transcript") is not None
+        storage.update_project(pid, status="siap" if had_result else "batal")
+        raise
     except Exception:
         storage.update_project(pid, status="gagal")
         raise
@@ -213,6 +236,12 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
             # Encoder GPU tidak tersedia di komputer ini: ulangi dengan CPU.
             job.update(2, "Encoder GPU gagal, mengulang dengan CPU...")
             run(req.model_copy(update={"encoder": "cpu"}))
+    except BaseException:
+        # Gagal, dibatalkan, atau timeout: jangan tinggalkan MP4 setengah jadi.
+        out.unlink(missing_ok=True)
+        if subs is not None:
+            subs.unlink(missing_ok=True)
+        raise
     finally:
         shutil.rmtree(overlay_dir, ignore_errors=True)
 

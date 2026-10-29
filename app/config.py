@@ -38,6 +38,21 @@ EMBEDDED_WORKERS = os.environ.get("EMBEDDED_WORKERS", "1" if DATABASE_URL.starts
 # Jumlah pekerjaan berat (analisis/render) yang jalan bersamaan pada worker bawaan.
 JOB_WORKERS = int(os.environ.get("JOB_WORKERS", "1"))
 
+# Batas waktu pekerjaan (detik). Dihitung dari ukuran pekerjaan agar video panjang tetap muat,
+# tetapi job yang macet pasti berhenti. Server CPU tanpa GPU: nilai bawaan sudah longgar.
+ANALYZE_TIMEOUT_BASE = float(os.environ.get("ANALYZE_TIMEOUT_BASE", "900"))        # 15 menit
+ANALYZE_TIMEOUT_PER_MIN = float(os.environ.get("ANALYZE_TIMEOUT_PER_MIN", "180"))  # +3 menit per menit video
+RENDER_TIMEOUT_BASE = float(os.environ.get("RENDER_TIMEOUT_BASE", "300"))          # 5 menit
+RENDER_TIMEOUT_PER_SEC = float(os.environ.get("RENDER_TIMEOUT_PER_SEC", "20"))      # +20 dtk per detik hasil
+DOWNLOAD_TIMEOUT = float(os.environ.get("DOWNLOAD_TIMEOUT", "3600"))
+JOB_TIMEOUT_MAX = float(os.environ.get("JOB_TIMEOUT_MAX", str(6 * 3600)))
+# FFmpeg tanpa laporan kemajuan selama ini (detik) dianggap macet dan dihentikan.
+FFMPEG_STALL_TIMEOUT = float(os.environ.get("FFMPEG_STALL_TIMEOUT", "300"))
+PROBE_TIMEOUT = float(os.environ.get("PROBE_TIMEOUT", "120"))
+# Setelah batal/timeout, waktu tunggu (detik) agar job berhenti sendiri. Bila lewat, job
+# ditandai gagal; worker terpisah me-restart dirinya agar tidak tertahan selamanya.
+CANCEL_GRACE = float(os.environ.get("CANCEL_GRACE", "90"))
+
 # Keamanan & batas pemakaian
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"      # 1 bila diakses lewat HTTPS
 SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "14"))

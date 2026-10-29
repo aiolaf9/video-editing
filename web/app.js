@@ -27,6 +27,8 @@ const fmt = (s) => {
   return `${m}:${sec}`;
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ACTIVE_JOB = ["antre", "jalan", "berhenti"];
+const isActive = (j) => ACTIVE_JOB.includes(j.status);
 const fmtSize = (b) => (b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.round(b / 1e3) + " KB");
 
 function toast(msg, isError = false) {
@@ -178,11 +180,22 @@ function renderStatus() {
   const p = state.project;
   const box = $("analyzeStatus");
   const job = [...(p.jobs || [])].reverse().find((j) => j.kind === "analisis");
-  if (job && (job.status === "antre" || job.status === "jalan")) {
+  const cancelBtn = $("cancelAnalyzeBtn");
+  cancelBtn.hidden = true;
+  if (job && isActive(job)) {
     box.hidden = false;
     box.classList.remove("error");
     box.querySelector(".status-text").textContent = `${job.message} (${Math.round(job.progress)}%)`;
     box.querySelector(".bar > div").style.width = job.progress + "%";
+    cancelBtn.hidden = false;
+    cancelBtn.dataset.job = job.id;
+    cancelBtn.disabled = job.status === "berhenti";
+    cancelBtn.textContent = job.status === "berhenti" ? "Membatalkan..." : "Batalkan";
+  } else if (p.status === "batal") {
+    box.hidden = false;
+    box.classList.remove("error");
+    box.querySelector(".status-text").textContent = "Analisis dibatalkan. Klik \"Analisis ulang\" untuk memulai lagi.";
+    box.querySelector(".bar > div").style.width = "0";
   } else if (p.status === "gagal" && job && job.error) {
     box.hidden = false;
     box.classList.add("error");
@@ -195,10 +208,10 @@ function renderStatus() {
   } else {
     box.hidden = true;
   }
-  const busy = (p.jobs || []).some((j) => j.kind === "analisis" && (j.status === "antre" || j.status === "jalan"));
+  const busy = (p.jobs || []).some((j) => j.kind === "analisis" && isActive(j));
   $("reanalyzeBtn").disabled = busy;
   $("deleteBtn").hidden = p.can_delete === false;
-  $("deleteBtn").disabled = (p.jobs || []).some((j) => j.status === "antre" || j.status === "jalan");
+  $("deleteBtn").disabled = (p.jobs || []).some(isActive);
 }
 
 function startPolling() {
@@ -206,14 +219,14 @@ function startPolling() {
   state.pollTimer = setInterval(async () => {
     const p = state.project;
     if (!p) return;
-    const active = (p.jobs || []).some((j) => j.status === "antre" || j.status === "jalan");
+    const active = (p.jobs || []).some(isActive);
     if (!active && !["antre", "mengunduh", "dianalisis"].includes(p.status)) return;
     try {
       const wasReady = p.status === "siap";
       state.project = await api(`/api/projects/${p.id}`);
       if (!wasReady && state.project.status === "siap") toast("Analisis selesai! Pilih klip favorit Anda.");
       await refreshProjectData();
-      if (!state.project.jobs.some((j) => j.status === "antre" || j.status === "jalan")) refreshProjects();
+      if (!state.project.jobs.some(isActive)) refreshProjects();
     } catch { /* coba lagi di putaran berikutnya */ }
   }, 1500);
 }
@@ -443,7 +456,10 @@ function renderRenders() {
           <div class="title">${esc(j.label)}</div>
           ${j.status === "gagal"
             ? `<div class="err">Gagal: ${esc(j.error)}</div>`
-            : `<div class="muted">${esc(j.message)} ${Math.round(j.progress)}%</div><div class="bar"><div style="width:${j.progress}%"></div></div>`}
+            : j.status === "batal"
+              ? '<div class="muted cancelled">Dibatalkan</div>'
+              : `<div class="muted">${esc(j.message)} ${Math.round(j.progress)}%</div><div class="bar"><div style="width:${j.progress}%"></div></div>
+                 <button class="ghost danger cancel" data-cancel="${esc(j.id)}" ${j.status === "berhenti" ? "disabled" : ""}>${j.status === "berhenti" ? "Membatalkan..." : "Batalkan"}</button>`}
         </div>
       </li>`),
     ...done.map((r) => {
@@ -462,6 +478,16 @@ function renderRenders() {
   const html = items.join("") || '<li class="muted">Belum ada hasil render.</li>';
   const list = $("renderList");
   if (list.dataset.html !== html) { list.innerHTML = html; list.dataset.html = html; }
+}
+
+async function cancelJob(jobId) {
+  try {
+    await api(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+    state.project = await api(`/api/projects/${state.project.id}`);
+    renderStatus();
+    renderRenders();
+    startPolling();
+  } catch (e) { toast(e.message, true); }
 }
 
 async function submitRender(start, end, title) {
@@ -528,6 +554,14 @@ function bind() {
       $("emptyState").hidden = false;
       refreshProjects();
     } catch (err) { toast(err.message, true); }
+  });
+
+  $("cancelAnalyzeBtn").addEventListener("click", (e) => {
+    if (confirm("Batalkan analisis video ini?")) cancelJob(e.target.dataset.job);
+  });
+  $("renderList").addEventListener("click", (e) => {
+    const id = e.target.dataset.cancel;
+    if (id) cancelJob(id);
   });
 
   $("reanalyzeBtn").addEventListener("click", async () => {

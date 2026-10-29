@@ -221,3 +221,9 @@ table.grid td select, table.grid td input { padding: 4px 6px; }
 .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .stat b { display: block; font-size: 24px; }
 .stat span { color: var(--muted); font-size: 12px; }
+
+.status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.status-row .status-text { margin-bottom: 0; }
+.status.info { border-color: var(--line); }
+.render-item .cancel { margin-top: 8px; }
+.render-item .muted.cancelled { color: var(--muted); font-style: italic; }

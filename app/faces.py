@@ -11,6 +11,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from . import jobcontrol
 from .config import BASE_DIR, FFMPEG
 
 log = logging.getLogger("video-editing.faces")
@@ -35,12 +36,24 @@ def track(video: Path, width: int, height: int, duration: float,
     detector.setInputSize((w, h))
     cmd = [FFMPEG, "-v", "error", "-i", str(video), "-an", "-vf", f"fps={SAMPLE_FPS},scale={w}:{h}",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert proc.stdout is not None
+    try:
+        return _read_faces(proc, detector, w, h, duration, progress)
+    finally:
+        if proc.poll() is None:  # berhenti lebih awal (batal/error): matikan FFmpeg
+            jobcontrol.terminate(proc)
+        proc.wait()
+        jobcontrol.release(proc)
+
+
+def _read_faces(proc, detector, w: int, h: int, duration: float,
+                progress: Optional[Callable[[float], None]]) -> list[Optional[dict]]:
     frame_bytes = w * h * 3
     total = max(1, int(duration * SAMPLE_FPS))
     out: list[Optional[dict]] = []
     while True:
+        jobcontrol.check()
         buf = proc.stdout.read(frame_bytes)
         if len(buf) < frame_bytes:
             break
@@ -55,7 +68,7 @@ def track(video: Path, width: int, height: int, duration: float,
                         "s": round(float(fh) / h, 4)})
         if progress and len(out) % 20 == 0:
             progress(min(1.0, len(out) / total))
-    proc.wait()
+    jobcontrol.check()
     return out
 
 

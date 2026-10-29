@@ -99,6 +99,8 @@ async def lifespan(_app: FastAPI):
     yield
     if stop:
         stop.set()
+        from . import jobcontrol
+        jobcontrol.cancel_all()  # jangan tinggalkan FFmpeg berjalan saat aplikasi ditutup
 
 
 app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)
@@ -330,8 +332,8 @@ def delete_project(pid: str, user: dict = CurrentUser):
     meta = _project_for(pid, user)
     if not auth.can_delete_project(user, meta):
         raise HTTPException(403, "Hanya pembuat proyek atau Admin Unit yang boleh menghapus.")
-    if any(j["status"] in ("antre", "jalan") for j in jobs.for_project(pid)):
-        raise HTTPException(409, "Proyek masih diproses. Tunggu sampai selesai.")
+    if any(j["status"] in jobs.ACTIVE for j in jobs.for_project(pid)):
+        raise HTTPException(409, "Proyek masih diproses. Batalkan pekerjaannya dulu atau tunggu sampai selesai.")
     storage.delete_project(pid)
     return {"ok": True}
 
@@ -339,7 +341,7 @@ def delete_project(pid: str, user: dict = CurrentUser):
 @app.post("/api/projects/{pid}/reanalyze")
 def reanalyze(pid: str, language: Optional[str] = None, user: dict = CurrentUser):
     meta = _project_for(pid, user)
-    if any(j["status"] in ("antre", "jalan") and j["kind"] == "analisis" for j in jobs.for_project(pid)):
+    if any(j["status"] in jobs.ACTIVE and j["kind"] == "analisis" for j in jobs.for_project(pid)):
         raise HTTPException(409, "Analisis sedang berjalan.")
     if not meta.get("source"):
         raise HTTPException(409, "Video sumber tidak ada. Unggah ulang videonya.")
@@ -423,6 +425,23 @@ def get_job(job_id: str, user: dict = CurrentUser):
         raise HTTPException(404, "Pekerjaan tidak ditemukan.")
     _project_for(job["project_id"], user)
     return jobs.view(job)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, user: dict = CurrentUser):
+    """Batalkan job: yang masih antre langsung batal, yang sedang berjalan dihentikan worker (±2 detik)."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Pekerjaan tidak ditemukan.")
+    meta = _project_for(job["project_id"], user)
+    if job["user_id"] != user["id"] and not auth.can_delete_project(user, meta):
+        raise HTTPException(403, "Hanya pembuat pekerjaan atau Admin Unit yang boleh membatalkan.")
+    if jobs.request_cancel(job_id) is None:
+        raise HTTPException(409, "Pekerjaan sudah selesai, tidak bisa dibatalkan.")
+    if job["status"] == "antre" and job["kind"] == "analisis":
+        # Belum sempat diproses: proyek tidak boleh tertinggal di status "antre".
+        storage.update_project(meta["id"], status="siap" if meta.get("status") == "siap" else "batal")
+    return jobs.view(jobs.get(job_id))
 
 
 # ------------------------------------------------------------------ rencana animasi

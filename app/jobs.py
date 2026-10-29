@@ -3,7 +3,10 @@
 - submit()  : web memasukkan pekerjaan (status "antre")
 - claim()   : worker mengambil satu pekerjaan secara atomik (PostgreSQL: FOR UPDATE SKIP LOCKED)
 - Job       : dipakai pipeline untuk melaporkan progress (ditulis ke DB, dibatasi ±1x/detik)
+- request_cancel(): batalkan job (antre -> batal seketika; jalan -> berhenti -> batal)
 - requeue_stale(): pekerjaan milik worker yang mati dikembalikan ke antrean
+
+Status: antre -> jalan -> selesai | gagal | batal  (jalan -> berhenti -> batal saat dibatalkan)
 """
 import json
 import logging
@@ -12,12 +15,14 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy import and_, func, insert, select, text, update
 
-from . import db
+from . import db, jobcontrol
 from .storage import new_id
 
 log = logging.getLogger("video-editing.jobs")
 
 QUEUES = ("berat", "unduh")
+ACTIVE = ("antre", "jalan", "berhenti")   # masih memakai antrean/worker
+DONE = ("selesai", "gagal", "batal")
 STALE_AFTER = 120     # detik tanpa heartbeat = worker dianggap mati
 MAX_ATTEMPTS = 2
 
@@ -38,6 +43,8 @@ class Job:
         self._written_message = None
 
     def update(self, progress: Optional[float] = None, message: Optional[str] = None) -> None:
+        # Setiap laporan kemajuan juga titik pemeriksaan batal/timeout (lihat jobcontrol).
+        jobcontrol.check()
         if progress is not None:
             self.progress = round(max(0.0, min(100.0, progress)), 1)
         if message is not None:
@@ -82,7 +89,7 @@ def for_project(project_id: str, limit: int = 50) -> list[dict]:
 def pending_for_user(user_id: str) -> int:
     with db.engine().connect() as c:
         return c.execute(select(func.count()).select_from(db.jobs).where(
-            db.jobs.c.user_id == user_id, db.jobs.c.status.in_(("antre", "jalan")))).scalar() or 0
+            db.jobs.c.user_id == user_id, db.jobs.c.status.in_(ACTIVE))).scalar() or 0
 
 
 def view(job: dict) -> dict:
@@ -97,7 +104,7 @@ def view_many(items: list[dict]) -> list[dict]:
     if waiting:
         with db.engine().connect() as c:
             active = c.execute(select(db.jobs.c.queue, db.jobs.c.created).where(
-                db.jobs.c.status.in_(("antre", "jalan")),
+                db.jobs.c.status.in_(ACTIVE),
                 db.jobs.c.queue.in_({j["queue"] for j in waiting}),
                 db.jobs.c.created < max(j["created"] for j in waiting))).all()
     out = []
@@ -128,10 +135,13 @@ def claim(queues: tuple[str, ...], worker: str) -> Optional[dict]:
         return db.row(c.execute(stmt).first())
 
 
-def finish(job_id: str, result: Any = None, error: Optional[str] = None) -> None:
+def finish(job_id: str, result: Any = None, error: Optional[str] = None, cancelled: bool = False) -> None:
     now = time.time()
     with db.engine().begin() as c:
-        if error is None:
+        if cancelled:
+            c.execute(update(db.jobs).where(db.jobs.c.id == job_id).values(
+                status="batal", error=error, message="Dibatalkan", finished=now, heartbeat=now))
+        elif error is None:
             c.execute(update(db.jobs).where(db.jobs.c.id == job_id).values(
                 status="selesai", progress=100, finished=now, heartbeat=now,
                 result=json.dumps(result, ensure_ascii=False, default=str)))
@@ -141,6 +151,27 @@ def finish(job_id: str, result: Any = None, error: Optional[str] = None) -> None
         else:
             c.execute(update(db.jobs).where(db.jobs.c.id == job_id).values(
                 status="gagal", error=error[:4000], message="Gagal", finished=now, heartbeat=now))
+
+
+def request_cancel(job_id: str) -> Optional[str]:
+    """Minta pembatalan. Mengembalikan status baru, atau None bila job sudah selesai."""
+    now = time.time()
+    with db.engine().begin() as c:
+        # Masih di antrean: langsung batal, tidak akan pernah diambil worker.
+        if c.execute(update(db.jobs).where(db.jobs.c.id == job_id, db.jobs.c.status == "antre").values(
+                status="batal", message="Dibatalkan", finished=now)).rowcount:
+            return "batal"
+        # Sedang berjalan: worker yang memegangnya akan menghentikan proses (lihat worker._watchdog).
+        if c.execute(update(db.jobs).where(db.jobs.c.id == job_id, db.jobs.c.status == "jalan").values(
+                status="berhenti", message="Membatalkan...")).rowcount:
+            return "berhenti"
+    current = get(job_id)
+    return "berhenti" if current and current["status"] == "berhenti" else None
+
+
+def status_of(job_id: str) -> Optional[str]:
+    with db.engine().connect() as c:
+        return c.execute(select(db.jobs.c.status).where(db.jobs.c.id == job_id)).scalar()
 
 
 def touch(job_id: str) -> None:
@@ -153,6 +184,9 @@ def requeue_stale(all_running: bool = False) -> int:
     cutoff = time.time() + 1 if all_running else time.time() - STALE_AFTER
     stale = and_(db.jobs.c.status == "jalan", db.jobs.c.heartbeat < cutoff)
     with db.engine().begin() as c:
+        # Dibatalkan saat worker-nya mati: cukup tandai batal, jangan diulang.
+        c.execute(update(db.jobs).where(db.jobs.c.status == "berhenti", db.jobs.c.heartbeat < cutoff).values(
+            status="batal", message="Dibatalkan", finished=time.time()))
         failed = c.execute(update(db.jobs).where(stale, db.jobs.c.attempts >= MAX_ATTEMPTS).values(
             status="gagal", error="Pekerjaan terhenti berulang kali (server restart atau kehabisan memori).",
             message="Gagal", finished=time.time())).rowcount
@@ -166,13 +200,15 @@ def requeue_stale(all_running: bool = False) -> int:
 def queue_stats() -> dict:
     with db.engine().connect() as c:
         rows = c.execute(select(db.jobs.c.queue, db.jobs.c.status, func.count())
-                         .where(db.jobs.c.status.in_(("antre", "jalan")))
+                         .where(db.jobs.c.status.in_(ACTIVE))
                          .group_by(db.jobs.c.queue, db.jobs.c.status)).all()
         alive = c.execute(select(func.count(func.distinct(db.jobs.c.worker))).where(
-            db.jobs.c.status == "jalan", db.jobs.c.heartbeat >= time.time() - STALE_AFTER)).scalar() or 0
+            db.jobs.c.status.in_(("jalan", "berhenti")), db.jobs.c.heartbeat >= time.time() - STALE_AFTER)).scalar() or 0
     out: dict = {q: {"antre": 0, "jalan": 0} for q in QUEUES}
     for q, s, n in rows:
-        out.setdefault(q, {"antre": 0, "jalan": 0})[s] = n
+        bucket = out.setdefault(q, {"antre": 0, "jalan": 0})
+        key = "jalan" if s == "berhenti" else s
+        bucket[key] = bucket.get(key, 0) + n
     out["busy_workers"] = alive
     return out
 

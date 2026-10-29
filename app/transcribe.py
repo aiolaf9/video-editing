@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import media
+from . import jobcontrol, media
 from .config import WHISPER_DEVICE, WHISPER_MODEL, WHISPER_THREADS
 
 log = logging.getLogger("video-editing.transcribe")
@@ -68,6 +68,7 @@ def _run(model, audio, duration: float, language: Optional[str], progress) -> di
     )
     out = []
     for seg in segments:
+        jobcontrol.check()  # titik batal/timeout per segmen (Whisper tidak bisa di-kill dari luar)
         words = [
             {"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word.strip()}
             for w in (seg.words or [])

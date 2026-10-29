@@ -1,13 +1,17 @@
 """Pembungkus FFmpeg/FFprobe: probe, preview, energi audio, dan eksekusi dengan progress."""
 import json
+import os
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 
-from .config import FFMPEG, FFPROBE
+from . import jobcontrol
+from .config import FFMPEG, FFMPEG_STALL_TIMEOUT, FFPROBE, PROBE_TIMEOUT
 
 ProgressFn = Optional[Callable[[float], None]]
 
@@ -21,7 +25,7 @@ class MediaError(RuntimeError):
 
 def probe(path: Path) -> dict:
     cmd = [FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = jobcontrol.run_capture(cmd, text=True, timeout=PROBE_TIMEOUT)
     if proc.returncode != 0:
         raise MediaError(f"File tidak bisa dibaca sebagai video: {proc.stderr.strip()[-400:]}")
     info = json.loads(proc.stdout)
@@ -61,20 +65,52 @@ def probe(path: Path) -> dict:
     }
 
 
-def run_ffmpeg(args: list[str], duration: float = 0, progress: ProgressFn = None, cwd: Optional[Path] = None) -> None:
-    """Menjalankan FFmpeg dan melaporkan progress 0..1 berdasarkan out_time."""
+def run_ffmpeg(args: list[str], duration: float = 0, progress: ProgressFn = None, cwd: Optional[Path] = None,
+               stall_timeout: Optional[float] = None) -> None:
+    """Menjalankan FFmpeg dan melaporkan progress 0..1 berdasarkan out_time.
+
+    - Bisa dihentikan lewat job yang aktif (batal/timeout): proses di-kill, JobCancelled dinaikkan.
+    - Bila FFmpeg tidak mengeluarkan laporan kemajuan selama `stall_timeout` detik (mis. input
+      macet), proses dihentikan dan SubprocessStalled dinaikkan, sehingga worker tidak tertahan.
+    """
+    stall_timeout = FFMPEG_STALL_TIMEOUT if stall_timeout is None else stall_timeout
+    jobcontrol.check()
     cmd = [FFMPEG, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *args]
     with tempfile.TemporaryFile(mode="w+") as err:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True, cwd=cwd)
+        proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True, cwd=cwd)
         assert proc.stdout is not None
-        for line in proc.stdout:
-            if progress and duration > 0 and line.startswith("out_time_us="):
-                try:
-                    seconds = int(line.split("=", 1)[1]) / 1_000_000
+        last_output = [time.monotonic()]
+        stalled = threading.Event()
+        finished = threading.Event()
+
+        def watch() -> None:
+            while not finished.wait(1.0):
+                if time.monotonic() - last_output[0] > stall_timeout:
+                    stalled.set()
+                    jobcontrol.terminate(proc)
+                    return
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            for line in proc.stdout:
+                last_output[0] = time.monotonic()
+                if progress and duration > 0 and line.startswith("out_time_us="):
+                    try:
+                        seconds = int(line.split("=", 1)[1]) / 1_000_000
+                    except ValueError:
+                        continue
                     progress(max(0.0, min(1.0, seconds / duration)))
-                except ValueError:
-                    pass
-        code = proc.wait()
+            code = proc.wait()
+        finally:
+            finished.set()
+            if proc.poll() is None:  # keluar karena exception (mis. dibatalkan): pastikan proses mati
+                jobcontrol.terminate(proc)
+            jobcontrol.release(proc)
+        jobcontrol.check()
+        if stalled.is_set():
+            raise jobcontrol.SubprocessStalled(
+                f"FFmpeg tidak ada kemajuan selama {stall_timeout:.0f} detik dan dihentikan.")
         if code != 0:
             err.seek(0)
             tail = err.read()[-1500:]
@@ -87,15 +123,21 @@ def make_preview(src: Path, dst: Path, duration: float, has_audio: bool, progres
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p"]
     if has_audio:
         args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k"]
-    args += ["-movflags", "+faststart", str(dst)]
-    run_ffmpeg(args, duration, progress)
+    # Tulis ke file sementara lalu ganti nama: preview lama tidak rusak bila proses dibatalkan.
+    tmp = dst.with_name(f".{dst.stem}.part{dst.suffix}")
+    args += ["-movflags", "+faststart", str(tmp)]
+    try:
+        run_ffmpeg(args, duration, progress)
+        os.replace(tmp, dst)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def audio_energy(src: Path) -> list[float]:
     """Kenyaringan audio (dBFS) per ENERGY_STEP detik. Dipakai untuk menilai momen 'ramai'."""
     rate = 8000
     cmd = [FFMPEG, "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
-    proc = subprocess.run(cmd, capture_output=True)
+    proc = jobcontrol.run_capture(cmd)
     if proc.returncode != 0 or not proc.stdout:
         return []
     samples = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
@@ -112,7 +154,7 @@ def audio_energy(src: Path) -> list[float]:
 def decode_audio(src: Path, rate: int = 16000) -> np.ndarray:
     """Decode audio ke mono float32 dengan FFmpeg (format masukan yang dipakai Whisper)."""
     cmd = [FFMPEG, "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "f32le", "-"]
-    proc = subprocess.run(cmd, capture_output=True)
+    proc = jobcontrol.run_capture(cmd)
     if proc.returncode != 0:
         raise MediaError(f"Gagal membaca audio: {proc.stderr.decode(errors='replace').strip()[-400:]}")
     return np.frombuffer(proc.stdout, dtype=np.float32).copy()
