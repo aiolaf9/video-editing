@@ -9,7 +9,15 @@
 <body>
 <header class="topbar">
   <div class="brand">🎬 Video Editing AI</div>
-  <div id="health" class="health"></div>
+  <div class="topbar-right">
+    <div id="health" class="health"></div>
+    <div class="user-menu">
+      <div class="who" id="whoami"></div>
+      <a href="/admin.html" id="adminLink" hidden>⚙ Admin</a>
+      <a href="/admin.html#akun">👤 Akun</a>
+      <button class="linklike" id="logoutBtn">Keluar</button>
+    </div>
+  </div>
 </header>
 
 <div class="layout">
@@ -21,8 +29,8 @@
         <input type="file" id="fileInput" accept="video/*" hidden>
         <span>⬆️ Pilih atau seret file video ke sini</span>
       </label>
-      <div class="or">atau tempel link</div>
-      <form id="urlForm" class="row">
+      <div class="or" id="urlOr" hidden>atau tempel link</div>
+      <form id="urlForm" class="row" hidden>
         <input type="url" id="urlInput" placeholder="https://youtube.com/... / instagram.com/..." required>
         <button type="submit">Ambil</button>
       </form>
@@ -143,31 +151,12 @@
               </select>
               <button id="planAddBtn" class="ghost">Tambah di posisi video</button>
             </div>
-            <details class="settings-box">
-              <summary>📘 Guidebook gaya & pengaturan AI</summary>
-              <label class="field">Guidebook (aturan gaya agar hasil konsisten, dipakai mode salin-prompt & API)
+            <details class="settings-box" id="guidebookBox">
+              <summary>📘 Guidebook gaya unit</summary>
+              <label class="field">Aturan gaya unit Anda. Otomatis dipakai setiap kali AI membuat animasi, agar video satu unit konsisten.
                 <textarea id="guidebook" rows="4" placeholder="Contoh: Gaya edukatif & santai. Pakai label kartu 'Langkah 1, 2, 3'. Maksimal 1 animasi per 6 detik. Zoom hanya pada kata yang sangat penting."></textarea>
               </label>
-              <div class="row wrap">
-                <label class="field">Penyedia AI (untuk tombol 🤖)
-                  <select id="aiProvider"></select>
-                </label>
-                <label class="field">API key <input type="password" id="apiKey" autocomplete="off"></label>
-              </div>
-              <div class="row wrap">
-                <label class="field">Model
-                  <input id="apiModel" list="modelList" placeholder="Kosongkan = dipilih otomatis">
-                  <datalist id="modelList"></datalist>
-                </label>
-                <label class="field" id="baseUrlField">Base URL <input id="apiBaseUrl" placeholder="https://.../v1"></label>
-              </div>
-              <div class="row wrap">
-                <button id="settingsSaveBtn" class="ghost">Simpan</button>
-                <button id="modelsBtn" class="ghost">Muat daftar model</button>
-                <span id="keyStatus" class="hint"></span>
-              </div>
-              <p class="hint" id="providerHint"></p>
-              <p class="hint">API key hanya disimpan di laptop Anda (folder data). Tanpa API key, pakai tombol "Salin prompt".</p>
+              <div class="row"><button id="guidebookSaveBtn" class="ghost">Simpan guidebook unit</button><span id="guidebookHint" class="hint"></span></div>
             </details>
           </section>
 

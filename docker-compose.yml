@@ -1,0 +1,80 @@
+# Deploy server: lihat DEPLOY.md
+#   cp .env.example .env   (lalu isi)
+#   docker compose up -d --build
+name: video-editing
+
+x-app: &app
+  build: .
+  image: video-editing:latest
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+psycopg://videoapp:${POSTGRES_PASSWORD}@db:5432/videoapp
+    EMBEDDED_WORKERS: "0"
+    COOKIE_SECURE: ${COOKIE_SECURE:-1}
+  volumes:
+    - appdata:/data
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: videoapp
+      POSTGRES_USER: videoapp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Isi POSTGRES_PASSWORD di .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U videoapp -d videoapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Website + API (ringan). Jumlah proses: WEB_WORKERS.
+  web:
+    <<: *app
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Analisis (Whisper) & render (FFmpeg). Tambah salinan bila antrean panjang: HEAVY_WORKERS.
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker", "--queues", "berat"]
+    deploy:
+      replicas: ${HEAVY_WORKERS:-2}
+    stop_grace_period: 2m
+
+  # Unduhan dari link (YouTube, dll.), terpisah agar tidak menahan render.
+  worker-unduh:
+    <<: *app
+    command: ["python", "-m", "app.worker", "--queues", "unduh"]
+
+  # HTTPS otomatis (Let's Encrypt) untuk domain di .env.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Isi DOMAIN di .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+volumes:
+  appdata:
+  pgdata:
+  caddy_data:
+  caddy_config:

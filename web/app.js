@@ -42,6 +42,10 @@ async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   let data = null;
   try { data = await res.json(); } catch { /* respons kosong */ }
+  if (res.status === 401 && !path.startsWith("/api/auth/login")) {
+    location.replace("/login.html?next=" + encodeURIComponent(location.pathname + location.hash));
+    throw new Error("Silakan login.");
+  }
   if (!res.ok) {
     let msg = data && data.detail ? data.detail : `Error ${res.status}`;
     if (Array.isArray(msg)) msg = msg.map((d) => d.msg).join("; ");
@@ -119,7 +123,7 @@ async function refreshProjects() {
   list.innerHTML = state.projects.map((p) => `
     <li data-id="${p.id}" class="${state.project && state.project.id === p.id ? "active" : ""}">
       <span class="name">${esc(p.name)}</span>
-      <span class="meta">${esc(p.status)}${p.duration ? " · " + fmt(p.duration) : ""}${p.renders && p.renders.length ? " · " + p.renders.length + " klip" : ""}</span>
+      <span class="meta">${esc(p.status)}${p.duration ? " · " + fmt(p.duration) : ""}${p.render_count ? " · " + p.render_count + " klip" : ""}${p.owner_name ? " · " + esc(p.owner_name) : ""}${state.me && state.me.role === "admin" && p.unit_name ? " · " + esc(p.unit_name) : ""}</span>
     </li>`).join("") || '<li class="muted">Belum ada proyek.</li>';
 }
 
@@ -161,6 +165,7 @@ async function refreshProjectData() {
       const [planItems, faces] = await Promise.all([api(`/api/projects/${p.id}/plan`), api(`/api/projects/${p.id}/faces`)]);
       state.plan = planItems;
       state.faces = faces;
+      layoutCropFrame();  // data wajah baru tersedia: posisikan ulang bingkai
       renderTranscript();
       renderClips();
       if (clips.length) selectClip(0, false);
@@ -192,6 +197,7 @@ function renderStatus() {
   }
   const busy = (p.jobs || []).some((j) => j.kind === "analisis" && (j.status === "antre" || j.status === "jalan"));
   $("reanalyzeBtn").disabled = busy;
+  $("deleteBtn").hidden = p.can_delete === false;
   $("deleteBtn").disabled = (p.jobs || []).some((j) => j.status === "antre" || j.status === "jalan");
 }
 
@@ -731,51 +737,28 @@ async function runPlan(kind) {
     toast(`${planInRange().length} animasi siap. Putar klip untuk melihat pratinjaunya.`);
   } catch (e) { toast(e.message, true); }
   finally { $(btn).disabled = false; $(btn).innerHTML = old; }
-  if (kind === "ai") loadAiSettings();  // tampilkan model yang dipilih otomatis
 }
 
-let aiSettings = null;
-
-function showProvider() {
-  const name = $("aiProvider").value;
-  const p = aiSettings.providers[name];
-  $("aiName").textContent = p.label;
-  $("apiModel").value = p.model;
-  $("apiModel").placeholder = p.default_model || "Kosongkan = dipilih otomatis";
-  $("apiBaseUrl").value = p.base_url;
-  $("apiBaseUrl").placeholder = p.default_base_url || "https://.../v1";
-  $("baseUrlField").hidden = !(name === "custom" || name === "ollama");
-  $("apiKey").value = "";
-  $("apiKey").placeholder = p.needs_key ? (p.has_key ? `Tersimpan (${p.key_hint}), isi untuk mengganti` : "Tempel API key di sini") : "Tidak perlu (opsional)";
-  $("keyStatus").textContent = !p.needs_key ? "" : p.has_key ? `Kunci tersimpan (${p.key_hint})` : "Belum ada API key";
-  $("providerHint").innerHTML = name === "ollama"
-    ? 'AI lokal gratis: pasang <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a>, lalu jalankan misalnya <code>ollama pull qwen2.5:3b</code>.'
-    : p.key_url ? `Buat API key di <a href="${esc(p.key_url)}" target="_blank" rel="noopener">${esc(p.key_url.replace(/^https?:\/\//, ""))}</a>.` : "";
+async function loadMe() {
+  state.me = await api("/api/auth/me");
+  const me = state.me;
+  $("whoami").innerHTML = `<b>${esc(me.name)}</b><br>${esc(me.role_label)}${me.unit_name ? " · " + esc(me.unit_name) : ""}`;
+  $("adminLink").hidden = me.role === "editor";
+  $("urlForm").hidden = $("urlOr").hidden = !me.url_import;
+  $("aiName").textContent = me.ai.name;
+  $("planAiBtn").disabled = !me.ai.ready;
+  $("planAiBtn").title = me.ai.ready ? "Otomatis lewat API AI yang diatur admin"
+    : "API AI belum diatur admin. Pakai 'Salin prompt' dulu.";
 }
 
-async function loadAiSettings() {
+async function loadUnitGuidebook() {
   try {
-    aiSettings = await api("/api/settings");
-    $("guidebook").value = aiSettings.guidebook || "";
-    $("aiProvider").innerHTML = Object.entries(aiSettings.providers)
-      .map(([k, p]) => `<option value="${k}">${esc(p.label)}</option>`).join("");
-    $("aiProvider").value = aiSettings.provider;
-    showProvider();
+    const unit = await api("/api/unit");
+    $("guidebook").value = unit.guidebook || "";
+    $("guidebook").readOnly = !unit.can_edit;
+    $("guidebookSaveBtn").hidden = !unit.can_edit;
+    $("guidebookHint").textContent = unit.can_edit ? "" : "Hanya Admin Unit yang bisa mengubah guidebook.";
   } catch { /* abaikan */ }
-}
-
-async function saveAiSettings(showToast = true) {
-  try {
-    aiSettings = await api("/api/settings", {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        provider: $("aiProvider").value, guidebook: $("guidebook").value,
-        api_key: $("apiKey").value.trim() || null, model: $("apiModel").value.trim(), base_url: $("apiBaseUrl").value.trim(),
-      }),
-    });
-    showProvider();
-    if (showToast) toast("Pengaturan AI disimpan.");
-  } catch (e) { toast(e.message, true); }
 }
 
 function bindPlan() {
@@ -839,16 +822,11 @@ function bindPlan() {
     renderPlan();
     savePlanSoon();
   });
-  $("settingsSaveBtn").addEventListener("click", () => saveAiSettings());
-  $("guidebook").addEventListener("change", () => saveAiSettings(false));
-  $("aiProvider").addEventListener("change", () => { $("modelList").innerHTML = ""; showProvider(); saveAiSettings(false); });
-  $("modelsBtn").addEventListener("click", async () => {
-    await saveAiSettings(false);
+  $("guidebookSaveBtn").addEventListener("click", async () => {
     try {
-      const models = await api("/api/ai/models");
-      $("modelList").innerHTML = models.map((m) => `<option value="${esc(m)}">`).join("");
-      toast(`${models.length} model ditemukan. Klik kolom Model untuk memilih.`);
-      $("apiModel").focus();
+      await api("/api/unit/guidebook", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guidebook: $("guidebook").value }) });
+      toast("Guidebook unit disimpan.");
     } catch (e) { toast(e.message, true); }
   });
 }
@@ -862,7 +840,13 @@ async function checkHealth() {
 
 bind();
 bindPlan();
-loadAiSettings();
 loadSettings();
-checkHealth();
-refreshProjects();
+$("logoutBtn").addEventListener("click", async () => {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch { /* abaikan */ }
+  location.replace("/login.html");
+});
+loadMe().then(() => {
+  loadUnitGuidebook();
+  checkHealth();
+  refreshProjects();
+}).catch(() => { /* diarahkan ke halaman login */ });

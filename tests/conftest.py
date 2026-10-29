@@ -8,6 +8,10 @@ import pytest
 
 # Data uji disimpan di folder sementara, bukan di ./data
 os.environ.setdefault("VIDEO_APP_DATA", tempfile.mkdtemp(prefix="ve-test-"))
+os.environ.setdefault("EMBEDDED_WORKERS", "1")
+os.environ.setdefault("ADMIN_EMAIL", "admin@test.local")
+os.environ.setdefault("ADMIN_PASSWORD", "rahasia-admin-123")
+os.environ.setdefault("MAX_PENDING_PER_USER", "50")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
@@ -44,3 +48,31 @@ def fake_transcript() -> dict:
         {"start": out[4]["start"], "end": out[7]["end"], "text": " ".join(w["word"] for w in out[4:8]), "words": out[4:8]},
         {"start": out[8]["start"], "end": out[9]["end"], "text": " ".join(w["word"] for w in out[8:]), "words": out[8:]},
     ]}
+
+
+@pytest.fixture(scope="session")
+def app_client():
+    """Klien tanpa login; lifespan aktif sehingga worker bawaan berjalan."""
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    with TestClient(main.app) as c:
+        yield c
+
+
+def login_client(email: str, password: str):
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    c = TestClient(main.app)
+    r = c.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return c
+
+
+@pytest.fixture(scope="session")
+def client(app_client):
+    """Klien yang sudah login sebagai admin."""
+    return login_client(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"])

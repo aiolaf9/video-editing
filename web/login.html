@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Masuk · Video Editing AI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="brand">🎬 Video Editing AI</div>
+    <p class="muted">Masuk dengan akun yang diberikan admin.</p>
+    <form id="loginForm">
+      <label class="field">Email
+        <input type="email" id="email" autocomplete="username" required autofocus>
+      </label>
+      <label class="field">Password
+        <input type="password" id="password" autocomplete="current-password" required>
+      </label>
+      <p id="loginError" class="login-error" hidden></p>
+      <button type="submit" class="big" id="loginBtn">Masuk</button>
+    </form>
+    <p class="hint">Lupa password? Hubungi admin unit Anda.</p>
+  </main>
+<script>
+"use strict";
+(async () => {
+  // Sudah login? Langsung ke aplikasi.
+  try { if ((await fetch("/api/auth/me")).ok) location.replace("/"); } catch { /* abaikan */ }
+})();
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("loginBtn");
+  const err = document.getElementById("loginError");
+  btn.disabled = true;
+  err.hidden = true;
+  try {
+    const res = await fetch("/api/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: document.getElementById("email").value, password: document.getElementById("password").value }),
+    });
+    if (res.ok) {
+      const next = new URLSearchParams(location.search).get("next") || "/";
+      location.replace(next.startsWith("/") && !next.startsWith("//") ? next : "/");
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    err.textContent = data.detail || "Gagal masuk.";
+    err.hidden = false;
+  } catch {
+    err.textContent = "Server tidak bisa dihubungi.";
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

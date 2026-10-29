@@ -31,7 +31,7 @@ button.ghost, .ghost-btn {
 button.danger { color: var(--danger); }
 button.big { width: 100%; padding: 12px; font-size: 15px; }
 [hidden] { display: none !important; }
-input[type=url], input[type=number], input[type=password], input[type=text], input:not([type]), select {
+input[type=url], input[type=number], input[type=password], input[type=text], input[type=email], input:not([type]), select {
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; min-width: 0;
 }
 input[type=range] { width: 100%; accent-color: var(--accent); }
@@ -187,3 +187,37 @@ textarea { width: 100%; background: var(--bg); border: 1px solid var(--line); bo
 .ovp-check { left: 8%; top: 12%; display: flex; flex-direction: column; gap: 4px; }
 .ovp-check span { background: rgba(22,24,30,.88); color: #fff; font-weight: 600; border-radius: 999px; padding: 2px 9px; }
 .ovp-check span::before { content: "✓ "; color: var(--ok); }
+
+/* ---------- login & akun ---------- */
+.login-page { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+.login-card { width: min(380px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 28px 24px; display: flex; flex-direction: column; gap: 6px; }
+.login-card .brand { font-size: 20px; margin-bottom: 4px; }
+.login-card form { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
+.login-card .big { margin-top: 12px; }
+.login-error { color: var(--danger); margin: 6px 0 0; font-size: 13px; }
+.user-menu { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.user-menu .who { color: var(--muted); text-align: right; line-height: 1.25; }
+.user-menu .who b { color: var(--text); font-weight: 600; }
+.user-menu a, .linklike { color: var(--text); text-decoration: none; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); cursor: pointer; font: inherit; font-weight: 500; }
+.user-menu a:hover, .linklike:hover { border-color: var(--accent); }
+.topbar-right { display: flex; align-items: center; gap: 14px; }
+@media (max-width: 760px) { .user-menu .who { display: none; } }
+
+/* ---------- admin ---------- */
+.admin-wrap { max-width: 1100px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.admin-nav { display: flex; gap: 6px; flex-wrap: wrap; }
+.admin-nav button { background: var(--panel-2); border: 1px solid var(--line); font-weight: 500; }
+.admin-nav button.active { background: var(--accent); border-color: var(--accent); }
+.table-wrap { overflow-x: auto; }
+table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.grid th, table.grid td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.grid th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+table.grid td select, table.grid td input { padding: 4px 6px; }
+.badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); }
+.badge.off { color: var(--danger); }
+.badge.ok { color: var(--ok); }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; align-items: end; }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.stat b { display: block; font-size: 24px; }
+.stat span { color: var(--muted); font-size: 12px; }

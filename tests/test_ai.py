@@ -75,13 +75,7 @@ def test_clear_errors(fake_transcript):
         ai.generate_plan("custom", {"model": "x", "base_url": "http://127.0.0.1:9/v1"}, fake_transcript, 0, 8, "")
 
 
-def test_settings_api_per_provider(monkeypatch):
-    from fastapi.testclient import TestClient
-
-    from app import main
-
-    monkeypatch.setattr(main, "SETTINGS_PATH", main.DATA_DIR / "settings-test.json")
-    client = TestClient(main.app)
+def test_settings_api_per_provider(client):
     client.put("/api/settings", json={"provider": "gemini", "api_key": "AIza-abcd9999", "model": ""})
     client.put("/api/settings", json={"provider": "ollama", "base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
     s = client.get("/api/settings").json()
@@ -90,3 +84,4 @@ def test_settings_api_per_provider(monkeypatch):
     assert s["providers"]["ollama"]["model"] == "qwen2.5:3b"
     assert "AIza-abcd9999" not in json.dumps(s)
     assert client.put("/api/settings", json={"provider": "nope"}).status_code == 400
+    client.put("/api/settings", json={"provider": "claude"})

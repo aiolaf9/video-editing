@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin · Video Editing AI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><a href="/" style="color:inherit;text-decoration:none">🎬 Video Editing AI</a> · Admin</div>
+  <div class="user-menu">
+    <div class="who" id="whoami"></div>
+    <a href="/">← Kembali ke editor</a>
+    <button class="linklike" id="logoutBtn">Keluar</button>
+  </div>
+</header>
+
+<div class="admin-wrap">
+  <nav class="admin-nav" id="nav">
+    <button data-sec="status" data-role="manager">📊 Status</button>
+    <button data-sec="units" data-role="manager">🏢 Unit</button>
+    <button data-sec="users" data-role="manager">👥 Pengguna</button>
+    <button data-sec="ai" data-role="admin">🤖 Pengaturan AI</button>
+    <button data-sec="akun">👤 Akun saya</button>
+  </nav>
+
+  <!-- Status -->
+  <section class="card" id="sec-status" hidden>
+    <h3>Antrean pekerjaan</h3>
+    <div class="stat-row" id="queueStats"></div>
+    <h3 style="margin-top:16px">Pemakaian 30 hari terakhir</h3>
+    <div class="table-wrap"><table class="grid" id="usageTable"></table></div>
+    <p class="hint">Bila antrean "berat" sering panjang, tambah jumlah worker di server (lihat README, bagian deploy).</p>
+  </section>
+
+  <!-- Unit -->
+  <section class="card" id="sec-units" hidden>
+    <h3>Unit / departemen</h3>
+    <div class="table-wrap"><table class="grid" id="unitTable"></table></div>
+    <form id="unitForm" class="form-grid" data-role="admin" style="margin-top:14px">
+      <label class="field">Nama unit baru <input id="unitName" required maxlength="120" placeholder="mis. Humas"></label>
+      <label class="field">Kuota render/hari (0 = bebas) <input type="number" id="unitRenderQuota" min="0" value="0"></label>
+      <label class="field">Kuota AI/hari (0 = bebas) <input type="number" id="unitAiQuota" min="0" value="0"></label>
+      <button type="submit">+ Tambah unit</button>
+    </form>
+    <div id="unitEditor" class="settings-box" hidden>
+      <h3 id="unitEditorTitle"></h3>
+      <div class="form-grid" data-role="admin">
+        <label class="field">Nama <input id="editUnitName" maxlength="120"></label>
+        <label class="field">Kuota render/hari <input type="number" id="editUnitRender" min="0"></label>
+        <label class="field">Kuota AI/hari <input type="number" id="editUnitAi" min="0"></label>
+      </div>
+      <label class="field">Guidebook gaya unit
+        <textarea id="editUnitGuidebook" rows="5" placeholder="Aturan gaya edit unit ini: nada bicara, label kartu, frekuensi animasi, dll."></textarea>
+      </label>
+      <div class="row"><button id="unitSaveBtn">Simpan</button><button class="ghost" id="unitCancelBtn">Tutup</button></div>
+    </div>
+  </section>
+
+  <!-- Pengguna -->
+  <section class="card" id="sec-users" hidden>
+    <h3>Pengguna</h3>
+    <div class="table-wrap"><table class="grid" id="userTable"></table></div>
+    <h3 style="margin-top:16px">Tambah pengguna</h3>
+    <form id="userForm" class="form-grid">
+      <label class="field">Email <input type="email" id="newEmail" required></label>
+      <label class="field">Nama <input id="newName" maxlength="120"></label>
+      <label class="field">Password awal <input type="text" id="newPassword" required minlength="8" autocomplete="off"></label>
+      <label class="field">Peran
+        <select id="newRole">
+          <option value="editor">Editor</option>
+          <option value="unit_admin">Admin Unit</option>
+          <option value="admin" data-role="admin">Admin</option>
+        </select>
+      </label>
+      <label class="field" data-role="admin">Unit <select id="newUnit"></select></label>
+      <button type="submit">+ Tambah</button>
+    </form>
+    <p class="hint">Berikan email & password awal ke pengguna, lalu minta mereka menggantinya di menu Akun.</p>
+  </section>
+
+  <!-- AI -->
+  <section class="card" id="sec-ai" hidden>
+    <h3>Penyedia AI untuk tombol 🤖 (dipakai semua unit)</h3>
+    <div class="row wrap">
+      <label class="field">Penyedia AI <select id="aiProvider"></select></label>
+      <label class="field">API key <input type="password" id="apiKey" autocomplete="off"></label>
+    </div>
+    <div class="row wrap">
+      <label class="field">Model
+        <input id="apiModel" list="modelList" placeholder="Kosongkan = dipilih otomatis">
+        <datalist id="modelList"></datalist>
+      </label>
+      <label class="field" id="baseUrlField">Base URL <input id="apiBaseUrl" placeholder="https://.../v1"></label>
+    </div>
+    <div class="row wrap">
+      <button id="settingsSaveBtn">Simpan</button>
+      <button id="modelsBtn" class="ghost">Muat daftar model</button>
+      <span id="keyStatus" class="hint"></span>
+    </div>
+    <p class="hint" id="providerHint"></p>
+    <p class="hint">API key disimpan di database server dan tidak pernah dikirim ke browser pengguna.
+      Batasi pemakaian per unit lewat "Kuota AI/hari" di menu Unit.</p>
+  </section>
+
+  <!-- Akun -->
+  <section class="card" id="sec-akun" hidden>
+    <h3>Ganti password</h3>
+    <form id="pwForm" class="form-grid">
+      <label class="field">Password lama <input type="password" id="oldPw" required autocomplete="current-password"></label>
+      <label class="field">Password baru (min. 8) <input type="password" id="newPw" required minlength="8" autocomplete="new-password"></label>
+      <label class="field">Ulangi password baru <input type="password" id="newPw2" required minlength="8" autocomplete="new-password"></label>
+      <button type="submit">Simpan password</button>
+    </form>
+    <p class="hint">Setelah diganti, semua sesi login lain (perangkat lain) otomatis keluar.</p>
+  </section>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="admin.js"></script>
+</body>
+</html>

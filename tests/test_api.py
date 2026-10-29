@@ -15,10 +15,9 @@ def _wait(client, job_id, timeout=120):
     raise AssertionError("job timeout")
 
 
-def test_upload_analyze_render_flow(sample_video, sample_music, fake_transcript, monkeypatch):
+def test_upload_analyze_render_flow(sample_video, sample_music, fake_transcript, monkeypatch, client):
     # Whisper diganti transkrip palsu agar tes cepat dan tanpa unduh model.
     monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
-    client = TestClient(main.app)
 
     assert client.get("/").status_code == 200
     assert client.get("/api/health").json()["ffmpeg"] is True
@@ -53,15 +52,14 @@ def test_upload_analyze_render_flow(sample_video, sample_music, fake_transcript,
     assert client.get(f"/api/projects/{pid}").status_code == 404
 
 
-def test_rejects_bad_input():
-    client = TestClient(main.app)
+def test_rejects_bad_input(client):
     assert client.post("/api/projects", files={"file": ("x.txt", b"hi", "text/plain")}).status_code == 400
     assert client.get("/api/projects/../../etc").status_code == 404
     assert client.get("/api/projects/zzzzzzzzzzzz").status_code == 404
     assert client.post("/api/projects/from-url", json={"url": "ftp://example.com/x"}).status_code == 400
 
 
-def test_url_import_downloads_then_analyzes(sample_video, fake_transcript, monkeypatch):
+def test_url_import_downloads_then_analyzes(sample_video, fake_transcript, monkeypatch, client):
     import shutil
 
     from app import pipeline, storage
@@ -73,7 +71,6 @@ def test_url_import_downloads_then_analyzes(sample_video, fake_transcript, monke
 
     monkeypatch.setattr(pipeline, "download", fake_download)
     monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
-    client = TestClient(main.app)
     res = client.post("/api/projects/from-url", json={"url": "https://example.com/v"}).json()
     pid = res["project"]["id"]
     assert _wait(client, res["job"]["id"])["status"] == "selesai"
@@ -87,7 +84,7 @@ def test_url_import_downloads_then_analyzes(sample_video, fake_transcript, monke
     assert [j["kind"] for j in project["jobs"]] == ["analisis", "analisis"]
 
 
-def test_failed_download_marks_project(monkeypatch):
+def test_failed_download_marks_project(monkeypatch, client):
     import yt_dlp
 
     class Boom:
@@ -97,18 +94,16 @@ def test_failed_download_marks_project(monkeypatch):
         def extract_info(self, *a, **k): raise yt_dlp.utils.DownloadError("ERROR: Video unavailable")
 
     monkeypatch.setattr(yt_dlp, "YoutubeDL", Boom)
-    client = TestClient(main.app)
     res = client.post("/api/projects/from-url", json={"url": "https://youtube.com/watch?v=x"}).json()
     job = _wait(client, res["job"]["id"])
     assert job["status"] == "gagal" and "Video unavailable" in job["error"]
     assert client.get(f"/api/projects/{res['project']['id']}").json()["status"] == "gagal"
 
 
-def test_animation_plan_endpoints_and_render(sample_video, fake_transcript, monkeypatch):
+def test_animation_plan_endpoints_and_render(sample_video, fake_transcript, monkeypatch, client):
     from app import plan
 
     monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
-    client = TestClient(main.app)
     with sample_video.open("rb") as fh:
         res = client.post("/api/projects", files={"file": ("anim.mp4", fh, "video/mp4")}).json()
     pid = res["project"]["id"]

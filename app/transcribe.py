@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import media
-from .config import WHISPER_DEVICE, WHISPER_MODEL
+from .config import WHISPER_DEVICE, WHISPER_MODEL, WHISPER_THREADS
 
 log = logging.getLogger("video-editing.transcribe")
 
@@ -19,7 +19,7 @@ def _load(device: str):
 
     compute_type = "int8" if device == "cpu" else "default"
     log.info("Memuat model Whisper '%s' di %s", WHISPER_MODEL, device)
-    return WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type)
+    return WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type, cpu_threads=WHISPER_THREADS)
 
 
 def _get_model(force_cpu: bool = False):

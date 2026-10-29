@@ -89,3 +89,40 @@ class Settings(BaseModel):
     clear_key: bool = False
     model: Optional[str] = Field(None, max_length=120)
     base_url: Optional[str] = Field(None, max_length=300, pattern=r"^(https?://.*)?$")
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class PasswordChange(BaseModel):
+    old_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=1, max_length=200)
+
+
+class UnitIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    daily_render_quota: int = Field(0, ge=0, le=100_000)
+    daily_ai_quota: int = Field(0, ge=0, le=100_000)
+    guidebook: str = Field("", max_length=4000)
+
+
+class UserCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    name: str = Field("", max_length=120)
+    password: str = Field(min_length=1, max_length=200)
+    role: Literal["admin", "unit_admin", "editor"] = "editor"
+    unit_id: Optional[str] = None
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=120)
+    role: Optional[Literal["admin", "unit_admin", "editor"]] = None
+    unit_id: Optional[str] = None
+    active: Optional[bool] = None
+    password: Optional[str] = Field(None, max_length=200)
+
+
+class GuidebookIn(BaseModel):
+    guidebook: str = Field("", max_length=4000)

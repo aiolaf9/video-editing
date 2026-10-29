@@ -3,124 +3,365 @@ import json
 import logging
 import os
 import shutil
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 
-from . import ai, clipper, pipeline, plan, storage
-from .config import DATA_DIR, FFMPEG, FONTS_DIR, FFPROBE, JOB_WORKERS, WEB_DIR, WHISPER_MODEL
-from .jobs import JobManager
-from .schemas import PlanImport, PlanItem, RangeRequest, RenderRequest, Settings, SuggestRequest, UrlImport
+from . import ai, auth, clipper, db, jobs, plan, storage
+from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
+                     MAX_PENDING_PER_USER, MAX_UPLOAD_MB, WEB_DIR, WHISPER_MODEL)
+from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
+                      RenderRequest, Settings, SuggestRequest, UnitIn, UrlImport, UserCreate, UserUpdate)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("video-editing")
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv", ".3gp", ".ts"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
-
-app = FastAPI(title="Video Editing AI", version="0.1.0")
-jobs = JobManager(JOB_WORKERS)
+CurrentUser = Depends(auth.current_user)
 
 
-def _project_or_404(pid: str) -> dict:
+# ------------------------------------------------------------------ start-up
+
+def bootstrap() -> None:
+    """Siapkan database, admin pertama (dari env), dan data dari versi lama."""
+    db.engine()
+    email, password = os.environ.get("ADMIN_EMAIL"), os.environ.get("ADMIN_PASSWORD")
+    if email and password and auth.count_users() == 0:
+        try:
+            auth.create_user(email, "Admin", password, "admin", None)
+            log.info("Admin pertama dibuat: %s", email)
+        except (HTTPException, IntegrityError):
+            pass  # proses web lain sudah membuatnya
     try:
-        return storage.load_project(pid)
+        migrate_legacy()
+    except Exception:
+        log.exception("Migrasi data lama gagal (aplikasi tetap berjalan)")
+
+
+def migrate_legacy() -> None:
+    """Proyek & pengaturan AI dari versi satu-pengguna dipindahkan ke unit 'Umum' milik admin pertama."""
+    legacy = list(storage.PROJECTS_DIR.glob("*/project.json")) if storage.PROJECTS_DIR.exists() else []
+    old_settings = DATA_DIR / "settings.json"
+    with db.engine().connect() as c:
+        admin = c.execute(select(db.users.c.id).where(db.users.c.role == "admin")
+                          .order_by(db.users.c.created).limit(1)).scalar()
+    if not admin:
+        return
+    if legacy:
+        unit_id = ensure_unit("Umum")
+        n = storage.import_legacy_projects(unit_id, admin)
+        log.info("%s proyek lama dipindahkan ke unit 'Umum'", n)
+    if old_settings.exists() and db.get_setting("ai") is None:
+        try:
+            data = json.loads(old_settings.read_text(encoding="utf-8"))
+            if "anthropic_api_key" in data:  # format paling lama (khusus Claude)
+                data = {"provider": "claude", "providers": {"claude": {
+                    "api_key": data.get("anthropic_api_key"), "model": data.get("model")}}}
+            db.set_setting("ai", {"provider": data.get("provider", "claude"), "providers": data.get("providers", {})})
+            old_settings.rename(old_settings.with_suffix(".json.migrated"))
+        except (OSError, ValueError):
+            pass
+
+
+def ensure_unit(name: str) -> str:
+    query = select(db.units.c.id).where(db.units.c.name == name)
+    with db.engine().connect() as c:
+        uid = c.execute(query).scalar()
+    if uid:
+        return uid
+    try:
+        with db.engine().begin() as c:
+            uid = storage.new_id()
+            c.execute(insert(db.units).values(id=uid, name=name, guidebook="", daily_render_quota=0,
+                                              daily_ai_quota=0, created=time.time()))
+        return uid
+    except IntegrityError:  # dibuat proses lain di saat yang sama
+        with db.engine().connect() as c:
+            return c.execute(query).scalar()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    bootstrap()
+    stop = None
+    if EMBEDDED_WORKERS:
+        from .worker import start_embedded
+        stop = start_embedded(JOB_WORKERS)
+    yield
+    if stop:
+        stop.set()
+
+
+app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)
+
+
+@app.exception_handler(OperationalError)
+async def db_unavailable(_request: Request, exc: OperationalError):
+    # Database sibuk/sedang restart: beri pesan jelas (UI akan mencoba lagi), bukan error 500 mentah.
+    log.warning("Database tidak tersedia: %s", str(exc).splitlines()[0][:200])
+    return JSONResponse({"detail": "Server sedang sibuk. Coba lagi beberapa detik lagi."}, status_code=503,
+                        headers={"Retry-After": "5"})
+
+
+@app.middleware("http")
+async def same_origin_guard(request: Request, call_next):
+    """Tolak permintaan pengubah data dari situs lain (lapisan tambahan selain cookie SameSite)."""
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+        if origin and host and urlparse(origin).netloc != host:
+            return JSONResponse({"detail": "Permintaan lintas situs ditolak."}, status_code=403)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
+
+
+# ------------------------------------------------------------------ helper
+
+def _project_for(pid: str, user: dict) -> dict:
+    try:
+        meta = storage.load_project(pid)
     except storage.NotFound:
         raise HTTPException(404, "Proyek tidak ditemukan.")
+    if not auth.can_view_project(user, meta):
+        raise HTTPException(404, "Proyek tidak ditemukan.")  # jangan bocorkan keberadaan proyek unit lain
+    return meta
 
 
-def _save_upload(upload: UploadFile, dst: Path) -> None:
-    with dst.open("wb") as fh:
-        shutil.copyfileobj(upload.file, fh, length=4 * 1024 * 1024)
+def _save_upload(upload: UploadFile, dst: Path, request: Request) -> None:
+    limit = MAX_UPLOAD_MB * 1024 * 1024
+    declared = int(request.headers.get("content-length") or 0)
+    if declared > limit + 1024 * 1024:
+        raise HTTPException(413, f"File terlalu besar. Maksimal {MAX_UPLOAD_MB} MB.")
+    written = 0
+    try:
+        with dst.open("wb") as fh:
+            while chunk := upload.file.read(4 * 1024 * 1024):
+                written += len(chunk)
+                if written > limit:
+                    raise HTTPException(413, f"File terlalu besar. Maksimal {MAX_UPLOAD_MB} MB.")
+                fh.write(chunk)
+    except HTTPException:
+        dst.unlink(missing_ok=True)
+        raise
 
 
 def _project_view(meta: dict) -> dict:
     data = dict(meta)
-    data["jobs"] = [jobs.view(j) for j in jobs.for_project(meta["id"])]
+    data["jobs"] = jobs.view_many(jobs.for_project(meta["id"]))
     return data
 
 
+def _check_pending(user: dict) -> None:
+    if jobs.pending_for_user(user["id"]) >= MAX_PENDING_PER_USER:
+        raise HTTPException(429, f"Anda sudah punya {MAX_PENDING_PER_USER} pekerjaan di antrean. "
+                                 "Tunggu sebagian selesai dulu.")
+
+
+def _unit(unit_id: Optional[str]) -> Optional[dict]:
+    if not unit_id:
+        return None
+    with db.engine().connect() as c:
+        return db.row(c.execute(select(db.units).where(db.units.c.id == unit_id)).first())
+
+
+def _check_quota(user: dict, kind: str) -> None:
+    unit = _unit(user["unit_id"])
+    if not unit:
+        return
+    limit = unit["daily_render_quota"] if kind == "render" else unit["daily_ai_quota"]
+    if limit and db.usage_count(kind, unit["id"], db.start_of_today()) >= limit:
+        what = "render" if kind == "render" else "AI"
+        raise HTTPException(429, f"Kuota {what} unit {unit['name']} hari ini ({limit}) sudah habis. "
+                                 "Hubungi admin untuk menambah kuota.")
+
+
+def _queue_job(task: str, kind: str, meta: dict, user: dict, payload: dict, label: str, queue: str = "berat") -> dict:
+    return jobs.view(jobs.submit(task, kind, meta["id"], payload, label, queue=queue,
+                                 user_id=user["id"], unit_id=meta.get("unit_id")))
+
+
+# ------------------------------------------------------------------ akun
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest, request: Request, response: Response):
+    return auth.login(request, response, body.email, body.password)
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response):
+    auth.logout(request, response)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = CurrentUser):
+    data = auth.public_user(user)
+    ai_cfg = _ai_settings()
+    provider = ai.PROVIDERS[ai_cfg["provider"]]
+    cfg = _provider_cfg(ai_cfg, ai_cfg["provider"])
+    data["ai"] = {"name": provider["name"], "ready": bool(cfg.get("api_key")) or not provider["needs_key"]}
+    data["url_import"] = ALLOW_URL_IMPORT == "all" or (ALLOW_URL_IMPORT == "admins" and user["role"] != "editor")
+    return data
+
+
+@app.post("/api/auth/password")
+def change_password(body: PasswordChange, request: Request, response: Response, user: dict = CurrentUser):
+    if not auth.verify_password(body.old_password, user["password_hash"]):
+        raise HTTPException(400, "Password lama salah.")
+    auth.check_password_rules(body.new_password)
+    with db.engine().begin() as c:
+        c.execute(update(db.users).where(db.users.c.id == user["id"])
+                  .values(password_hash=auth.hash_password(body.new_password)))
+    auth.end_user_sessions(user["id"])
+    return auth.login(request, response, user["email"], body.new_password)
+
+
+# ------------------------------------------------------------------ umum
+
 @app.get("/api/health")
 def health():
+    ok_db = True
+    try:
+        jobs.ping()
+    except Exception:
+        ok_db = False
     return {
         "ffmpeg": shutil.which(FFMPEG) is not None or Path(FFMPEG).exists(),
         "ffprobe": shutil.which(FFPROBE) is not None or Path(FFPROBE).exists(),
+        "database": ok_db,
         "whisper_model": WHISPER_MODEL,
     }
 
 
+@app.get("/api/unit")
+def my_unit(user: dict = CurrentUser):
+    unit = _unit(user["unit_id"])
+    if not unit:
+        return {"id": None, "name": None, "guidebook": "", "can_edit": False}
+    today = db.start_of_today()
+    return {**unit, "can_edit": user["role"] in ("admin", "unit_admin"),
+            "renders_today": db.usage_count("render", unit["id"], today),
+            "ai_today": db.usage_count("ai", unit["id"], today)}
+
+
+@app.put("/api/unit/guidebook")
+def set_guidebook(body: GuidebookIn, user: dict = CurrentUser):
+    auth.require_manager(user)
+    if not user["unit_id"]:
+        raise HTTPException(400, "Akun Anda tidak terhubung ke unit. Atur guidebook unit di halaman Admin.")
+    with db.engine().begin() as c:
+        c.execute(update(db.units).where(db.units.c.id == user["unit_id"]).values(guidebook=body.guidebook))
+    return my_unit(user)
+
+
+# ------------------------------------------------------------------ proyek
+
 @app.get("/api/projects")
-def list_projects():
-    return storage.list_projects()
+def list_projects(user: dict = CurrentUser, unit: Optional[str] = None):
+    if user["role"] == "admin":
+        return storage.list_projects(unit_id=unit, all_units=not unit)
+    return storage.list_projects(unit_id=user["unit_id"])
+
+
+def _target_unit(user: dict) -> Optional[str]:
+    if user["unit_id"]:
+        return user["unit_id"]
+    if user["role"] == "admin":
+        return ensure_unit("Umum")
+    raise HTTPException(400, "Akun Anda belum masuk ke unit mana pun. Hubungi admin.")
 
 
 @app.post("/api/projects")
-def upload_project(file: UploadFile = File(...), language: Optional[str] = Form(None)):
+def upload_project(request: Request, file: UploadFile = File(...), language: Optional[str] = Form(None),
+                   user: dict = CurrentUser):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in VIDEO_EXTS:
         raise HTTPException(400, f"Format {ext or '(tanpa ekstensi)'} tidak didukung.")
-    meta = storage.create_project(Path(file.filename).stem)
+    _check_pending(user)
+    meta = storage.create_project(Path(file.filename).stem, _target_unit(user), user["id"])
     pid = meta["id"]
-    _save_upload(file, storage.project_dir(pid) / f"source{ext}")
-    storage.update_project(pid, source=f"source{ext}", status="antre")
-    job = jobs.submit("analisis", pid, lambda j: pipeline.safe_analyze(j, pid, language or None), "Analisis video")
-    return {"project": storage.load_project(pid), "job": jobs.view(job)}
+    try:
+        _save_upload(file, storage.project_dir(pid) / f"source{ext}", request)
+    except HTTPException:
+        storage.delete_project(pid)
+        raise
+    meta = storage.update_project(pid, source=f"source{ext}", status="antre")
+    job = _queue_job("analyze", "analisis", meta, user, {"language": language or None}, "Analisis video")
+    return {"project": meta, "job": job}
 
 
 @app.post("/api/projects/from-url")
-def import_url(body: UrlImport):
+def import_url(body: UrlImport, user: dict = CurrentUser):
+    allowed = ALLOW_URL_IMPORT == "all" or (ALLOW_URL_IMPORT == "admins" and user["role"] != "editor")
+    if not allowed:
+        raise HTTPException(403, "Ambil video dari link dinonaktifkan. Unggah file video Anda.")
     if not body.url.startswith(("http://", "https://")):
         raise HTTPException(400, "Link harus diawali http:// atau https://")
-    meta = storage.create_project("Mengunduh...")
-    pid = meta["id"]
-    storage.update_project(pid, status="antre", url=body.url)
-
-    def run(job):
-        pipeline.download(job, pid, body.url)
-        jobs.submit("analisis", pid, lambda j: pipeline.safe_analyze(j, pid, body.language), "Analisis video")
-
-    job = jobs.submit("analisis", pid, run, "Unduh video", pool="unduh")
-    return {"project": storage.load_project(pid), "job": jobs.view(job)}
+    _check_pending(user)
+    meta = storage.create_project("Mengunduh...", _target_unit(user), user["id"])
+    meta = storage.update_project(meta["id"], status="antre", url=body.url)
+    job = _queue_job("download", "analisis", meta, user, {"url": body.url, "language": body.language},
+                     "Unduh video", queue="unduh")
+    return {"project": meta, "job": job}
 
 
 @app.get("/api/projects/{pid}")
-def get_project(pid: str):
-    return _project_view(_project_or_404(pid))
+def get_project(pid: str, user: dict = CurrentUser):
+    meta = _project_for(pid, user)
+    data = _project_view(meta)
+    data["can_delete"] = auth.can_delete_project(user, meta)
+    return data
 
 
 @app.delete("/api/projects/{pid}")
-def delete_project(pid: str):
-    _project_or_404(pid)
-    if any(j.status in ("antre", "jalan") for j in jobs.for_project(pid)):
+def delete_project(pid: str, user: dict = CurrentUser):
+    meta = _project_for(pid, user)
+    if not auth.can_delete_project(user, meta):
+        raise HTTPException(403, "Hanya pembuat proyek atau Admin Unit yang boleh menghapus.")
+    if any(j["status"] in ("antre", "jalan") for j in jobs.for_project(pid)):
         raise HTTPException(409, "Proyek masih diproses. Tunggu sampai selesai.")
     storage.delete_project(pid)
     return {"ok": True}
 
 
 @app.post("/api/projects/{pid}/reanalyze")
-def reanalyze(pid: str, language: Optional[str] = None):
-    _project_or_404(pid)
-    job = jobs.submit("analisis", pid, lambda j: pipeline.safe_analyze(j, pid, language), "Analisis ulang")
-    return jobs.view(job)
+def reanalyze(pid: str, language: Optional[str] = None, user: dict = CurrentUser):
+    meta = _project_for(pid, user)
+    if any(j["status"] in ("antre", "jalan") and j["kind"] == "analisis" for j in jobs.for_project(pid)):
+        raise HTTPException(409, "Analisis sedang berjalan.")
+    if not meta.get("source"):
+        raise HTTPException(409, "Video sumber tidak ada. Unggah ulang videonya.")
+    _check_pending(user)
+    return _queue_job("analyze", "analisis", meta, user, {"language": language}, "Analisis ulang")
 
 
 @app.get("/api/projects/{pid}/transcript")
-def get_transcript(pid: str):
-    _project_or_404(pid)
+def get_transcript(pid: str, user: dict = CurrentUser):
+    _project_for(pid, user)
     return storage.read_data(pid, "transcript", {"language": None, "segments": []})
 
 
 @app.get("/api/projects/{pid}/clips")
-def get_clips(pid: str):
-    _project_or_404(pid)
+def get_clips(pid: str, user: dict = CurrentUser):
+    _project_for(pid, user)
     return storage.read_data(pid, "clips", [])
 
 
 @app.post("/api/projects/{pid}/clips/suggest")
-def suggest_clips(pid: str, body: SuggestRequest):
-    meta = _project_or_404(pid)
+def suggest_clips(pid: str, body: SuggestRequest, user: dict = CurrentUser):
+    meta = _project_for(pid, user)
     transcript = storage.read_data(pid, "transcript")
     if transcript is None:
         raise HTTPException(409, "Video belum selesai dianalisis.")
@@ -131,8 +372,8 @@ def suggest_clips(pid: str, body: SuggestRequest):
 
 
 @app.get("/api/projects/{pid}/preview")
-def get_preview(pid: str):
-    _project_or_404(pid)
+def get_preview(pid: str, user: dict = CurrentUser):
+    _project_for(pid, user)
     path = storage.project_dir(pid) / "preview.mp4"
     if not path.exists():
         raise HTTPException(404, "Preview belum siap.")
@@ -140,34 +381,33 @@ def get_preview(pid: str):
 
 
 @app.post("/api/projects/{pid}/music")
-def upload_music(pid: str, file: UploadFile = File(...)):
-    _project_or_404(pid)
+def upload_music(pid: str, request: Request, file: UploadFile = File(...), user: dict = CurrentUser):
+    _project_for(pid, user)
     ext = Path(file.filename or "").suffix.lower()
     if ext not in AUDIO_EXTS:
         raise HTTPException(400, "Format musik harus mp3, wav, m4a, aac, ogg, flac, atau opus.")
     name = storage.safe_filename(file.filename, f"musik{ext}")
-    _save_upload(file, storage.project_dir(pid) / "music" / name)
-    meta = storage.load_project(pid)
-    if name not in meta.get("music", []):
-        storage.update_project(pid, music=[*meta.get("music", []), name])
+    _save_upload(file, storage.project_dir(pid) / "music" / name, request)
+    storage.add_music(pid, name)
     return {"file": name}
 
 
 @app.post("/api/projects/{pid}/render")
-def render_clip(pid: str, body: RenderRequest):
-    meta = _project_or_404(pid)
+def render_clip(pid: str, body: RenderRequest, user: dict = CurrentUser):
+    meta = _project_for(pid, user)
     if meta.get("status") != "siap":
         raise HTTPException(409, "Video belum selesai dianalisis.")
     if body.start >= (meta.get("duration") or 0):
         raise HTTPException(400, "Titik awal klip melebihi durasi video.")
+    _check_pending(user)
+    _check_quota(user, "render")
     label = body.title or f"Klip {body.start:.0f}s-{body.end:.0f}s"
-    job = jobs.submit("render", pid, lambda j: pipeline.render(j, pid, body), label)
-    return jobs.view(job)
+    return _queue_job("render", "render", meta, user, {"request": body.model_dump()}, label)
 
 
 @app.get("/api/projects/{pid}/renders/{file}")
-def download_render(pid: str, file: str, download: bool = False):
-    meta = _project_or_404(pid)
+def download_render(pid: str, file: str, download: bool = False, user: dict = CurrentUser):
+    meta = _project_for(pid, user)
     item = next((r for r in meta.get("renders", []) if r["file"] == file), None)
     if item is None:
         raise HTTPException(404, "Hasil render tidak ditemukan.")
@@ -177,33 +417,24 @@ def download_render(pid: str, file: str, download: bool = False):
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str):
+def get_job(job_id: str, user: dict = CurrentUser):
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(404, "Pekerjaan tidak ditemukan.")
+    _project_for(job["project_id"], user)
     return jobs.view(job)
 
 
 # ------------------------------------------------------------------ rencana animasi
 
-SETTINGS_PATH = DATA_DIR / "settings.json"
 ENV_KEYS = {"claude": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY",
             "openrouter": "OPENROUTER_API_KEY", "groq": "GROQ_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
 
 
-def _load_settings() -> dict:
-    """{"provider", "guidebook", "providers": {nama: {"api_key", "model", "base_url"}}}"""
-    data: dict = {"provider": "claude", "guidebook": "", "providers": {}}
-    if SETTINGS_PATH.exists():
-        try:
-            data.update(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError):
-            pass
-    # Format lama (hanya Claude) -> format baru.
-    if "anthropic_api_key" in data or "model" in data:
-        claude = data["providers"].setdefault("claude", {})
-        claude.setdefault("api_key", data.pop("anthropic_api_key", None))
-        claude.setdefault("model", data.pop("model", None))
+def _ai_settings() -> dict:
+    """{"provider", "providers": {nama: {"api_key", "model", "base_url"}}} (pengaturan bersama, diatur admin)."""
+    data = db.get_setting("ai") or {}
+    data.setdefault("providers", {})
     if data.get("provider") not in ai.PROVIDERS:
         data["provider"] = "claude"
     return data
@@ -216,14 +447,23 @@ def _provider_cfg(settings: dict, provider: str) -> dict:
     return cfg
 
 
-def _plan_context(pid: str, start: float, end: float) -> dict:
-    meta = _project_or_404(pid)
+def _plan_context(pid: str, start: float, end: float, user: dict) -> dict:
+    meta = _project_for(pid, user)
     if meta.get("status") != "siap":
         raise HTTPException(409, "Video belum selesai dianalisis.")
     end = min(end, meta.get("duration") or end)
     if end - start < 1:
         raise HTTPException(400, "Rentang klip tidak valid.")
-    return {"transcript": storage.read_data(pid, "transcript", {}) or {}, "start": start, "end": end}
+    unit = _unit(meta.get("unit_id"))
+    return {"transcript": storage.read_data(pid, "transcript", {}) or {}, "start": start, "end": end,
+            "guidebook": unit["guidebook"] if unit else ""}
+
+
+def _guidebook(ctx: dict, body: RangeRequest) -> str:
+    # Guidebook unit selalu dipakai agar gaya seragam; catatan tambahan dari editor ikut dikirim.
+    extra = body.guidebook.strip()
+    base = ctx["guidebook"].strip()
+    return base if not extra or extra == base else (f"{base}\n{extra}" if base else extra)
 
 
 def _save_range(pid: str, items: list[dict], start: float, end: float) -> list[dict]:
@@ -234,9 +474,10 @@ def _save_range(pid: str, items: list[dict], start: float, end: float) -> list[d
 
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(user: dict = CurrentUser):
     """Pengaturan AI tanpa membocorkan API key (hanya 4 karakter terakhir)."""
-    data = _load_settings()
+    auth.require_admin(user)
+    data = _ai_settings()
     providers = {}
     for name, info in ai.PROVIDERS.items():
         cfg = _provider_cfg(data, name)
@@ -247,16 +488,16 @@ def get_settings():
             "model": cfg.get("model") or "", "default_model": info.get("default_model", ""),
             "has_key": bool(key), "key_hint": f"...{key[-4:]}" if key else "",
         }
-    return {"provider": data["provider"], "guidebook": data.get("guidebook", ""), "providers": providers}
+    return {"provider": data["provider"], "providers": providers}
 
 
 @app.put("/api/settings")
-def put_settings(body: Settings):
+def put_settings(body: Settings, user: dict = CurrentUser):
+    auth.require_admin(user)
     if body.provider not in ai.PROVIDERS:
         raise HTTPException(400, "Penyedia AI tidak dikenal.")
-    data = _load_settings()
+    data = _ai_settings()
     data["provider"] = body.provider
-    data["guidebook"] = body.guidebook
     cfg = data["providers"].setdefault(body.provider, {})
     if body.api_key:
         cfg["api_key"] = body.api_key.strip()
@@ -264,13 +505,14 @@ def put_settings(body: Settings):
         cfg.pop("api_key", None)
     cfg["model"] = (body.model or "").strip()
     cfg["base_url"] = (body.base_url or "").strip()
-    SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return get_settings()
+    db.set_setting("ai", data)
+    return get_settings(user)
 
 
 @app.get("/api/ai/models")
-def ai_models():
-    data = _load_settings()
+def ai_models(user: dict = CurrentUser):
+    auth.require_admin(user)
+    data = _ai_settings()
     try:
         return ai.list_models(data["provider"], _provider_cfg(data, data["provider"]))
     except Exception as exc:
@@ -278,41 +520,41 @@ def ai_models():
 
 
 @app.get("/api/projects/{pid}/faces")
-def get_faces(pid: str):
-    _project_or_404(pid)
+def get_faces(pid: str, user: dict = CurrentUser):
+    _project_for(pid, user)
     return storage.read_data(pid, "faces", []) or []
 
 
 @app.get("/api/projects/{pid}/plan")
-def get_plan(pid: str):
-    _project_or_404(pid)
+def get_plan(pid: str, user: dict = CurrentUser):
+    _project_for(pid, user)
     return storage.read_data(pid, "plan", []) or []
 
 
 @app.put("/api/projects/{pid}/plan")
-def put_plan(pid: str, items: list[PlanItem]):
-    meta = _project_or_404(pid)
+def put_plan(pid: str, items: list[PlanItem], user: dict = CurrentUser):
+    meta = _project_for(pid, user)
     data = plan.normalize([i.model_dump() for i in items], 0, meta.get("duration") or 1e9)
     storage.write_data(pid, "plan", data)
     return data
 
 
 @app.post("/api/projects/{pid}/plan/auto")
-def plan_auto(pid: str, body: RangeRequest):
-    ctx = _plan_context(pid, body.start, body.end)
+def plan_auto(pid: str, body: RangeRequest, user: dict = CurrentUser):
+    ctx = _plan_context(pid, body.start, body.end, user)
     items = plan.heuristic(ctx["transcript"], storage.read_data(pid, "energy", []) or [], ctx["start"], ctx["end"])
     return _save_range(pid, items, ctx["start"], ctx["end"])
 
 
 @app.post("/api/projects/{pid}/plan/prompt")
-def plan_prompt(pid: str, body: RangeRequest):
-    ctx = _plan_context(pid, body.start, body.end)
-    return {"prompt": plan.build_prompt(ctx["transcript"], ctx["start"], ctx["end"], body.guidebook)}
+def plan_prompt(pid: str, body: RangeRequest, user: dict = CurrentUser):
+    ctx = _plan_context(pid, body.start, body.end, user)
+    return {"prompt": plan.build_prompt(ctx["transcript"], ctx["start"], ctx["end"], _guidebook(ctx, body))}
 
 
 @app.post("/api/projects/{pid}/plan/import")
-def plan_import(pid: str, body: PlanImport):
-    ctx = _plan_context(pid, body.start, body.end)
+def plan_import(pid: str, body: PlanImport, user: dict = CurrentUser):
+    ctx = _plan_context(pid, body.start, body.end, user)
     try:
         items = plan.parse_reply(body.text)
     except ValueError as exc:
@@ -324,25 +566,165 @@ def plan_import(pid: str, body: PlanImport):
 
 
 @app.post("/api/projects/{pid}/plan/ai")
-def plan_ai(pid: str, body: RangeRequest):
-    ctx = _plan_context(pid, body.start, body.end)
-    settings = _load_settings()
+def plan_ai(pid: str, body: RangeRequest, user: dict = CurrentUser):
+    ctx = _plan_context(pid, body.start, body.end, user)
+    settings = _ai_settings()
     provider = settings["provider"]
     label = ai.PROVIDERS[provider]["name"]
     cfg = _provider_cfg(settings, provider)
     if ai.PROVIDERS[provider]["needs_key"] and not cfg.get("api_key"):
-        raise HTTPException(400, f"API key {label} belum diisi. Isi di panel Animasi, atau pakai mode salin-tempel.")
+        raise HTTPException(400, f"API key {label} belum diatur admin. Pakai mode salin-tempel dulu.")
+    _check_quota(user, "ai")
     try:
-        items, model = ai.generate_plan(provider, cfg, ctx["transcript"], ctx["start"], ctx["end"], body.guidebook)
+        items, model = ai.generate_plan(provider, cfg, ctx["transcript"], ctx["start"], ctx["end"],
+                                        _guidebook(ctx, body))
     except ImportError:
         raise HTTPException(500, "Library belum lengkap. Jalankan: pip install -r requirements.txt")
     except Exception as exc:  # error API (kunci salah, kuota, jaringan) ditampilkan apa adanya
-        logging.getLogger("video-editing.plan").exception("%s API gagal", label)
+        log.exception("%s API gagal", label)
         raise HTTPException(502, f"{label} API gagal: {exc}")
-    if not cfg.get("model"):  # simpan model yang dipilih otomatis agar terlihat di UI
+    db.record_usage("ai", user["unit_id"], user["id"])
+    if not cfg.get("model"):  # simpan model yang dipilih otomatis agar terlihat di halaman admin
         settings["providers"].setdefault(provider, {})["model"] = model
-        SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        db.set_setting("ai", settings)
     return _save_range(pid, items, ctx["start"], ctx["end"])
+
+
+# ------------------------------------------------------------------ admin
+
+@app.get("/api/admin/units")
+def admin_units(user: dict = CurrentUser):
+    auth.require_manager(user)
+    q = select(db.units).order_by(db.units.c.name)
+    if user["role"] != "admin":
+        q = q.where(db.units.c.id == user["unit_id"])
+    today = db.start_of_today()
+    with db.engine().connect() as c:
+        units = [db.row(r) for r in c.execute(q)]
+        members = dict(c.execute(select(db.users.c.unit_id, func.count()).group_by(db.users.c.unit_id)).all())
+    for u in units:
+        u["members"] = members.get(u["id"], 0)
+        u["renders_today"] = db.usage_count("render", u["id"], today)
+        u["ai_today"] = db.usage_count("ai", u["id"], today)
+    return units
+
+
+@app.post("/api/admin/units")
+def create_unit(body: UnitIn, user: dict = CurrentUser):
+    auth.require_admin(user)
+    with db.engine().begin() as c:
+        if c.execute(select(db.units.c.id).where(db.units.c.name == body.name.strip())).first():
+            raise HTTPException(409, "Nama unit sudah dipakai.")
+        uid = storage.new_id()
+        c.execute(insert(db.units).values(id=uid, name=body.name.strip(), guidebook=body.guidebook,
+                                          daily_render_quota=body.daily_render_quota,
+                                          daily_ai_quota=body.daily_ai_quota, created=time.time()))
+    return _unit(uid)
+
+
+@app.put("/api/admin/units/{unit_id}")
+def edit_unit(unit_id: str, body: UnitIn, user: dict = CurrentUser):
+    auth.require_manager(user)
+    if not _unit(unit_id):
+        raise HTTPException(404, "Unit tidak ditemukan.")
+    values = {"guidebook": body.guidebook}
+    if user["role"] == "admin":  # nama & kuota hanya diatur admin pusat
+        values.update(name=body.name.strip(), daily_render_quota=body.daily_render_quota,
+                      daily_ai_quota=body.daily_ai_quota)
+    elif unit_id != user["unit_id"]:
+        raise HTTPException(403, "Anda hanya bisa mengatur unit Anda sendiri.")
+    with db.engine().begin() as c:
+        c.execute(update(db.units).where(db.units.c.id == unit_id).values(**values))
+    return _unit(unit_id)
+
+
+@app.delete("/api/admin/units/{unit_id}")
+def remove_unit(unit_id: str, user: dict = CurrentUser):
+    auth.require_admin(user)
+    with db.engine().connect() as c:
+        used = c.execute(select(func.count()).select_from(db.users).where(db.users.c.unit_id == unit_id)).scalar() \
+            + c.execute(select(func.count()).select_from(db.projects).where(db.projects.c.unit_id == unit_id)).scalar()
+    if used:
+        raise HTTPException(409, "Unit masih punya pengguna atau proyek. Pindahkan/hapus dulu.")
+    with db.engine().begin() as c:
+        c.execute(delete(db.units).where(db.units.c.id == unit_id))
+    return {"ok": True}
+
+
+@app.get("/api/admin/users")
+def admin_users(user: dict = CurrentUser):
+    auth.require_manager(user)
+    q = (select(db.users, db.units.c.name.label("unit_name"))
+         .select_from(db.users.outerjoin(db.units, db.units.c.id == db.users.c.unit_id)).order_by(db.users.c.name))
+    if user["role"] != "admin":
+        q = q.where(db.users.c.unit_id == user["unit_id"])
+    with db.engine().connect() as c:
+        return [auth.public_user(db.row(r)) for r in c.execute(q)]
+
+
+@app.post("/api/admin/users")
+def admin_create_user(body: UserCreate, user: dict = CurrentUser):
+    auth.require_manager(user)
+    unit_id = body.unit_id
+    if user["role"] != "admin":
+        if body.role == "admin":
+            raise HTTPException(403, "Admin Unit tidak bisa membuat Admin.")
+        unit_id = user["unit_id"]
+    if unit_id and not _unit(unit_id):
+        raise HTTPException(400, "Unit tidak ditemukan.")
+    return auth.public_user(auth.create_user(body.email, body.name, body.password, body.role, unit_id))
+
+
+@app.put("/api/admin/users/{user_id}")
+def admin_update_user(user_id: str, body: UserUpdate, user: dict = CurrentUser):
+    auth.require_manager(user)
+    target = auth.get_user(user_id)
+    if not target or not auth.can_manage_user(user, target):
+        raise HTTPException(404, "Pengguna tidak ditemukan.")
+    values: dict = {}
+    if body.name is not None:
+        values["name"] = body.name.strip()[:120] or target["name"]
+    if body.role is not None:
+        if user["role"] != "admin" and body.role == "admin":
+            raise HTTPException(403, "Admin Unit tidak bisa menjadikan seseorang Admin.")
+        values["role"] = body.role
+    if body.unit_id is not None and user["role"] == "admin":
+        if body.unit_id and not _unit(body.unit_id):
+            raise HTTPException(400, "Unit tidak ditemukan.")
+        values["unit_id"] = body.unit_id or None
+    if body.active is not None:
+        if user_id == user["id"] and not body.active:
+            raise HTTPException(400, "Anda tidak bisa menonaktifkan akun sendiri.")
+        values["active"] = body.active
+    if body.password:
+        auth.check_password_rules(body.password)
+        values["password_hash"] = auth.hash_password(body.password)
+    role, unit_id = values.get("role", target["role"]), values.get("unit_id", target["unit_id"])
+    if role != "admin" and not unit_id:
+        raise HTTPException(400, "Pengguna selain Admin harus masuk ke salah satu unit.")
+    if user_id == user["id"] and role != user["role"]:
+        raise HTTPException(400, "Anda tidak bisa mengubah peran akun sendiri.")
+    if values:
+        with db.engine().begin() as c:
+            c.execute(update(db.users).where(db.users.c.id == user_id).values(**values))
+    if body.password or body.active is False:
+        auth.end_user_sessions(user_id)  # paksa login ulang
+    return auth.public_user(auth.get_user(user_id))
+
+
+@app.get("/api/admin/stats")
+def admin_stats(user: dict = CurrentUser):
+    auth.require_manager(user)
+    since = time.time() - 30 * 86400
+    with db.engine().connect() as c:
+        q = select(db.usage.c.unit_id, db.usage.c.kind, func.count()).where(db.usage.c.at >= since)
+        if user["role"] != "admin":
+            q = q.where(db.usage.c.unit_id == user["unit_id"])
+        rows = c.execute(q.group_by(db.usage.c.unit_id, db.usage.c.kind)).all()
+    per_unit: dict = {}
+    for unit_id, kind, n in rows:
+        per_unit.setdefault(unit_id or "-", {})[kind] = n
+    return {"queues": jobs.queue_stats(), "last_30_days": per_unit}
 
 
 app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")

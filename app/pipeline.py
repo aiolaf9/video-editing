@@ -226,7 +226,7 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
         "created": time.time(),
         "size": out.stat().st_size,
     }
-    storage.append_to_list(pid, "renders", item)
+    storage.add_render(pid, {**item, "user_id": getattr(job, "user_id", None)})
     job.update(100, "Render selesai!")
     return item
 
