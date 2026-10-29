@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Editing AI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">🎬 Video Editing AI</div>
+  <div id="health" class="health"></div>
+</header>
+
+<div class="layout">
+  <!-- ============ Sidebar: proyek ============ -->
+  <aside class="sidebar">
+    <section class="card">
+      <h2>Video baru</h2>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="video/*" hidden>
+        <span>⬆️ Pilih atau seret file video ke sini</span>
+      </label>
+      <div class="or">atau tempel link</div>
+      <form id="urlForm" class="row">
+        <input type="url" id="urlInput" placeholder="https://youtube.com/... / instagram.com/..." required>
+        <button type="submit">Ambil</button>
+      </form>
+      <label class="field">Bahasa ucapan
+        <select id="langSelect">
+          <option value="">Deteksi otomatis</option>
+          <option value="id">Indonesia</option>
+          <option value="en">Inggris</option>
+          <option value="jv">Jawa</option>
+          <option value="ms">Melayu</option>
+        </select>
+      </label>
+    </section>
+    <section class="card">
+      <h2>Proyek</h2>
+      <ul id="projectList" class="project-list"></ul>
+    </section>
+  </aside>
+
+  <!-- ============ Area kerja ============ -->
+  <main class="workspace" id="workspace">
+    <div class="empty" id="emptyState">
+      <p>Unggah video atau tempel link untuk mulai.</p>
+      <p class="muted">Aplikasi akan membuat transkrip, mencari momen terbaik, lalu Anda pilih dan render jadi klip vertikal.</p>
+    </div>
+
+    <div id="projectView" hidden>
+      <div class="project-head">
+        <h1 id="projectTitle"></h1>
+        <div class="actions">
+          <button class="ghost" id="reanalyzeBtn">Analisis ulang</button>
+          <button class="ghost danger" id="deleteBtn">Hapus</button>
+        </div>
+      </div>
+
+      <div id="analyzeStatus" class="status" hidden>
+        <div class="status-text"></div>
+        <div class="bar"><div></div></div>
+      </div>
+
+      <div class="editor">
+        <div class="player-col">
+          <div class="player-wrap" id="playerWrap">
+            <video id="player" controls playsinline preload="metadata"></video>
+            <div class="crop-frame" id="cropFrame" hidden>
+              <div class="crop-handle" id="cropHandle" title="Seret untuk menggeser bingkai">⇔ geser</div>
+              <div class="caption" id="captionPreview"></div>
+            </div>
+          </div>
+
+          <div class="timeline" id="timeline">
+            <div class="tl-clips" id="tlClips"></div>
+            <div class="tl-sel" id="tlSel"></div>
+            <div class="tl-head" id="tlHead"></div>
+          </div>
+
+          <div class="trim">
+            <label>Awal <input type="number" id="startInput" step="0.1" min="0"></label>
+            <button class="ghost" id="setStartBtn" title="Pakai posisi video saat ini">⏮ Set awal</button>
+            <label>Akhir <input type="number" id="endInput" step="0.1" min="0"></label>
+            <button class="ghost" id="setEndBtn" title="Pakai posisi video saat ini">Set akhir ⏭</button>
+            <span class="muted" id="durLabel"></span>
+            <button id="playClipBtn">▶ Putar klip</button>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="clipsTab">✨ Klip pilihan AI</button>
+            <button class="tab" data-tab="transcriptTab">📝 Transkrip</button>
+            <button class="tab" data-tab="rendersTab">📦 Hasil render <span id="renderCount"></span></button>
+          </div>
+
+          <section class="tab-panel" id="clipsTab">
+            <div class="row wrap">
+              <label class="inline">Durasi target
+                <select id="targetSelect">
+                  <option value="15">~15 detik</option>
+                  <option value="30" selected>~30 detik</option>
+                  <option value="60">~60 detik</option>
+                  <option value="90">~90 detik</option>
+                </select>
+              </label>
+              <button class="ghost" id="suggestBtn">Cari ulang</button>
+              <span class="spacer"></span>
+              <button id="renderSelectedBtn">Render yang dicentang</button>
+            </div>
+            <ul id="clipList" class="clip-list"></ul>
+          </section>
+
+          <section class="tab-panel" id="transcriptTab" hidden>
+            <p class="muted">Klik kata untuk lompat ke posisi itu. Lalu pakai tombol "Set awal" / "Set akhir".</p>
+            <div id="transcriptBox" class="transcript"></div>
+          </section>
+
+          <section class="tab-panel" id="rendersTab" hidden>
+            <ul id="renderList" class="render-list"></ul>
+          </section>
+        </div>
+
+        <!-- ============ Panel gaya ============ -->
+        <div class="style-col">
+          <section class="card">
+            <h3>Format</h3>
+            <div class="seg" id="aspectSeg">
+              <button data-v="9:16" class="active">9:16</button>
+              <button data-v="1:1">1:1</button>
+              <button data-v="4:5">4:5</button>
+              <button data-v="16:9">16:9</button>
+              <button data-v="original">Asli</button>
+            </div>
+            <label class="field">Posisi bingkai <input type="range" id="cropX" min="0" max="1" step="0.01" value="0.5"></label>
+            <p class="hint">Seret tombol "⇔ geser" di video atau pakai slider agar wajah tetap di tengah.</p>
+          </section>
+
+          <section class="card">
+            <h3>Warna & tune</h3>
+            <label class="field">Filter
+              <select id="colorSelect">
+                <option value="none">Tanpa filter</option>
+                <option value="vivid">Vivid (cerah)</option>
+                <option value="cinematic">Cinematic</option>
+                <option value="warm">Hangat</option>
+                <option value="cool">Sejuk</option>
+                <option value="vintage">Vintage</option>
+                <option value="bw">Hitam putih</option>
+              </select>
+            </label>
+            <label class="field">Kecerahan <input type="range" id="brightness" min="-0.3" max="0.3" step="0.01" value="0"></label>
+            <label class="field">Kontras <input type="range" id="contrast" min="0.5" max="1.8" step="0.01" value="1"></label>
+            <label class="field">Saturasi <input type="range" id="saturation" min="0" max="2" step="0.01" value="1"></label>
+            <label class="field">Kecepatan
+              <select id="speedSelect">
+                <option value="0.75">0.75×</option>
+                <option value="1" selected>1×</option>
+                <option value="1.1">1.1×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+                <option value="2">2×</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="zoomCheck"> Zoom-in perlahan</label>
+            <label class="check"><input type="checkbox" id="fadeCheck" checked> Fade in/out</label>
+          </section>
+
+          <section class="card">
+            <h3>Subtitle</h3>
+            <label class="check"><input type="checkbox" id="subEnabled" checked> Tampilkan subtitle</label>
+            <label class="field">Gaya
+              <select id="subStyle">
+                <option value="karaoke">Karaoke (kata aktif berwarna)</option>
+                <option value="pop">Pop (kata aktif membesar)</option>
+                <option value="word">Satu kata (animasi muncul)</option>
+                <option value="simple">Sederhana</option>
+              </select>
+            </label>
+            <label class="field">Font
+              <select id="subFont">
+                <option>Arial</option>
+                <option>Montserrat</option>
+                <option>Poppins</option>
+                <option>Anton</option>
+                <option>Bebas Neue</option>
+                <option>Impact</option>
+              </select>
+            </label>
+            <div class="row">
+              <label class="field">Warna <input type="color" id="subColor" value="#ffffff"></label>
+              <label class="field">Sorotan <input type="color" id="subHighlight" value="#ffe600"></label>
+            </div>
+            <label class="field">Ukuran <input type="range" id="subSize" min="0.5" max="2" step="0.05" value="1"></label>
+            <label class="field">Kata per baris <input type="range" id="subWords" min="1" max="6" step="1" value="3"></label>
+            <label class="field">Posisi
+              <select id="subPosition">
+                <option value="bottom">Bawah</option>
+                <option value="middle">Tengah</option>
+                <option value="top">Atas</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="subUpper" checked> HURUF BESAR</label>
+          </section>
+
+          <section class="card">
+            <h3>Backsound</h3>
+            <label class="field">Musik
+              <select id="musicSelect"><option value="">Tanpa musik</option></select>
+            </label>
+            <label class="ghost-btn">
+              <input type="file" id="musicInput" accept="audio/*" hidden> + Unggah musik
+            </label>
+            <label class="field">Volume musik <input type="range" id="musicVolume" min="0" max="1" step="0.01" value="0.25"></label>
+            <label class="check"><input type="checkbox" id="duckCheck" checked> Kecilkan musik saat ada suara</label>
+            <label class="check"><input type="checkbox" id="normCheck" checked> Samakan volume (standar TikTok/Reels)</label>
+          </section>
+
+          <section class="card">
+            <h3>Render</h3>
+            <label class="field">Akselerasi
+              <select id="encoderSelect">
+                <option value="cpu">CPU (paling kompatibel)</option>
+                <option value="nvidia">GPU NVIDIA</option>
+                <option value="intel">GPU Intel</option>
+                <option value="amd">GPU AMD</option>
+                <option value="mac">Mac (VideoToolbox)</option>
+              </select>
+            </label>
+            <button class="big" id="renderBtn">🎬 Render klip ini</button>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
