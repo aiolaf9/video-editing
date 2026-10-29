@@ -14,19 +14,38 @@ import time
 import traceback
 from typing import Optional
 
-from sqlalchemy import select
 
-from . import db, jobcontrol, jobs, pipeline, storage
-from .config import (CANCEL_GRACE, DOWNLOAD_TIMEOUT, JOB_TIMEOUT_MAX, RENDER_TIMEOUT_BASE, RENDER_TIMEOUT_PER_SEC,
-                     RETENTION_DAYS)
+from . import db, jobcontrol, jobs, lifecycle, pipeline, storage
+from .config import (CANCEL_GRACE, CLEANUP_INTERVAL, DOWNLOAD_TIMEOUT, JOB_TIMEOUT_MAX, RENDER_TIMEOUT_BASE,
+                     RENDER_TIMEOUT_PER_SEC, RETENTION_DAYS)
 from .schemas import RenderRequest
 
 log = logging.getLogger("video-editing.worker")
 LOCAL_PREFIX = "lokal-"   # nama worker bawaan (thread di dalam proses web)
 
 
+def _media_ready(pid: str) -> None:
+    """Pastikan media proyek masih ada sebelum mulai. `menghapus` bisa sesaat (pembersih membatalkan
+    penghapusan karena melihat job ini), jadi ditunggu sebentar."""
+    for _ in range(20):
+        state = lifecycle.info(pid)["state"]
+        if state != "menghapus":
+            break
+        time.sleep(0.5)
+    lifecycle.require_available(pid)
+    lifecycle.ensure_disk()
+
+
+def _friendly_error(exc: BaseException) -> str:
+    text = str(exc) or exc.__class__.__name__
+    if "No space left on device" in text or getattr(exc, "errno", None) == 28:
+        return "Ruang disk server penuh saat memproses. Coba lagi nanti atau hubungi admin."
+    return text
+
+
 def _run_task(job: jobs.Job):
     pid, p = job.project_id, job.payload
+    _media_ready(pid)
     if job.task == "analyze":
         result = pipeline.safe_analyze(job, pid, p.get("language"))
         db.record_usage("analyze", job.unit_id, job.user_id)
@@ -104,6 +123,7 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False) -> boo
         if not abandoned.is_set():
             jobs.finish(job.id, result=result)
             log.info("[%s] selesai %s", name, job.id)
+        _refresh_size(job.project_id)
     except jobcontrol.JobCancelled as exc:
         log.info("[%s] %s %s", name, exc.reason, job.id)
         if exc.reason == "shutdown":
@@ -112,42 +132,44 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False) -> boo
             jobs.finish(job.id, error=exc.message, cancelled=exc.reason == "dibatalkan")
     except storage.NotFound:
         jobs.finish(job.id, error="Proyek sudah dihapus.")
+    except lifecycle.MediaGone:
+        jobs.finish(job.id, error="Media proyek sudah dihapus otomatis (melewati masa simpan).")
+    except lifecycle.StorageFull as exc:
+        jobs.finish(job.id, error=str(exc))
     except Exception as exc:
         log.error("[%s] gagal %s:\n%s", name, job.id, traceback.format_exc())
         if not abandoned.is_set():
-            jobs.finish(job.id, error=str(exc) or exc.__class__.__name__)
+            jobs.finish(job.id, error=_friendly_error(exc))
+        _refresh_size(job.project_id)
     finally:
         done.set()
     return True
 
 
-def cleanup_old_projects() -> int:
-    if RETENTION_DAYS <= 0:
-        return 0
-    cutoff = time.time() - RETENTION_DAYS * 86400
-    with db.engine().connect() as c:
-        old = [r[0] for r in c.execute(select(db.projects.c.id).where(db.projects.c.created < cutoff))]
-    for pid in old:
-        if not any(j["status"] in jobs.ACTIVE for j in jobs.for_project(pid)):
-            storage.delete_project(pid)
-    if old:
-        log.info("Membersihkan %s proyek lebih tua dari %s hari", len(old), RETENTION_DAYS)
-    return len(old)
+def _refresh_size(pid: str) -> None:
+    try:
+        lifecycle.refresh_bytes(pid)
+    except Exception:  # proyek dihapus di tengah jalan, dsb.
+        pass
 
 
 def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[threading.Event] = None,
          poll: float = 1.0, standalone: bool = False) -> None:
     name = name or f"{socket.gethostname()}-{os.getpid()}-{'+'.join(queues)}"
     stop = stop or threading.Event()
-    last_maintenance = 0.0
+    last_maintenance = last_sweep = 0.0
     log.info("Worker %s siap (antrean: %s)", name, ", ".join(queues))
+    if RETENTION_DAYS:
+        log.warning("RETENTION_DAYS tidak dipakai lagi; masa simpan media diatur MEDIA_RETENTION_HOURS/"
+                    "MEDIA_MAX_HOURS (P2).")
     while not stop.is_set():
         try:
             if time.time() - last_maintenance > 60:
                 last_maintenance = time.time()
                 jobs.requeue_stale()
-                if "berat" in queues:
-                    cleanup_old_projects()
+            if "berat" in queues and time.time() - last_sweep > CLEANUP_INTERVAL:
+                last_sweep = time.time()
+                lifecycle.sweep()  # hanya satu worker yang benar-benar bekerja (advisory lock)
             if not run_one(queues, name, standalone):
                 stop.wait(poll)
         except Exception:

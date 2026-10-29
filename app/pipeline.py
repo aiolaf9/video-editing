@@ -88,6 +88,8 @@ def _download(job: Job, pid: str, url: str, folder: Path, opts: dict, yt_dlp) ->
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except Exception as exc:
+        for leftover in folder.glob("source.*"):  # unduhan gagal: buang potongan file
+            leftover.unlink(missing_ok=True)
         storage.update_project(pid, status="gagal", name="Unduhan gagal")
         msg = str(exc).replace("ERROR: ", "")
         if "instagram" in url.lower() and ("login" in msg.lower() or "cookies" in msg.lower()):
@@ -253,6 +255,8 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
         raise
     finally:
         shutil.rmtree(overlay_dir, ignore_errors=True)
+    if subs is not None:
+        subs.unlink(missing_ok=True)  # subtitle sudah dibakar ke video; file .ass tidak diperlukan lagi
 
     item = {
         "id": rid,

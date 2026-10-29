@@ -64,13 +64,18 @@ class Job:
 
 
 def submit(task: str, kind: str, project_id: str, payload: dict, label: str = "",
-           queue: str = "berat", user_id: Optional[str] = None, unit_id: Optional[str] = None) -> dict:
+           queue: str = "berat", user_id: Optional[str] = None, unit_id: Optional[str] = None,
+           conn=None) -> dict:
+    """Masukkan job ke antrean. `conn`: transaksi yang sudah berjalan (mis. lifecycle.reserve)."""
     jid = new_id()
+    values = dict(id=jid, task=task, kind=kind, queue=queue, project_id=project_id, user_id=user_id, unit_id=unit_id,
+                  label=label[:200], payload=json.dumps(payload, ensure_ascii=False), status="antre", progress=0,
+                  message="Menunggu giliran...", attempts=0, created=time.time())
+    if conn is not None:
+        conn.execute(insert(db.jobs).values(**values))
+        return db.row(conn.execute(select(db.jobs).where(db.jobs.c.id == jid)).first())
     with db.engine().begin() as c:
-        c.execute(insert(db.jobs).values(
-            id=jid, task=task, kind=kind, queue=queue, project_id=project_id, user_id=user_id, unit_id=unit_id,
-            label=label[:200], payload=json.dumps(payload, ensure_ascii=False), status="antre", progress=0,
-            message="Menunggu giliran...", attempts=0, created=time.time()))
+        c.execute(insert(db.jobs).values(**values))
     return get(jid)
 
 

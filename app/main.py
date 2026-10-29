@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,14 +16,22 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from . import ai, auth, clipper, db, jobs, plan, storage
+from . import ai, auth, clipper, db, jobs, lifecycle, plan, storage
 from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
-                     MAX_PENDING_PER_USER, MAX_UPLOAD_MB, WEB_DIR, WHISPER_MODEL)
+                     MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS, UPLOAD_TMP_DIR,
+                     WEB_DIR, WHISPER_MODEL)
 from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
                       RenderRequest, Settings, SuggestRequest, UnitIn, UrlImport, UserCreate, UserUpdate)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("video-editing")
+
+# Upload multipart ditampung Starlette di file sementara: arahkan ke disk data (bukan /tmp sistem)
+# supaya ikut terhitung oleh penjaga disk dan dibersihkan pembersih media.
+tempfile.tempdir = str(UPLOAD_TMP_DIR)
+MEDIA_GONE = ("Media proyek ini sudah dihapus otomatis karena melewati masa simpan "
+              f"({MEDIA_RETENTION_HOURS:.0f} jam sejak aktivitas terakhir, maksimal {MEDIA_MAX_HOURS:.0f} jam "
+              "sejak upload). Proyek tidak bisa dibuka kembali; unggah ulang videonya untuk mengedit lagi.")
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv", ".3gp", ".ts"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
@@ -108,6 +117,40 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)
 
 
+@app.exception_handler(lifecycle.MediaGone)
+async def media_gone(_request: Request, _exc: lifecycle.MediaGone):
+    return JSONResponse({"detail": MEDIA_GONE, "media_gone": True}, status_code=410)
+
+
+@app.exception_handler(lifecycle.StorageFull)
+async def storage_full(_request: Request, exc: lifecycle.StorageFull):
+    return JSONResponse({"detail": str(exc), "storage_full": True}, status_code=507)
+
+
+def _is_upload(request: Request) -> bool:
+    path = request.url.path.rstrip("/")
+    return request.method == "POST" and (path == "/api/projects" or
+                                         (path.startswith("/api/projects/") and path.endswith("/music")))
+
+
+@app.middleware("http")
+async def upload_capacity_guard(request: Request, call_next):
+    """Cek disk & kuota SEBELUM isi upload diterima (Starlette menulis seluruh isi ke disk dulu)."""
+    if _is_upload(request):
+        size = int(request.headers.get("content-length") or 0)
+        try:
+            lifecycle.ensure_disk(size)
+            try:
+                user = auth.current_user(request)
+            except HTTPException:
+                user = None  # biarkan endpoint yang menolak (401)
+            if user is not None:
+                lifecycle.ensure_quota(_unit(user["unit_id"]), size)
+        except lifecycle.StorageFull as exc:
+            return JSONResponse({"detail": str(exc), "storage_full": True}, status_code=507)
+    return await call_next(request)
+
+
 @app.exception_handler(OperationalError)
 async def db_unavailable(_request: Request, exc: OperationalError):
     # Database sibuk/sedang restart: beri pesan jelas (UI akan mencoba lagi), bukan error 500 mentah.
@@ -155,8 +198,10 @@ def _save_upload(upload: UploadFile, dst: Path, request: Request) -> None:
                 written += len(chunk)
                 if written > limit:
                     raise HTTPException(413, f"File terlalu besar. Maksimal {MAX_UPLOAD_MB} MB.")
+                if written % (64 * 1024 * 1024) < len(chunk):
+                    lifecycle.ensure_disk()  # disk bisa terisi pekerjaan lain selama upload besar
                 fh.write(chunk)
-    except HTTPException:
+    except (HTTPException, lifecycle.StorageFull, OSError):
         dst.unlink(missing_ok=True)
         raise
 
@@ -164,6 +209,7 @@ def _save_upload(upload: UploadFile, dst: Path, request: Request) -> None:
 def _project_view(meta: dict) -> dict:
     data = dict(meta)
     data["jobs"] = jobs.view_many(jobs.for_project(meta["id"]))
+    data["media"] = lifecycle.info(meta["id"])  # baca saja: tidak memperpanjang masa simpan
     return data
 
 
@@ -192,8 +238,12 @@ def _check_quota(user: dict, kind: str) -> None:
 
 
 def _queue_job(task: str, kind: str, meta: dict, user: dict, payload: dict, label: str, queue: str = "berat") -> dict:
-    return jobs.view(jobs.submit(task, kind, meta["id"], payload, label, queue=queue,
-                                 user_id=user["id"], unit_id=meta.get("unit_id")))
+    """Ajukan job atas media proyek: dikunci terhadap pembersihan (lease) dan dihitung sebagai aktivitas."""
+    lifecycle.ensure_disk()
+    with lifecycle.reserve(meta["id"]) as conn:
+        job = jobs.submit(task, kind, meta["id"], payload, label, queue=queue,
+                          user_id=user["id"], unit_id=meta.get("unit_id"), conn=conn)
+    return jobs.view(job)
 
 
 # ------------------------------------------------------------------ akun
@@ -275,8 +325,13 @@ def set_guidebook(body: GuidebookIn, user: dict = CurrentUser):
 @app.get("/api/projects")
 def list_projects(user: dict = CurrentUser, unit: Optional[str] = None):
     if user["role"] == "admin":
-        return storage.list_projects(unit_id=unit, all_units=not unit)
-    return storage.list_projects(unit_id=user["unit_id"])
+        items = storage.list_projects(unit_id=unit, all_units=not unit)
+    else:
+        items = storage.list_projects(unit_id=user["unit_id"])
+    media = lifecycle.info_many([p["id"] for p in items])
+    for p in items:
+        p["media"] = media[p["id"]]
+    return items
 
 
 def _target_unit(user: dict) -> Optional[str]:
@@ -294,13 +349,16 @@ def upload_project(request: Request, file: UploadFile = File(...), language: Opt
     if ext not in VIDEO_EXTS:
         raise HTTPException(400, f"Format {ext or '(tanpa ekstensi)'} tidak didukung.")
     _check_pending(user)
-    meta = storage.create_project(Path(file.filename).stem, _target_unit(user), user["id"])
+    unit_id = _target_unit(user)
+    lifecycle.ensure_disk()
+    meta = storage.create_project(Path(file.filename).stem, unit_id, user["id"])
     pid = meta["id"]
     try:
         _save_upload(file, storage.project_dir(pid) / f"source{ext}", request)
-    except HTTPException:
-        storage.delete_project(pid)
+    except BaseException:
+        storage.delete_project(pid)  # upload gagal/terputus: jangan tinggalkan proyek & file setengah jadi
         raise
+    lifecycle.refresh_bytes(pid)
     meta = storage.update_project(pid, source=f"source{ext}", status="antre")
     job = _queue_job("analyze", "analisis", meta, user, {"language": language or None}, "Analisis video")
     return {"project": meta, "job": job}
@@ -314,7 +372,10 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
     if not body.url.startswith(("http://", "https://")):
         raise HTTPException(400, "Link harus diawali http:// atau https://")
     _check_pending(user)
-    meta = storage.create_project("Mengunduh...", _target_unit(user), user["id"])
+    unit_id = _target_unit(user)
+    lifecycle.ensure_disk()
+    lifecycle.ensure_quota(_unit(unit_id))
+    meta = storage.create_project("Mengunduh...", unit_id, user["id"])
     meta = storage.update_project(meta["id"], status="antre", url=body.url)
     job = _queue_job("download", "analisis", meta, user, {"url": body.url, "language": body.language},
                      "Unduh video", queue="unduh")
@@ -369,6 +430,7 @@ def suggest_clips(pid: str, body: SuggestRequest, user: dict = CurrentUser):
     transcript = storage.read_data(pid, "transcript")
     if transcript is None:
         raise HTTPException(409, "Video belum selesai dianalisis.")
+    lifecycle.touch(pid)
     clips = clipper.suggest(transcript, storage.read_data(pid, "energy", []),
                             meta.get("duration") or 0, body.target, body.top_n)
     storage.write_data(pid, "clips", clips)
@@ -378,6 +440,7 @@ def suggest_clips(pid: str, body: SuggestRequest, user: dict = CurrentUser):
 @app.get("/api/projects/{pid}/preview")
 def get_preview(pid: str, user: dict = CurrentUser):
     _project_for(pid, user)
+    lifecycle.require_available(pid)  # memutar preview tidak memperpanjang masa simpan
     path = storage.project_dir(pid) / "preview.mp4"
     if not path.exists():
         raise HTTPException(404, "Preview belum siap.")
@@ -390,9 +453,11 @@ def upload_music(pid: str, request: Request, file: UploadFile = File(...), user:
     ext = Path(file.filename or "").suffix.lower()
     if ext not in AUDIO_EXTS:
         raise HTTPException(400, "Format musik harus mp3, wav, m4a, aac, ogg, flac, atau opus.")
+    lifecycle.touch(pid)
     name = storage.safe_filename(file.filename, f"musik{ext}")
     _save_upload(file, storage.project_dir(pid) / "music" / name, request)
     storage.add_music(pid, name)
+    lifecycle.refresh_bytes(pid)
     return {"file": name}
 
 
@@ -415,7 +480,13 @@ def download_render(pid: str, file: str, download: bool = False, user: dict = Cu
     item = next((r for r in meta.get("renders", []) if r["file"] == file), None)
     if item is None:
         raise HTTPException(404, "Hasil render tidak ditemukan.")
+    if download:
+        lifecycle.touch(pid)  # mengunduh = aktivitas pengguna (memutar di halaman tidak)
+    else:
+        lifecycle.require_available(pid)
     path = storage.project_dir(pid) / "renders" / item["file"]
+    if not path.exists():
+        raise HTTPException(410, "File hasil render ini sudah tidak tersedia.")
     name = storage.safe_filename(item["title"], "klip") + ".mp4"
     return FileResponse(path, media_type="video/mp4", filename=name if download else None)
 
@@ -472,6 +543,7 @@ def _plan_context(pid: str, start: float, end: float, user: dict) -> dict:
     meta = _project_for(pid, user)
     if meta.get("status") != "siap":
         raise HTTPException(409, "Video belum selesai dianalisis.")
+    lifecycle.touch(pid)  # membuat/menyunting animasi = aktivitas pengguna
     end = min(end, meta.get("duration") or end)
     if end - start < 1:
         raise HTTPException(400, "Rentang klip tidak valid.")
@@ -555,6 +627,7 @@ def get_plan(pid: str, user: dict = CurrentUser):
 @app.put("/api/projects/{pid}/plan")
 def put_plan(pid: str, items: list[PlanItem], user: dict = CurrentUser):
     meta = _project_for(pid, user)
+    lifecycle.touch(pid)
     data = plan.normalize([i.model_dump() for i in items], 0, meta.get("duration") or 1e9)
     storage.write_data(pid, "plan", data)
     return data

@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from sqlalchemy import delete, insert, select, update
 
-from . import db
+from . import db, lifecycle
 from .config import PROJECTS_DIR
 
 _ID_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -49,10 +49,13 @@ def create_project(name: str, unit_id: Optional[str] = None, owner_id: Optional[
     path = PROJECTS_DIR / pid
     (path / "renders").mkdir(parents=True)
     (path / "music").mkdir()
+    now = time.time()
     with db.engine().begin() as c:
         c.execute(insert(db.projects).values(id=pid, unit_id=unit_id, owner_id=owner_id,
                                              name=(name or "Video tanpa judul")[:200], status="baru",
-                                             created=time.time()))
+                                             created=now))
+        # Proyek baru selalu masuk siklus media sementara (dihapus otomatis setelah masa simpan).
+        lifecycle.register(pid, now, conn=c)
     return load_project(pid)
 
 
@@ -126,6 +129,7 @@ def delete_project(pid: str) -> None:
         c.execute(delete(db.renders).where(db.renders.c.project_id == pid))
         c.execute(delete(db.music).where(db.music.c.project_id == pid))
         c.execute(delete(db.jobs).where(db.jobs.c.project_id == pid))
+        lifecycle.drop_project(pid, c)
         c.execute(delete(db.projects).where(db.projects.c.id == pid))
     shutil.rmtree(PROJECTS_DIR / pid, ignore_errors=True)
 

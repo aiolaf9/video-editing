@@ -7,8 +7,8 @@ import json
 import time
 from typing import Any, Optional
 
-from sqlalchemy import (Boolean, Column, Float, ForeignKey, Integer, MetaData, String, Table, Text,
-                        create_engine, event, func, select, text)
+from sqlalchemy import (BigInteger, Boolean, Column, Float, ForeignKey, Integer, MetaData, String, Table, Text,
+                        create_engine, event, func, inspect, select, text)
 from sqlalchemy.engine import Engine
 
 from .config import DATABASE_URL, DB_MAX_OVERFLOW, DB_POOL_SIZE
@@ -23,6 +23,8 @@ units = Table(
     Column("daily_render_quota", Integer, nullable=False, default=0),   # 0 = tanpa batas
     Column("daily_ai_quota", Integer, nullable=False, default=0),
     Column("created", Float, nullable=False),
+    # Ditambahkan P2. NULL = pakai STORAGE_QUOTA_MB_DEFAULT, 0 = tanpa batas.
+    Column("storage_quota_mb", Integer, nullable=True),
 )
 
 users = Table(
@@ -91,6 +93,21 @@ music = Table(
     Column("name", String(150), primary_key=True),
 )
 
+# Siklus hidup media sementara (P2). Satu baris per proyek; proyek tanpa baris = proyek lama
+# yang belum dimigrasikan dan TIDAK pernah dihapus otomatis.
+project_media = Table(
+    "project_media", metadata,
+    Column("project_id", String(12), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    Column("uploaded_at", Float, nullable=False),
+    Column("last_activity", Float, nullable=False),
+    Column("grace_until", Float, nullable=True),      # masa tenggang migrasi proyek lama
+    Column("state", String(10), nullable=False, index=True),  # tersedia | menghapus | dihapus
+    Column("bytes", BigInteger, nullable=False, default=0),
+    Column("state_changed", Float, nullable=True),
+    Column("deleted_at", Float, nullable=True),
+    Column("delete_reason", String(20), nullable=True),
+)
+
 jobs = Table(
     "jobs", metadata,
     Column("id", String(12), primary_key=True),
@@ -147,6 +164,8 @@ def engine() -> Engine:
                 cur.execute("PRAGMA busy_timeout=30000")
                 cur.close()
             metadata.create_all(_engine)
+            with _engine.begin() as conn:
+                _add_missing_columns(conn)
         else:
             # Permintaan yang melebihi pool menunggu giliran (pool_timeout), bukan membuka koneksi baru,
             # sehingga lonjakan pengguna tidak membuat PostgreSQL kehabisan koneksi.
@@ -156,7 +175,22 @@ def engine() -> Engine:
             with _engine.begin() as conn:
                 conn.execute(text("SELECT pg_advisory_xact_lock(727274)"))
                 metadata.create_all(conn)
+                _add_missing_columns(conn)
     return _engine
+
+
+# Kolom yang ditambahkan setelah rilis pertama: (tabel, kolom, tipe SQL). Hanya kolom NULLABLE
+# (aman & mundur-kompatibel). Sementara sampai Alembic dipasang (Phase 1 / P5).
+ADDED_COLUMNS = [
+    ("units", "storage_quota_mb", "INTEGER"),
+]
+
+
+def _add_missing_columns(conn) -> None:
+    existing = {t: {c["name"] for c in inspect(conn).get_columns(t)} for t, _, _ in ADDED_COLUMNS}
+    for table, column, sql_type in ADDED_COLUMNS:
+        if column not in existing[table]:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
 
 
 def is_postgres() -> bool:

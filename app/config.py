@@ -60,5 +60,24 @@ MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "4096"))
 MAX_PENDING_PER_USER = int(os.environ.get("MAX_PENDING_PER_USER", "5"))
 # Ambil video dari link (YouTube, dll.): all | admins | none
 ALLOW_URL_IMPORT = os.environ.get("ALLOW_URL_IMPORT", "all")
-# Hapus file proyek lebih tua dari N hari (0 = tidak pernah)
+# DIGANTI oleh siklus media sementara (P2). Hanya dibaca untuk peringatan bila masih diisi.
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "0"))
+
+# ---- Media sementara (P2) ----
+# Video, preview, hasil render & musik dihapus otomatis: RETENTION jam sejak aktivitas terakhir
+# pengguna, paling lama MAX jam sejak upload. Metadata (akun, proyek, guidebook) tetap disimpan.
+MEDIA_LIFECYCLE = os.environ.get("MEDIA_LIFECYCLE", "on") == "on"
+MEDIA_RETENTION_HOURS = float(os.environ.get("MEDIA_RETENTION_HOURS", "24"))
+MEDIA_MAX_HOURS = float(os.environ.get("MEDIA_MAX_HOURS", "72"))
+MEDIA_WARN_HOURS = float(os.environ.get("MEDIA_WARN_HOURS", "3"))       # tampilkan peringatan di UI
+CLEANUP_INTERVAL = float(os.environ.get("CLEANUP_INTERVAL", "300"))       # detik antar pembersihan
+TEMP_FILE_GRACE_MINUTES = float(os.environ.get("TEMP_FILE_GRACE_MINUTES", "30"))  # umur min. file sisa
+INCOMPLETE_UPLOAD_HOURS = float(os.environ.get("INCOMPLETE_UPLOAD_HOURS", "2"))
+# Perlindungan disk: sisakan minimal sebanyak ini. Upload/render baru ditolak bila kurang.
+DISK_MIN_FREE_MB = float(os.environ.get("DISK_MIN_FREE_MB", "2048"))
+DISK_MIN_FREE_PCT = float(os.environ.get("DISK_MIN_FREE_PCT", "5"))
+# Kuota media sementara per workspace/unit (MB). 0 = tanpa batas. Bisa diatur per unit di Admin.
+STORAGE_QUOTA_MB_DEFAULT = float(os.environ.get("STORAGE_QUOTA_MB_DEFAULT", "0"))
+# File upload sementara (multipart) ditulis di disk data, bukan /tmp sistem: ikut terhitung & dibersihkan.
+UPLOAD_TMP_DIR = DATA_DIR / "tmp"
+UPLOAD_TMP_DIR.mkdir(parents=True, exist_ok=True)
