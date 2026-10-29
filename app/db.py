@@ -228,6 +228,7 @@ ADDED_COLUMNS = [
 ADDED_INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_jobs_queue_status ON jobs (queue, status)",
     "CREATE INDEX IF NOT EXISTS ix_jobs_queue_started ON jobs (queue, started)",
+    "CREATE INDEX IF NOT EXISTS ix_jobs_queue_finished ON jobs (queue, finished)",  # metrik monitoring
 ]
 
 

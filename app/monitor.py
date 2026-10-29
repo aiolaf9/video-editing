@@ -27,6 +27,8 @@ def register(name: str, queues: tuple[str, ...]) -> None:
     values = dict(host=HOST, pid=os.getpid(), queues=",".join(queues)[:60], state="idle", reason=None, job_id=None,
                   threads=resources.cpu_threads(), started=now, heartbeat=now)
     with db.engine().begin() as c:
+        # Worker yang sudah lama mati (> 1 hari) dihapus di sini, bukan saat monitoring dibaca.
+        c.execute(delete(db.workers).where(db.workers.c.heartbeat < now - 86400))
         if not c.execute(update(db.workers).where(db.workers.c.name == name).values(**values)).rowcount:
             c.execute(insert(db.workers).values(name=name, jobs_ok=0, jobs_failed=0, **values))
 
@@ -63,11 +65,9 @@ def busy_on_host(exclude: str, now: Optional[float] = None) -> tuple[int, int]:
 def list_workers(now: Optional[float] = None) -> list[dict]:
     now = now or time.time()
     w = db.workers.c
-    with db.engine().connect() as c:
-        # Worker yang sudah lama mati (> 1 hari) tidak ditampilkan lagi.
-        c.execute(delete(db.workers).where(w.heartbeat < now - 86400))
-        c.commit()
-        rows = [db.row(r) for r in c.execute(select(db.workers).order_by(w.queues, w.name))]
+    with db.engine().connect() as c:  # hanya membaca: monitoring tidak boleh menambah beban tulis
+        rows = [db.row(r) for r in c.execute(select(db.workers).where(w.heartbeat >= now - 86400)
+                                             .order_by(w.queues, w.name))]
     for r in rows:
         r["alive"] = r["heartbeat"] >= now - alive_after() and r["state"] != "berhenti"
         r["heartbeat_age"] = round(now - r["heartbeat"], 1)

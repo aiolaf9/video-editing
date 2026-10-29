@@ -44,14 +44,16 @@ services:
       timeout: 10s
       retries: 3
 
-  # Worker dipisah per antrean (P3) agar analisis video panjang tidak menahan render pendek.
-  # Batas CPU/RAM per container: worker tidak bisa menghabiskan resource server; thread FFmpeg/Whisper
-  # otomatis mengikuti batas `cpus` (lihat app/resources.py). Sesuaikan dengan kelas server di DEPLOY.md.
+  # Worker per antrean (P3). Konfigurasi hibrida (paling seimbang di benchmark, lihat bench/RESULTS_P3.md):
+  # worker-analisis mengutamakan analisis dan ikut merender bila tidak ada analisis; worker-render khusus
+  # render sehingga render pendek tidak pernah tertahan transkripsi panjang.
+  # Batas CPU/RAM per container: thread FFmpeg/Whisper otomatis mengikuti batas `cpus` (app/resources.py).
+  # Sesuaikan dengan kelas server di DEPLOY.md.
   worker-analisis:
     <<: *app
-    command: ["python", "-m", "app.worker", "--queues", "analisis"]
+    command: ["sh", "-c", "exec python -m app.worker --queues ${ANALYSIS_QUEUES:-analisis,render}"]
     deploy:
-      replicas: ${ANALYSIS_WORKERS:-1}
+      replicas: ${ANALYSIS_WORKERS:-2}
     cpus: ${ANALYSIS_CPUS:-2}
     cpu_shares: 256          # saat CPU diperebutkan: render (1024) didahulukan, analisis memakai sisa
     mem_limit: ${ANALYSIS_MEM:-3g}

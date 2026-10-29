@@ -266,17 +266,18 @@ def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[thr
 
 
 def start_embedded(render_workers: int) -> threading.Event:
-    """Worker sebagai thread di dalam proses web (mode satu komputer): satu set per antrean, sehingga
-    analisis panjang tidak menahan render."""
+    """Worker sebagai thread di dalam proses web (mode satu komputer). Worker render khusus render, sehingga
+    analisis panjang tidak menahan render; worker analisis ikut merender bila tidak ada analisis
+    (konfigurasi hibrida, terukur paling seimbang di benchmark P3)."""
     # Sisa pekerjaan saat aplikasi lokal ditutup. Hanya milik worker lokal: job worker server lain aman.
     jobs.migrate_legacy_queues()
     jobs.requeue_stale(all_running=True, worker_prefix=LOCAL_PREFIX)
     stop = threading.Event()
-    specs = [("analisis", f"{LOCAL_PREFIX}analisis-{i + 1}") for i in range(max(1, ANALYSIS_WORKERS))] + \
-        [("render", f"{LOCAL_PREFIX}render-{i + 1}") for i in range(max(1, render_workers))] + \
-        [("io", f"{LOCAL_PREFIX}io")]
-    for queue, name in specs:
-        threading.Thread(target=loop, args=((queue,), name, stop, 0.5), daemon=True, name=name).start()
+    specs = [(("analisis", "render"), f"{LOCAL_PREFIX}analisis-{i + 1}") for i in range(max(1, ANALYSIS_WORKERS))] + \
+        [(("render",), f"{LOCAL_PREFIX}render-{i + 1}") for i in range(max(1, render_workers))] + \
+        [(("io",), f"{LOCAL_PREFIX}io")]
+    for queues, name in specs:
+        threading.Thread(target=loop, args=(queues, name, stop, 0.5), daemon=True, name=name).start()
     return stop
 
 

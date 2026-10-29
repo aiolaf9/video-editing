@@ -14,8 +14,9 @@ Pengguna (browser) ──HTTPS──▶ Caddy ──▶ web (2 proses)  ──�
 ```
 
 - **web**: halaman & API, ringan. Tetap cepat walau banyak render berjalan.
-- **worker-analisis / worker-render / worker-io**: tiga antrean terpisah, sehingga transkripsi video
-  panjang tidak menahan render pendek pengguna lain.
+- **worker-analisis / worker-render / worker-io**: tiga antrean terpisah. worker-render khusus render, sehingga
+  transkripsi video panjang tidak pernah menahan render pendek; worker-analisis mengutamakan analisis dan ikut
+  merender saat tidak ada analisis (konfigurasi "hibrida", paling seimbang di benchmark: `bench/RESULTS_P3.md`).
 - Di setiap antrean, unit yang sedang paling sedikit dilayani didahulukan (adil antar-unit); render pendek
   didahulukan dari render panjang, dan job yang menunggu lama naik prioritasnya (tidak ada yang tertahan selamanya).
 - Semua pekerjaan tersimpan di database: bila worker/server restart, pekerjaan diulang otomatis.
@@ -114,12 +115,19 @@ Server **tanpa GPU** (CPU saja) adalah bawaan. Nilai di bawah adalah titik awal;
 lalu sesuaikan. `cpus` adalah batas keras per container; `cpu_shares` membuat render didahulukan dari
 analisis saat CPU diperebutkan, tetapi analisis tetap boleh memakai CPU yang kosong.
 
-| Kelas | Web | Analisis | Render | Pengaturan `.env` |
+| Kelas | Web | worker-analisis (analisis, lalu render) | worker-render | Pengaturan `.env` |
 |---|---|---|---|---|
-| **Kecil** 4 vCPU / 8 GB | `WEB_WORKERS=2` | 1 × (cpus 3, 3 GB) | 1 × (cpus 3, 1,5 GB) | `WHISPER_MODEL=base`, `MAX_QUEUED_PER_UNIT=15`, `MAX_QUEUE_DEPTH=100` |
-| **Menengah** 8 vCPU / 16 GB | `WEB_WORKERS=2` | 1 × (cpus 4, 3 GB) | 2 × (cpus 3, 1,5 GB) | `WHISPER_MODEL=small`, `MAX_RUNNING_PER_UNIT=2` |
-| **Besar** 16 vCPU / 32 GB | `WEB_WORKERS=4` | 2 × (cpus 4, 3,5 GB) | 4 × (cpus 3, 1,5 GB) | `MAX_RUNNING_PER_UNIT=2`, `DB_POOL_SIZE=5`, cek `max_connections` PostgreSQL |
+| **Kecil** 4 vCPU / 8 GB | `WEB_WORKERS=2` | 2 × (cpus 3, 2,5 GB) | 1 × (cpus 3, 1,5 GB) | `WHISPER_MODEL=base`, `MAX_QUEUED_PER_UNIT=15`, `MAX_QUEUE_DEPTH=100` |
+| **Menengah** 8 vCPU / 16 GB | `WEB_WORKERS=2` | 2 × (cpus 4, 3 GB) | 2 × (cpus 3, 1,5 GB) | `WHISPER_MODEL=small`, `MAX_RUNNING_PER_UNIT=2` |
+| **Besar** 16 vCPU / 32 GB | `WEB_WORKERS=4` | 3 × (cpus 4, 3,5 GB) | 3 × (cpus 3, 1,5 GB) | `MAX_RUNNING_PER_UNIT=2`, `DB_POOL_SIZE=5`, cek `max_connections` PostgreSQL |
 | **GPU NVIDIA** (≥ 8 GB VRAM) | sama | 1 per GPU | sesuai CPU | `WHISPER_DEVICE=auto`, perlu NVIDIA Container Toolkit (`gpus: all`); belum diuji di lingkungan pengembangan |
+
+Pilihan lain bila prioritas berbeda (terukur di 4 vCPU, `bench/RESULTS_P3.md`):
+- **Render secepat mungkin**, analisis boleh lebih lambat: `ANALYSIS_WORKERS=1`, `RENDER_WORKERS=2`
+  (tunggu render p95 ±10 dtk vs ±22 dtk, tetapi throughput saat banyak analisis turun ±25%).
+- **RAM sangat terbatas**: `ANALYSIS_WORKERS=1` (satu model Whisper di memori), `RENDER_WORKERS=1`.
+- Setiap worker-analisis memuat model Whisper sendiri: RAM analisis = jumlah worker × kebutuhan model.
+  Ukur dengan `bench/whisper_bench.py` di server sebelum menambah worker analisis.
 
 Isi `.env` sesuai kolom: `ANALYSIS_WORKERS`, `ANALYSIS_CPUS`, `ANALYSIS_MEM`, `RENDER_WORKERS`, `RENDER_CPUS`, `RENDER_MEM`.
 Total `cpus` boleh melebihi jumlah vCPU (contoh kelas kecil: 3 + 3 pada 4 vCPU): batas itu mencegah satu worker

@@ -34,6 +34,7 @@ def fake_transcribe(path, duration, language=None, progress=None):
         {"start": 0.5, "end": 3.0, "text": "Halo semua, ini uji beban.", "words": []}]}
 
 
-transcribe.transcribe = fake_transcribe
+if os.environ.get("BENCH_REAL_WHISPER") != "1":  # --real-whisper: Whisper asli (model harus sudah ada)
+    transcribe.transcribe = fake_transcribe
 sys.argv = [sys.argv[0]] + sys.argv[1:]
 worker.main()
