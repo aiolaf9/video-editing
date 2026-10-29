@@ -487,6 +487,10 @@ function renderMedia() {
   badge.hidden = false;
   badge.className = "media-badge";
   $("mediaWarning").hidden = true;
+  const history = $("goneHistory");
+  const renders = [...(p.renders || [])].reverse();
+  history.hidden = !gone || !renders.length;
+  if (gone) history.querySelector("ul").innerHTML = renders.map((r) => historyItem(r)).join("");
   if (gone) {
     badge.textContent = "Media dihapus";
     badge.classList.add("gone");
@@ -512,6 +516,19 @@ function renderMedia() {
   }
 }
 
+// Hasil render yang filenya sudah dihapus: tetap tercatat sebagai riwayat, tanpa pemutar/tombol unduh.
+function historyItem(r, expired = true) {
+  return `
+      <li class="render-item unavailable">
+        <div></div>
+        <div>
+          <div class="title">${esc(r.title)}</div>
+          <div class="muted">${esc(r.aspect)} · ${fmt(r.start)}–${fmt(r.end)}</div>
+          <div class="muted cancelled">File sudah tidak tersedia${expired ? " (masa simpan berakhir)" : ""}.</div>
+        </div>
+      </li>`;
+}
+
 function renderRenders() {
   const p = state.project;
   const done = [...(p.renders || [])].reverse();
@@ -533,17 +550,7 @@ function renderRenders() {
       </li>`),
     ...done.map((r) => {
       const url = `/api/projects/${p.id}/renders/${encodeURIComponent(r.file)}`;
-      if (mediaGone(p.media)) {
-        return `
-      <li class="render-item">
-        <div></div>
-        <div>
-          <div class="title">${esc(r.title)}</div>
-          <div class="muted">${esc(r.aspect)} · ${fmt(r.start)}–${fmt(r.end)}</div>
-          <div class="muted cancelled">File sudah tidak tersedia (masa simpan berakhir).</div>
-        </div>
-      </li>`;
-      }
+      if (r.available === false || mediaGone(p.media)) return historyItem(r, mediaGone(p.media));
       return `
       <li class="render-item">
         <video src="${url}" controls preload="metadata"></video>

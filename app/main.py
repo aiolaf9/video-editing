@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import delete, func, insert, select, true, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -187,6 +188,30 @@ async def same_origin_guard(request: Request, call_next):
 
 # ------------------------------------------------------------------ helper
 
+class LeasedFileResponse(FileResponse):
+    """FileResponse yang memegang lease media selama dikirim: diperpanjang berkala, dilepas saat selesai
+    atau koneksi terputus. Bila proses mati, lease kedaluwarsa sendiri (LEASE_TTL)."""
+
+    def __init__(self, path, lease: str, **kwargs):
+        super().__init__(path, **kwargs)
+        self.lease = lease
+
+    async def __call__(self, scope, receive, send):
+        last = time.time()
+
+        async def send_renewing(message):
+            nonlocal last
+            if time.time() - last > lifecycle.LEASE_RENEW_EVERY:
+                last = time.time()
+                await run_in_threadpool(lifecycle.renew_lease, self.lease)
+            await send(message)
+
+        try:
+            await super().__call__(scope, receive, send_renewing)
+        finally:
+            await run_in_threadpool(lifecycle.release_lease, self.lease)
+
+
 def _project_for(pid: str, user: dict) -> dict:
     try:
         meta = storage.load_project(pid)
@@ -197,20 +222,38 @@ def _project_for(pid: str, user: dict) -> dict:
     return meta
 
 
-def _save_upload(upload: UploadFile, dst: Path, request: Request) -> None:
+def _upload_size(upload: UploadFile) -> int:
+    """Ukuran pasti file yang sudah diterima Starlette (bukan angka dari browser)."""
+    if upload.size is not None:
+        return int(upload.size)
+    pos = upload.file.tell()
+    upload.file.seek(0, os.SEEK_END)
+    size = upload.file.tell()
+    upload.file.seek(pos)
+    return size
+
+
+def _save_upload(upload: UploadFile, dst: Path, request: Request, lease: Optional[str] = None,
+                 reserved: Optional[int] = None) -> None:
     limit = MAX_UPLOAD_MB * 1024 * 1024
     declared = int(request.headers.get("content-length") or 0)
     if declared > limit + 1024 * 1024:
         raise HTTPException(413, f"File terlalu besar. Maksimal {MAX_UPLOAD_MB} MB.")
     written = 0
+    last_renew = time.time()
     try:
         with dst.open("wb") as fh:
             while chunk := upload.file.read(4 * 1024 * 1024):
                 written += len(chunk)
                 if written > limit:
                     raise HTTPException(413, f"File terlalu besar. Maksimal {MAX_UPLOAD_MB} MB.")
+                if reserved is not None and written > reserved:
+                    raise lifecycle.StorageFull("Ukuran file melebihi ruang yang dipesan. Unggah ulang.")
                 if written % (64 * 1024 * 1024) < len(chunk):
                     lifecycle.ensure_disk()  # disk bisa terisi pekerjaan lain selama upload besar
+                if lease and time.time() - last_renew > lifecycle.LEASE_RENEW_EVERY:
+                    lifecycle.renew_lease(lease)
+                    last_renew = time.time()
                 fh.write(chunk)
     except (HTTPException, lifecycle.StorageFull, OSError):
         dst.unlink(missing_ok=True)
@@ -221,6 +264,10 @@ def _project_view(meta: dict) -> dict:
     data = dict(meta)
     data["jobs"] = jobs.view_many(jobs.for_project(meta["id"]))
     data["media"] = lifecycle.info(meta["id"])  # baca saja: tidak memperpanjang masa simpan
+    usable = data["media"]["state"] in ("tersedia", "lama")
+    folder = storage.PROJECTS_DIR / meta["id"] / "renders"
+    # Riwayat render tetap ditampilkan, tetapi hanya yang filenya benar-benar ada yang boleh diunduh.
+    data["renders"] = [dict(r, available=usable and (folder / r["file"]).is_file()) for r in meta.get("renders", [])]
     return data
 
 
@@ -364,15 +411,21 @@ def upload_project(request: Request, file: UploadFile = File(...), language: Opt
         raise HTTPException(400, f"Format {ext or '(tanpa ekstensi)'} tidak didukung.")
     _check_pending(user)
     unit_id = _target_unit(user)
-    lifecycle.ensure_disk()
+    size = _upload_size(file)
+    lifecycle.ensure_disk(size)
     meta = storage.create_project(Path(file.filename).stem, unit_id, user["id"])
     pid = meta["id"]
+    lease = None
     try:
-        _save_upload(file, storage.project_dir(pid) / f"source{ext}", request)
+        # Reservasi kuota atomik dengan ukuran sebenarnya; upload lain di unit yang sama menunggu giliran.
+        lease = lifecycle.acquire_lease(pid, "upload", nbytes=size, unit=_unit(unit_id))
+        _save_upload(file, storage.project_dir(pid) / f"source{ext}", request, lease, size)
+        lifecycle.commit_upload(lease, pid)
     except BaseException:
+        if lease:
+            lifecycle.release_lease(lease, collect=False)
         storage.delete_project(pid)  # upload gagal/terputus: jangan tinggalkan proyek & file setengah jadi
         raise
-    lifecycle.refresh_bytes(pid)
     meta = storage.update_project(pid, source=f"source{ext}", status="antre")
     job = _queue_job("analyze", "analisis", meta, user, {"language": language or None}, "Analisis video")
     return {"project": meta, "job": job}
@@ -463,15 +516,23 @@ def get_preview(pid: str, user: dict = CurrentUser):
 
 @app.post("/api/projects/{pid}/music")
 def upload_music(pid: str, request: Request, file: UploadFile = File(...), user: dict = CurrentUser):
-    _project_for(pid, user)
+    meta = _project_for(pid, user)
     ext = Path(file.filename or "").suffix.lower()
     if ext not in AUDIO_EXTS:
         raise HTTPException(400, "Format musik harus mp3, wav, m4a, aac, ogg, flac, atau opus.")
     lifecycle.touch(pid)
     name = storage.safe_filename(file.filename, f"musik{ext}")
-    _save_upload(file, storage.project_dir(pid) / "music" / name, request)
-    storage.add_music(pid, name)
-    lifecycle.refresh_bytes(pid)
+    size = _upload_size(file)
+    lifecycle.ensure_disk(size)
+    dst = storage.project_dir(pid) / "music" / name
+    lease = lifecycle.acquire_lease(pid, "upload", nbytes=size, unit=_unit(meta["unit_id"]))
+    try:
+        _save_upload(file, dst, request, lease, size)
+        storage.add_music(pid, name)
+        lifecycle.commit_upload(lease, pid)
+    except BaseException:
+        lifecycle.release_lease(lease, collect=False)
+        raise
     return {"file": name}
 
 
@@ -484,6 +545,7 @@ def render_clip(pid: str, body: RenderRequest, user: dict = CurrentUser):
         raise HTTPException(400, "Titik awal klip melebihi durasi video.")
     _check_pending(user)
     _check_quota(user, "render")
+    lifecycle.ensure_quota(_unit(meta.get("unit_id")))  # kuota media penuh: render baru ditunda
     label = body.title or f"Klip {body.start:.0f}s-{body.end:.0f}s"
     return _queue_job("render", "render", meta, user, {"request": body.model_dump()}, label)
 
@@ -502,7 +564,9 @@ def download_render(pid: str, file: str, download: bool = False, user: dict = Cu
     if not path.exists():
         raise HTTPException(410, "File hasil render ini sudah tidak tersedia.")
     name = storage.safe_filename(item["title"], "klip") + ".mp4"
-    return FileResponse(path, media_type="video/mp4", filename=name if download else None)
+    # Lease selama file dikirim: pembersihan tidak menghapus media yang sedang diunduh.
+    lease = lifecycle.acquire_lease(pid, "download")
+    return LeasedFileResponse(path, lease, media_type="video/mp4", filename=name if download else None)
 
 
 @app.get("/api/jobs/{job_id}")

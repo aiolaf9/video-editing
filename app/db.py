@@ -108,6 +108,22 @@ project_media = Table(
     Column("delete_reason", String(20), nullable=True),
 )
 
+# Lease atas media proyek selain job (P2 hardening): upload yang sedang ditulis & file yang sedang
+# diunduh. Selama lease belum kedaluwarsa, pembersihan tidak menyentuh proyek tsb. `bytes` = kuota
+# yang direservasi (upload). Lease diperpanjang berkala oleh pemiliknya; bila proses mati, lease
+# kedaluwarsa sendiri (expires_at) sehingga reservasi & proteksi pulih otomatis.
+media_leases = Table(
+    "media_leases", metadata,
+    Column("id", String(16), primary_key=True),
+    Column("project_id", String(12), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True),
+    Column("unit_id", String(12), nullable=True, index=True),
+    Column("kind", String(10), nullable=False),          # upload | download
+    Column("bytes", BigInteger, nullable=False, default=0),
+    Column("owner", String(80), nullable=False, default=""),
+    Column("created", Float, nullable=False),
+    Column("expires_at", Float, nullable=False, index=True),
+)
+
 jobs = Table(
     "jobs", metadata,
     Column("id", String(12), primary_key=True),

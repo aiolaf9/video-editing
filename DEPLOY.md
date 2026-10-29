@@ -108,11 +108,15 @@ Video sumber, preview, dan hasil render bersifat **sementara**:
 - dihapus otomatis `MEDIA_RETENTION_HOURS` (bawaan 24 jam) setelah aktivitas terakhir pengguna,
   dan paling lama `MEDIA_MAX_HOURS` (bawaan 72 jam) sejak upload;
 - membuka atau memantau proyek tidak memperpanjang masa simpan; mengedit, merender, atau mengunduh memperpanjangnya;
-- media yang sedang dipakai pekerjaan (antre/berjalan) tidak pernah dihapus;
+- media yang sedang dipakai tidak pernah dihapus: pekerjaan antre/berjalan (termasuk yang sedang dipulihkan
+  setelah worker mati), upload yang sedang ditulis, dan file yang sedang diunduh. Setelah pemakaian terakhir
+  selesai, media yang sudah lewat masa simpan langsung dihapus;
+- riwayat hasil render tetap tercatat, tetapi file yang sudah dihapus tidak ditawarkan untuk diunduh;
 - akun, unit, tema, Guidebook, dan riwayat proyek tetap tersimpan.
 
 Upload baru ditolak dengan pesan jelas bila sisa disk di bawah `DISK_MIN_FREE_MB` / `DISK_MIN_FREE_PCT`
-atau kuota media unit terlampaui. Pemakaian per unit terlihat di **Admin → Unit** dan **Admin → Status**.
+atau kuota media unit terlampaui. Kuota ditegakkan dengan ukuran file sebenarnya dan reservasi atomik,
+sehingga beberapa upload bersamaan dari unit yang sama tidak bisa bersama-sama melewati kuota. Pemakaian per unit terlihat di **Admin → Unit** dan **Admin → Status**.
 
 **Proyek dari versi sebelumnya** tidak dihapus otomatis. Periksa dulu (tidak mengubah apa pun):
 

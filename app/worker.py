@@ -32,7 +32,9 @@ def _media_ready(pid: str) -> None:
         if state != "menghapus":
             break
         time.sleep(0.5)
-    lifecycle.require_available(pid)
+    # Job yang sudah diterima tetap boleh jalan walau masa simpan habis saat menunggu di antrean
+    # (job aktif = lease); yang ditolak hanya media yang benar-benar sudah dihapus.
+    lifecycle.require_present(pid)
     lifecycle.ensure_disk()
 
 
@@ -52,6 +54,14 @@ def _run_task(job: jobs.Job):
         return result
     if job.task == "download":
         pipeline.download(job, pid, p["url"])
+        try:  # ukuran video dari link baru diketahui sekarang: tegakkan kuota unit secara atomik
+            lifecycle.commit_size(pid, lifecycle.unit_row(job.unit_id))
+        except lifecycle.StorageFull:
+            for leftover in storage.project_dir(pid).glob("source.*"):
+                leftover.unlink(missing_ok=True)
+            storage.update_project(pid, status="gagal", name="Unduhan melebihi kuota")
+            lifecycle.refresh_bytes(pid)
+            raise
         jobs.submit("analyze", "analisis", pid, {"language": p.get("language")}, "Analisis video",
                     user_id=job.user_id, unit_id=job.unit_id)
         return {"downloaded": True}
@@ -143,6 +153,7 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False) -> boo
         _refresh_size(job.project_id)
     finally:
         done.set()
+        _collect(job.project_id)
     return True
 
 
@@ -151,6 +162,14 @@ def _refresh_size(pid: str) -> None:
         lifecycle.refresh_bytes(pid)
     except Exception:  # proyek dihapus di tengah jalan, dsb.
         pass
+
+
+def _collect(pid: str) -> None:
+    """Job terakhir selesai dan masa simpan sudah lewat: hapus media sekarang, bukan di putaran berikutnya."""
+    try:
+        lifecycle.collect_if_expired(pid)
+    except Exception:
+        log.warning("Pembersihan media %s setelah job gagal:\n%s", pid, traceback.format_exc(limit=2))
 
 
 def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[threading.Event] = None,

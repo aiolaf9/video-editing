@@ -9,7 +9,10 @@ Aturan
 - Metadata (projects, renders, akun, unit/guidebook) tetap di database setelah media dihapus.
 
 Keamanan terhadap race condition
-- Job aktif (antre/jalan/berhenti) = "lease" atas media proyeknya.
+- Job aktif (antre/jalan/berhenti) = "lease" atas media proyeknya. Upload yang sedang ditulis dan file
+  yang sedang diunduh memegang lease di tabel media_leases (kedaluwarsa sendiri bila prosesnya mati).
+- Kuota unit direservasi secara atomik: baris unit dikunci (PostgreSQL row lock; SQLite kunci tulis)
+  sehingga dua upload bersamaan tidak bisa sama-sama lolos melewati kuota.
 - Penghapusan dua fase: (1) tandai `menghapus` secara atomik, (2) periksa ulang job aktif SESUDAH
   penandaan; bila ada, kembalikan ke `tersedia`. Pengajuan job (reserve) mengunci baris media
   (FOR UPDATE) dan menolak bila tidak `tersedia`, sehingga tidak ada job baru setelah langkah (1).
@@ -18,7 +21,9 @@ Keamanan terhadap race condition
 import logging
 import os
 import shutil
+import socket
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
@@ -38,6 +43,9 @@ DELETING_STUCK_AFTER = 600.0       # `menghapus` lebih dari ini = proses hapus s
 # tempfile.tempdir = UPLOAD_TMP_DIR, jadi semua file sementara proses (bukan hanya upload) ada di sana.
 # Hanya sisa yang jauh lebih tua dari job terpanjang (JOB_TIMEOUT_MAX) yang dianggap tertinggal.
 TMP_ORPHAN_HOURS = 24.0
+LEASE_TTL = {"upload": 600.0, "download": 300.0}  # diperpanjang berkala selama masih dipakai
+LEASE_RENEW_EVERY = 60.0
+_OWNER = f"{socket.gethostname()}-{os.getpid()}"[:80]
 ACTIVE_JOB = ("antre", "jalan", "berhenti")
 _SWEEP_LOCK_KEY = 727275
 
@@ -123,6 +131,31 @@ def _is_available(row: Optional[dict], now: float) -> bool:
     return row["state"] == "tersedia" and expires_at(row) > now
 
 
+def _lock_media(conn, pid: str) -> Optional[dict]:
+    """Kunci baris media proyek sampai transaksi selesai, lalu kembalikan isinya.
+
+    UPDATE tanpa perubahan: di PostgreSQL = row lock (setara FOR UPDATE); di SQLite = kunci tulis
+    database. Harus jadi perintah PERTAMA di transaksi (SQLite: hindari upgrade kunci baca -> tulis).
+    """
+    pm = db.project_media.c
+    conn.execute(update(db.project_media).where(pm.project_id == pid).values(state=pm.state))
+    return _get(conn, pid)
+
+
+def _lock_unit(conn, unit_id: str) -> None:
+    """Serialkan keputusan kuota per unit (lihat _lock_media)."""
+    conn.execute(update(db.units).where(db.units.c.id == unit_id).values(id=db.units.c.id))
+
+
+def require_present(pid: str) -> None:
+    """Untuk job yang sudah diterima: media belum dihapus. Kedaluwarsa saat job menunggu di antrean
+    tidak menggagalkan job (job aktif = lease); media dibersihkan segera setelah job selesai."""
+    with db.engine().connect() as c:
+        row = _get(c, pid)
+    if row is not None and row["state"] != "tersedia":
+        raise MediaGone(pid)
+
+
 def require_available(pid: str, now: Optional[float] = None) -> None:
     now = now or time.time()
     with db.engine().connect() as c:
@@ -156,10 +189,7 @@ def reserve(pid: str, now: Optional[float] = None) -> Iterator:
     now = now or time.time()
     pm = db.project_media.c
     with db.engine().begin() as c:
-        q = select(db.project_media).where(pm.project_id == pid)
-        if db.is_postgres():
-            q = q.with_for_update()
-        row = db.row(c.execute(q).first())
+        row = _lock_media(c, pid)
         if not _is_available(row, now):
             raise MediaGone(pid)
         if row is not None:
@@ -201,12 +231,33 @@ def ensure_disk(incoming: int = 0) -> None:
         raise StorageFull("Ruang penyimpanan server sedang hampir penuh. Coba lagi nanti, atau hubungi admin.")
 
 
-def unit_usage(unit_id: Optional[str]) -> int:
-    pm, pr = db.project_media.c, db.projects.c
+def _unit_usage(conn, unit_id: Optional[str], now: float, exclude_pid: Optional[str] = None) -> int:
+    """Media tersimpan unit + reservasi upload yang masih berjalan.
+
+    Satu perintah SQL = satu snapshot. Dua query terpisah bisa salah hitung di PostgreSQL (READ
+    COMMITTED): commit_upload lain yang selesai di antaranya memindahkan ukuran dari reservasi ke
+    media tersimpan, sehingga file itu tidak terhitung sama sekali.
+    """
+    pm, pr, ml = db.project_media.c, db.projects.c, db.media_leases.c
+    stored = (select(func.coalesce(func.sum(pm.bytes), 0))
+              .select_from(db.project_media.join(db.projects, pr.id == pm.project_id))
+              .where(pr.unit_id == unit_id, pm.state.in_(("tersedia", "menghapus"))))
+    if exclude_pid:
+        stored = stored.where(pm.project_id != exclude_pid)
+    reserved = select(func.coalesce(func.sum(ml.bytes), 0)).where(ml.unit_id == unit_id, ml.expires_at > now)
+    return int(conn.execute(select(stored.scalar_subquery() + reserved.scalar_subquery())).scalar() or 0)
+
+
+def unit_usage(unit_id: Optional[str], now: Optional[float] = None) -> int:
     with db.engine().connect() as c:
-        return int(c.execute(select(func.coalesce(func.sum(pm.bytes), 0))
-                             .select_from(db.project_media.join(db.projects, pr.id == pm.project_id))
-                             .where(pr.unit_id == unit_id, pm.state.in_(("tersedia", "menghapus")))).scalar() or 0)
+        return _unit_usage(c, unit_id, now or time.time())
+
+
+def unit_row(unit_id: Optional[str]) -> Optional[dict]:
+    if not unit_id:
+        return None
+    with db.engine().connect() as c:
+        return db.row(c.execute(select(db.units).where(db.units.c.id == unit_id)).first())
 
 
 def unit_quota_bytes(unit: Optional[dict]) -> int:
@@ -216,15 +267,94 @@ def unit_quota_bytes(unit: Optional[dict]) -> int:
     return int(mb * 1024 * 1024)
 
 
-def ensure_quota(unit: Optional[dict], incoming: int = 0) -> None:
+def _quota_error(unit: dict, used: int, quota: int) -> StorageFull:
+    return StorageFull(f"Kuota penyimpanan sementara unit {unit['name']} penuh "
+                       f"({used / 1e6:.0f} dari {quota / 1e6:.0f} MB). Unduh hasil render lalu hapus "
+                       "proyek yang sudah selesai, atau tunggu media lama kedaluwarsa.")
+
+
+def _check_quota(conn, unit: Optional[dict], incoming: int, now: float, exclude_pid: Optional[str] = None) -> None:
     quota = unit_quota_bytes(unit)
     if not unit or quota <= 0:
         return
-    used = unit_usage(unit["id"])
+    used = _unit_usage(conn, unit["id"], now, exclude_pid)
     if used + incoming > quota:
-        raise StorageFull(f"Kuota penyimpanan sementara unit {unit['name']} penuh "
-                          f"({used / 1e6:.0f} dari {quota / 1e6:.0f} MB). Unduh hasil render lalu hapus "
-                          "proyek yang sudah selesai, atau tunggu media lama kedaluwarsa.")
+        raise _quota_error(unit, used, quota)
+
+
+def ensure_quota(unit: Optional[dict], incoming: int = 0) -> None:
+    """Pemeriksaan cepat (tidak atomik), mis. sebelum isi upload diterima. Penegakan sebenarnya
+    terjadi di acquire_lease / commit_size."""
+    with db.engine().connect() as c:
+        _check_quota(c, unit, incoming, time.time())
+
+
+# ------------------------------------------------------------------ lease (upload & unduhan aktif)
+
+def acquire_lease(pid: str, kind: str, nbytes: int = 0, unit: Optional[dict] = None,
+                  now: Optional[float] = None) -> str:
+    """Pegang media proyek selama upload/unduhan. nbytes > 0 = reservasi kuota unit (atomik)."""
+    now = now or time.time()
+    lid = uuid.uuid4().hex[:16]
+    with db.engine().begin() as c:
+        if nbytes and unit:
+            _lock_unit(c, unit["id"])  # upload lain di unit yang sama menunggu sampai transaksi ini selesai
+        row = _lock_media(c, pid)
+        if not _is_available(row, now):
+            raise MediaGone(pid)
+        if nbytes:
+            _check_quota(c, unit, nbytes, now)
+        c.execute(insert(db.media_leases).values(
+            id=lid, project_id=pid, unit_id=unit["id"] if unit else None, kind=kind, bytes=max(0, nbytes),
+            owner=_OWNER, created=now, expires_at=now + LEASE_TTL[kind]))
+    return lid
+
+
+def renew_lease(lid: str, now: Optional[float] = None) -> None:
+    now = now or time.time()
+    ml = db.media_leases.c
+    with db.engine().begin() as c:
+        kind = c.execute(select(ml.kind).where(ml.id == lid)).scalar()
+        if kind:
+            c.execute(update(db.media_leases).where(ml.id == lid).values(expires_at=now + LEASE_TTL[kind]))
+
+
+def release_lease(lid: str, collect: bool = True) -> None:
+    """Lepas lease (dan reservasi kuotanya). Bila media sudah kedaluwarsa, langsung dibersihkan."""
+    ml = db.media_leases.c
+    with db.engine().begin() as c:
+        pid = c.execute(select(ml.project_id).where(ml.id == lid)).scalar()
+        c.execute(delete(db.media_leases).where(ml.id == lid))
+    if pid and collect:
+        collect_if_expired(pid)
+
+
+def commit_upload(lid: str, pid: str) -> int:
+    """Upload selesai: ukuran aktual menggantikan reservasi dalam satu transaksi."""
+    size = folder_bytes(PROJECTS_DIR / pid)
+    with db.engine().begin() as c:
+        c.execute(update(db.project_media).where(db.project_media.c.project_id == pid).values(bytes=size))
+        c.execute(delete(db.media_leases).where(db.media_leases.c.id == lid))
+    return size
+
+
+def commit_size(pid: str, unit: Optional[dict], now: Optional[float] = None) -> int:
+    """Catat ukuran aktual media yang ukurannya baru diketahui di akhir (unduhan dari link).
+    StorageFull bila melewati kuota unit; pemanggil membuang file yang baru ditambahkan."""
+    now = now or time.time()
+    size = folder_bytes(PROJECTS_DIR / pid)
+    with db.engine().begin() as c:
+        if unit:
+            _lock_unit(c, unit["id"])
+        _check_quota(c, unit, size, now, exclude_pid=pid)
+        c.execute(update(db.project_media).where(db.project_media.c.project_id == pid).values(bytes=size))
+    return size
+
+
+def _expire_leases(now: float) -> int:
+    """Lease milik proses yang mati: lepaskan proteksi & reservasi kuotanya."""
+    with db.engine().begin() as c:
+        return c.execute(delete(db.media_leases).where(db.media_leases.c.expires_at <= now)).rowcount
 
 
 # ------------------------------------------------------------------ pembersihan
@@ -234,6 +364,31 @@ def _active_job_projects(conn, pids: Optional[list[str]] = None) -> set[str]:
     if pids is not None:
         q = q.where(db.jobs.c.project_id.in_(pids))
     return {r[0] for r in conn.execute(q)}
+
+
+def _busy_projects(conn, pids: Optional[list[str]] = None, now: Optional[float] = None) -> set[str]:
+    """Proyek yang medianya sedang dipakai: job aktif (termasuk yang menunggu dipulihkan) atau lease hidup."""
+    now = now or time.time()
+    ml = db.media_leases.c
+    q = select(ml.project_id).where(ml.expires_at > now).distinct()
+    if pids is not None:
+        q = q.where(ml.project_id.in_(pids))
+    return _active_job_projects(conn, pids) | {r[0] for r in conn.execute(q)}
+
+
+def collect_if_expired(pid: str, now: Optional[float] = None) -> bool:
+    """Dipanggil setelah job/lease terakhir selesai: media yang sudah lewat masa simpan langsung dihapus,
+    tidak menunggu putaran pembersihan berikutnya."""
+    if not MEDIA_LIFECYCLE:
+        return False
+    now = now or time.time()
+    with db.engine().connect() as c:
+        row = _get(c, pid)
+        if row is None or row["state"] != "tersedia" or expires_at(row) > now:
+            return False
+        if pid in _busy_projects(c, [pid], now):
+            return False
+    return delete_media(pid, "kedaluwarsa", now)
 
 
 def _remove_media_files(pid: str) -> None:
@@ -255,7 +410,7 @@ def delete_media(pid: str, reason: str, now: Optional[float] = None) -> bool:
 def _finish_delete(pid: str, reason: str, now: float) -> bool:
     pm = db.project_media.c
     with db.engine().connect() as c:  # fase 2: periksa ulang lease SESUDAH klaim
-        busy = pid in _active_job_projects(c, [pid])
+        busy = pid in _busy_projects(c, [pid], now)
     if busy:
         with db.engine().begin() as c:
             c.execute(update(db.project_media).where(pm.project_id == pid, pm.state == "menghapus").values(
@@ -274,7 +429,7 @@ def _expired_candidates(now: float) -> list[str]:
     pm = db.project_media.c
     with db.engine().connect() as c:
         expired = [r[0] for r in c.execute(select(pm.project_id).where(pm.state == "tersedia", _expired_clause(now)))]
-        busy = _active_job_projects(c, expired) if expired else set()
+        busy = _busy_projects(c, expired, now) if expired else set()
     return [pid for pid in expired if pid not in busy]
 
 
@@ -291,7 +446,7 @@ def _incomplete_uploads(now: float) -> list[str]:
         stale = [r[0] for r in c.execute(select(pr.id).select_from(
             db.projects.join(db.project_media, pm.project_id == pr.id)).where(
             pr.status == "baru", pr.created < now - INCOMPLETE_UPLOAD_HOURS * HOUR))]
-        busy = _active_job_projects(c, stale) if stale else set()
+        busy = _busy_projects(c, stale, now) if stale else set()
     return [pid for pid in stale if pid not in busy]
 
 
@@ -311,18 +466,77 @@ def _remove(path: Path) -> int:
         return 0
 
 
+def _open_paths() -> Optional[set[str]]:
+    """File & direktori kerja yang sedang dipakai proses di mesin/container ini (Linux /proc).
+    None bila tidak bisa diketahui (mis. bukan Linux): pemanggil hanya mengandalkan lease & umur file."""
+    proc = Path("/proc")
+    if not (proc / "self" / "fd").is_dir():
+        return None
+    root = str(DATA_DIR.resolve())
+    found: set[str] = set()
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        links = [entry / "cwd"]
+        try:
+            links += [entry / "fd" / fd for fd in os.listdir(entry / "fd")]
+        except OSError:
+            pass  # proses sudah selesai / milik pengguna lain
+        for link in links:
+            try:
+                target = os.readlink(link)
+            except OSError:
+                continue
+            if target.startswith(root):
+                found.add(target.removesuffix(" (deleted)"))
+    return found
+
+
+def _in_use(path: Path, open_paths: Optional[set[str]]) -> bool:
+    if not open_paths:
+        return False
+    p = str(path.resolve())
+    return any(o == p or o.startswith(p + os.sep) for o in open_paths)
+
+
+def _orphan_candidates(folder: Path, source: Optional[str], renders_known: set) -> list[Path]:
+    pid = folder.name
+    out = []
+    for f in folder.iterdir():
+        name = f.name
+        if f.is_file() and (name.endswith((".part", ".ytdl", ".tmp")) or ".part." in name
+                            or (name.startswith("source.") and name != source and source)):
+            out.append(f)
+    renders_dir = folder / "renders"
+    if renders_dir.is_dir():
+        for f in renders_dir.iterdir():
+            if f.is_dir() and f.name.startswith("tmp_"):
+                out.append(f)
+            elif f.suffix == ".ass":
+                out.append(f)
+            elif f.suffix == ".mp4" and (pid, f.name) not in renders_known:
+                out.append(f)  # render gagal/terputus yang tidak tercatat
+    return out
+
+
 def clean_orphans(now: Optional[float] = None) -> dict:
-    """File & folder sisa yang aman dihapus. Tidak pernah menyentuh proyek dengan job aktif atau proyek lama."""
+    """File & folder sisa yang aman dihapus.
+
+    Tidak pernah menyentuh: proyek dengan job aktif atau lease hidup (upload/unduhan berjalan),
+    proyek lama, file yang sedang dibuka proses mana pun, dan file yang masih sangat baru.
+    Umur file saja TIDAK cukup untuk menghapus: kepemilikan diperiksa ulang di bawah kunci proyek.
+    """
     now = now or time.time()
-    stats = {"folders": 0, "files": 0, "bytes": 0}
+    stats = {"folders": 0, "files": 0, "bytes": 0, "skipped_in_use": 0}
     if not PROJECTS_DIR.exists():
         return stats
+    open_paths = _open_paths()
     with db.engine().connect() as c:
         projects = {r.id: r.source for r in c.execute(select(db.projects.c.id, db.projects.c.source))}
         managed = {r[0] for r in c.execute(select(db.project_media.c.project_id).where(
             db.project_media.c.state == "tersedia"))}
         renders_known = {(r.project_id, r.file) for r in c.execute(select(db.renders.c.project_id, db.renders.c.file))}
-        busy = _active_job_projects(c)
+        busy = _busy_projects(c, None, now)
 
     for folder in PROJECTS_DIR.iterdir():
         if not folder.is_dir():
@@ -332,38 +546,43 @@ def clean_orphans(now: Optional[float] = None) -> dict:
             # Folder tanpa proyek di database (mis. sisa hapus yang terputus). Proyek versi lama
             # (project.json belum dimigrasikan) dibiarkan.
             if not (folder / "project.json").exists() and _old_enough(folder, now):
+                if _in_use(folder, open_paths):
+                    stats["skipped_in_use"] += 1
+                    continue
                 stats["bytes"] += _remove(folder)
                 stats["folders"] += 1
             continue
         if pid not in managed or pid in busy:
-            continue  # proyek lama atau sedang dipakai job: jangan disentuh
+            continue  # proyek lama atau sedang dipakai: jangan disentuh
         candidates = []
-        source = projects[pid]
-        for f in folder.iterdir():
-            name = f.name
-            if f.is_file() and (name.endswith((".part", ".ytdl", ".tmp")) or ".part." in name
-                                or (name.startswith("source.") and name != source and source)):
-                candidates.append(f)
-        renders_dir = folder / "renders"
-        if renders_dir.is_dir():
-            for f in renders_dir.iterdir():
-                if f.is_dir() and f.name.startswith("tmp_"):
-                    candidates.append(f)
-                elif f.suffix == ".ass":
-                    candidates.append(f)
-                elif f.suffix == ".mp4" and (pid, f.name) not in renders_known:
-                    candidates.append(f)  # render gagal/terputus yang tidak tercatat
-        for f in candidates:
-            if _old_enough(f, now):
+        for f in _orphan_candidates(folder, projects[pid], renders_known):
+            if not _old_enough(f, now):
+                continue
+            if _in_use(f, open_paths):
+                stats["skipped_in_use"] += 1
+                continue
+            candidates.append(f)
+        if not candidates:
+            continue
+        with db.engine().begin() as c:
+            # Kunci proyek lalu periksa ulang: job/upload/unduhan bisa saja mulai sejak daftar di atas dibuat.
+            _lock_media(c, pid)
+            if pid in _busy_projects(c, [pid], now):
+                continue
+            for f in candidates:
                 stats["bytes"] += _remove(f)
                 stats["files"] += 1
 
-    # File sementara (upload multipart, dll.) yang tertinggal karena koneksi/proses terputus.
+    # File sementara proses (tempfile diarahkan ke DATA_DIR/tmp) yang tertinggal karena crash.
     if UPLOAD_TMP_DIR.exists():
         for f in UPLOAD_TMP_DIR.iterdir():
-            if _old_enough(f, now - TMP_ORPHAN_HOURS * HOUR + TEMP_FILE_GRACE_MINUTES * 60):
-                stats["bytes"] += _remove(f)
-                stats["files"] += 1
+            if not _old_enough(f, now - TMP_ORPHAN_HOURS * HOUR + TEMP_FILE_GRACE_MINUTES * 60):
+                continue
+            if _in_use(f, open_paths):
+                stats["skipped_in_use"] += 1
+                continue
+            stats["bytes"] += _remove(f)
+            stats["files"] += 1
     return stats
 
 
@@ -385,6 +604,7 @@ def sweep(now: Optional[float] = None) -> dict:
             result["skipped"] = True
             return result
         try:
+            result["leases_expired"] = _expire_leases(now)
             for pid in _expired_candidates(now):
                 result["expired"] += delete_media(pid, "kedaluwarsa", now)
             for pid in _stuck_deleting(now):  # hapus yang sempat terputus (worker mati di tengah jalan)
@@ -446,4 +666,5 @@ def migrate_legacy(apply: bool = False, grace_hours: float = MEDIA_MAX_HOURS,
 
 
 def drop_project(pid: str, conn) -> None:
+    conn.execute(delete(db.media_leases).where(db.media_leases.c.project_id == pid))
     conn.execute(delete(db.project_media).where(db.project_media.c.project_id == pid))
