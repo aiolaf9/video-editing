@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import clipper, pipeline, plan, storage
+from . import ai, clipper, pipeline, plan, storage
 from .config import DATA_DIR, FFMPEG, FONTS_DIR, FFPROBE, JOB_WORKERS, WEB_DIR, WHISPER_MODEL
 from .jobs import JobManager
 from .schemas import PlanImport, PlanItem, RangeRequest, RenderRequest, Settings, SuggestRequest, UrlImport
@@ -186,15 +186,34 @@ def get_job(job_id: str):
 
 # ------------------------------------------------------------------ rencana animasi
 
+SETTINGS_PATH = DATA_DIR / "settings.json"
+ENV_KEYS = {"claude": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY", "groq": "GROQ_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
+
+
 def _load_settings() -> dict:
-    path = DATA_DIR / "settings.json"
-    data = Settings().model_dump()
-    if path.exists():
+    """{"provider", "guidebook", "providers": {nama: {"api_key", "model", "base_url"}}}"""
+    data: dict = {"provider": "claude", "guidebook": "", "providers": {}}
+    if SETTINGS_PATH.exists():
         try:
-            data.update(json.loads(path.read_text(encoding="utf-8")))
+            data.update(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             pass
+    # Format lama (hanya Claude) -> format baru.
+    if "anthropic_api_key" in data or "model" in data:
+        claude = data["providers"].setdefault("claude", {})
+        claude.setdefault("api_key", data.pop("anthropic_api_key", None))
+        claude.setdefault("model", data.pop("model", None))
+    if data.get("provider") not in ai.PROVIDERS:
+        data["provider"] = "claude"
     return data
+
+
+def _provider_cfg(settings: dict, provider: str) -> dict:
+    cfg = dict(settings["providers"].get(provider) or {})
+    if not cfg.get("api_key") and provider in ENV_KEYS:
+        cfg["api_key"] = os.environ.get(ENV_KEYS[provider])
+    return cfg
 
 
 def _plan_context(pid: str, start: float, end: float) -> dict:
@@ -216,23 +235,46 @@ def _save_range(pid: str, items: list[dict], start: float, end: float) -> list[d
 
 @app.get("/api/settings")
 def get_settings():
+    """Pengaturan AI tanpa membocorkan API key (hanya 4 karakter terakhir)."""
     data = _load_settings()
-    key = data.pop("anthropic_api_key", None) or os.environ.get("ANTHROPIC_API_KEY")
-    data["has_api_key"] = bool(key)
-    data["api_key_hint"] = f"...{key[-4:]}" if key else ""
-    return data
+    providers = {}
+    for name, info in ai.PROVIDERS.items():
+        cfg = _provider_cfg(data, name)
+        key = cfg.get("api_key") or ""
+        providers[name] = {
+            "label": info["name"], "needs_key": info["needs_key"], "key_url": info["key_url"],
+            "default_base_url": info["base_url"], "base_url": cfg.get("base_url") or "",
+            "model": cfg.get("model") or "", "default_model": info.get("default_model", ""),
+            "has_key": bool(key), "key_hint": f"...{key[-4:]}" if key else "",
+        }
+    return {"provider": data["provider"], "guidebook": data.get("guidebook", ""), "providers": providers}
 
 
 @app.put("/api/settings")
 def put_settings(body: Settings):
+    if body.provider not in ai.PROVIDERS:
+        raise HTTPException(400, "Penyedia AI tidak dikenal.")
     data = _load_settings()
-    update = body.model_dump()
-    if not update.get("anthropic_api_key"):
-        update.pop("anthropic_api_key")  # kosong = tetap pakai kunci lama
-    data.update(update)
-    path = DATA_DIR / "settings.json"
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    data["provider"] = body.provider
+    data["guidebook"] = body.guidebook
+    cfg = data["providers"].setdefault(body.provider, {})
+    if body.api_key:
+        cfg["api_key"] = body.api_key.strip()
+    elif body.clear_key:
+        cfg.pop("api_key", None)
+    cfg["model"] = (body.model or "").strip()
+    cfg["base_url"] = (body.base_url or "").strip()
+    SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return get_settings()
+
+
+@app.get("/api/ai/models")
+def ai_models():
+    data = _load_settings()
+    try:
+        return ai.list_models(data["provider"], _provider_cfg(data, data["provider"]))
+    except Exception as exc:
+        raise HTTPException(502, f"Gagal memuat daftar model: {exc}")
 
 
 @app.get("/api/projects/{pid}/faces")
@@ -285,17 +327,21 @@ def plan_import(pid: str, body: PlanImport):
 def plan_ai(pid: str, body: RangeRequest):
     ctx = _plan_context(pid, body.start, body.end)
     settings = _load_settings()
-    key = settings.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        raise HTTPException(400, "API key Claude belum diisi. Isi di panel Animasi, atau pakai mode salin-tempel.")
+    provider = settings["provider"]
+    label = ai.PROVIDERS[provider]["name"]
+    cfg = _provider_cfg(settings, provider)
+    if ai.PROVIDERS[provider]["needs_key"] and not cfg.get("api_key"):
+        raise HTTPException(400, f"API key {label} belum diisi. Isi di panel Animasi, atau pakai mode salin-tempel.")
     try:
-        items = plan.ask_claude(ctx["transcript"], ctx["start"], ctx["end"], body.guidebook,
-                                key, settings.get("model") or "claude-opus-5-5")
+        items, model = ai.generate_plan(provider, cfg, ctx["transcript"], ctx["start"], ctx["end"], body.guidebook)
     except ImportError:
-        raise HTTPException(500, "Library 'anthropic' belum terpasang. Jalankan: pip install -r requirements.txt")
+        raise HTTPException(500, "Library belum lengkap. Jalankan: pip install -r requirements.txt")
     except Exception as exc:  # error API (kunci salah, kuota, jaringan) ditampilkan apa adanya
-        logging.getLogger("video-editing.plan").exception("Claude API gagal")
-        raise HTTPException(502, f"Claude API gagal: {exc}")
+        logging.getLogger("video-editing.plan").exception("%s API gagal", label)
+        raise HTTPException(502, f"{label} API gagal: {exc}")
+    if not cfg.get("model"):  # simpan model yang dipilih otomatis agar terlihat di UI
+        settings["providers"].setdefault(provider, {})["model"] = model
+        SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     return _save_range(pid, items, ctx["start"], ctx["end"])
 
 

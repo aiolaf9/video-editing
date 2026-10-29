@@ -82,6 +82,10 @@ class PlanItem(BaseModel):
 
 
 class Settings(BaseModel):
-    anthropic_api_key: Optional[str] = Field(None, max_length=300)
-    model: str = Field("claude-opus-5-5", max_length=60)
+    """Pengaturan AI untuk penyedia yang dipilih. api_key kosong = kunci lama dipertahankan."""
+    provider: str = Field("claude", max_length=30)
     guidebook: str = Field("", max_length=4000)
+    api_key: Optional[str] = Field(None, max_length=400)
+    clear_key: bool = False
+    model: Optional[str] = Field(None, max_length=120)
+    base_url: Optional[str] = Field(None, max_length=300, pattern=r"^(https?://.*)?$")

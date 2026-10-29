@@ -661,7 +661,7 @@ function renderPlan() {
   const items = planInRange();
   $("animCount").textContent = items.length ? `(${items.length})` : "";
   if (!items.length) {
-    list.innerHTML = '<li class="muted">Belum ada animasi di klip ini. Klik "Otomatis", atau buat dengan Claude.</li>';
+    list.innerHTML = '<li class="muted">Belum ada animasi di klip ini. Klik "Otomatis", atau buat dengan AI (salin prompt / API).</li>';
     return;
   }
   list.innerHTML = items.map((it) => {
@@ -721,36 +721,60 @@ function updateOverlayPreview() {
 async function runPlan(kind) {
   const body = { start: state.sel.start, end: state.sel.end, guidebook: $("guidebook").value };
   const btn = { auto: "planAutoBtn", ai: "planAiBtn" }[kind];
-  const old = $(btn).textContent;
+  const old = $(btn).innerHTML;
   $(btn).disabled = true;
-  $(btn).textContent = kind === "ai" ? "⏳ Claude sedang membaca transkrip..." : "⏳ Memproses...";
+  $(btn).textContent = kind === "ai" ? `⏳ ${$("aiName").textContent} sedang membaca transkrip...` : "⏳ Memproses...";
   try {
     state.plan = await postJSON(`/api/projects/${state.project.id}/plan/${kind}`, body);
     renderPlan();
     updateOverlayPreview();
     toast(`${planInRange().length} animasi siap. Putar klip untuk melihat pratinjaunya.`);
   } catch (e) { toast(e.message, true); }
-  finally { $(btn).disabled = false; $(btn).textContent = old; }
+  finally { $(btn).disabled = false; $(btn).innerHTML = old; }
+  if (kind === "ai") loadAiSettings();  // tampilkan model yang dipilih otomatis
+}
+
+let aiSettings = null;
+
+function showProvider() {
+  const name = $("aiProvider").value;
+  const p = aiSettings.providers[name];
+  $("aiName").textContent = p.label;
+  $("apiModel").value = p.model;
+  $("apiModel").placeholder = p.default_model || "Kosongkan = dipilih otomatis";
+  $("apiBaseUrl").value = p.base_url;
+  $("apiBaseUrl").placeholder = p.default_base_url || "https://.../v1";
+  $("baseUrlField").hidden = !(name === "custom" || name === "ollama");
+  $("apiKey").value = "";
+  $("apiKey").placeholder = p.needs_key ? (p.has_key ? `Tersimpan (${p.key_hint}), isi untuk mengganti` : "Tempel API key di sini") : "Tidak perlu (opsional)";
+  $("keyStatus").textContent = !p.needs_key ? "" : p.has_key ? `Kunci tersimpan (${p.key_hint})` : "Belum ada API key";
+  $("providerHint").innerHTML = name === "ollama"
+    ? 'AI lokal gratis: pasang <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a>, lalu jalankan misalnya <code>ollama pull qwen2.5:3b</code>.'
+    : p.key_url ? `Buat API key di <a href="${esc(p.key_url)}" target="_blank" rel="noopener">${esc(p.key_url.replace(/^https?:\/\//, ""))}</a>.` : "";
 }
 
 async function loadAiSettings() {
   try {
-    const s = await api("/api/settings");
-    $("guidebook").value = s.guidebook || "";
-    $("apiModel").value = s.model || "claude-opus-5-5";
-    $("keyStatus").textContent = s.has_api_key ? `Kunci tersimpan (${s.api_key_hint})` : "Belum ada API key";
+    aiSettings = await api("/api/settings");
+    $("guidebook").value = aiSettings.guidebook || "";
+    $("aiProvider").innerHTML = Object.entries(aiSettings.providers)
+      .map(([k, p]) => `<option value="${k}">${esc(p.label)}</option>`).join("");
+    $("aiProvider").value = aiSettings.provider;
+    showProvider();
   } catch { /* abaikan */ }
 }
 
 async function saveAiSettings(showToast = true) {
   try {
-    const s = await api("/api/settings", {
+    aiSettings = await api("/api/settings", {
       method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ anthropic_api_key: $("apiKey").value.trim() || null, model: $("apiModel").value, guidebook: $("guidebook").value }),
+      body: JSON.stringify({
+        provider: $("aiProvider").value, guidebook: $("guidebook").value,
+        api_key: $("apiKey").value.trim() || null, model: $("apiModel").value.trim(), base_url: $("apiBaseUrl").value.trim(),
+      }),
     });
-    $("apiKey").value = "";
-    $("keyStatus").textContent = s.has_api_key ? `Kunci tersimpan (${s.api_key_hint})` : "Belum ada API key";
-    if (showToast) toast("Pengaturan disimpan.");
+    showProvider();
+    if (showToast) toast("Pengaturan AI disimpan.");
   } catch (e) { toast(e.message, true); }
 }
 
@@ -775,7 +799,7 @@ function bindPlan() {
       $("pasteBox").hidden = true;
       $("pasteInput").value = "";
       renderPlan();
-      toast(`${planInRange().length} animasi dari Claude diterapkan.`);
+      toast(`${planInRange().length} animasi dari AI diterapkan.`);
     } catch (e) { toast(e.message, true); }
   });
   $("planList").addEventListener("input", (e) => {
@@ -817,6 +841,16 @@ function bindPlan() {
   });
   $("settingsSaveBtn").addEventListener("click", () => saveAiSettings());
   $("guidebook").addEventListener("change", () => saveAiSettings(false));
+  $("aiProvider").addEventListener("change", () => { $("modelList").innerHTML = ""; showProvider(); saveAiSettings(false); });
+  $("modelsBtn").addEventListener("click", async () => {
+    await saveAiSettings(false);
+    try {
+      const models = await api("/api/ai/models");
+      $("modelList").innerHTML = models.map((m) => `<option value="${esc(m)}">`).join("");
+      toast(`${models.length} model ditemukan. Klik kolom Model untuk memilih.`);
+      $("apiModel").focus();
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 async function checkHealth() {

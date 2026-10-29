@@ -118,13 +118,16 @@
               kartu, kata kunci besar, chip, checklist, dan zoom penekanan. Bisa diedit sebelum render.</p>
             <div class="row wrap">
               <button id="planAutoBtn" title="Gratis, lokal, berbasis kata kunci & suara">⚡ Otomatis (gratis)</button>
-              <button id="planPromptBtn" class="ghost" title="Gratis: tempel ke Claude.ai, lalu tempel jawabannya di bawah">📋 Salin prompt untuk Claude.ai</button>
-              <button id="planAiBtn" class="ghost" title="Otomatis lewat Claude API (butuh API key)">🤖 Buat dengan Claude API</button>
+              <button id="planPromptBtn" class="ghost" title="Gratis: tempel ke chatbot AI, lalu tempel jawabannya di bawah">📋 Salin prompt (Claude / Gemini / ChatGPT)</button>
+              <button id="planAiBtn" class="ghost" title="Otomatis lewat API AI pilihan Anda (atur di bawah)">🤖 Buat dengan <span id="aiName">AI API</span></button>
               <span class="spacer"></span>
               <label class="check"><input type="checkbox" id="animEnabled" checked> Pakai animasi saat render</label>
             </div>
             <div id="pasteBox" class="paste-box" hidden>
-              <p class="hint">Prompt sudah disalin. Buka <a href="https://claude.ai/new" target="_blank" rel="noopener">claude.ai</a>,
+              <p class="hint">Prompt sudah disalin. Buka
+                <a href="https://claude.ai/new" target="_blank" rel="noopener">Claude</a>,
+                <a href="https://gemini.google.com/app" target="_blank" rel="noopener">Gemini</a>, atau
+                <a href="https://chatgpt.com/" target="_blank" rel="noopener">ChatGPT</a>,
                 tempel (Ctrl+V), kirim, lalu salin jawaban JSON-nya ke sini:</p>
               <textarea id="pasteInput" rows="5" placeholder='{"items": [...]}'></textarea>
               <div class="row"><button id="pasteApplyBtn">Terapkan</button><button id="pasteCancelBtn" class="ghost">Batal</button></div>
@@ -141,21 +144,29 @@
               <button id="planAddBtn" class="ghost">Tambah di posisi video</button>
             </div>
             <details class="settings-box">
-              <summary>📘 Guidebook gaya & pengaturan Claude</summary>
-              <label class="field">Guidebook (aturan gaya agar hasil konsisten, dipakai mode Claude)
+              <summary>📘 Guidebook gaya & pengaturan AI</summary>
+              <label class="field">Guidebook (aturan gaya agar hasil konsisten, dipakai mode salin-prompt & API)
                 <textarea id="guidebook" rows="4" placeholder="Contoh: Gaya edukatif & santai. Pakai label kartu 'Langkah 1, 2, 3'. Maksimal 1 animasi per 6 detik. Zoom hanya pada kata yang sangat penting."></textarea>
               </label>
               <div class="row wrap">
-                <label class="field">API key Claude <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"></label>
-                <label class="field">Model
-                  <select id="apiModel">
-                    <option value="claude-opus-5-5">Claude Opus 5.5 (paling pintar)</option>
-                    <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (seimbang)</option>
-                    <option value="claude-haiku-5-5">Claude Haiku 5.5 (paling hemat)</option>
-                  </select>
+                <label class="field">Penyedia AI (untuk tombol 🤖)
+                  <select id="aiProvider"></select>
                 </label>
+                <label class="field">API key <input type="password" id="apiKey" autocomplete="off"></label>
               </div>
-              <div class="row"><button id="settingsSaveBtn" class="ghost">Simpan</button><span id="keyStatus" class="hint"></span></div>
+              <div class="row wrap">
+                <label class="field">Model
+                  <input id="apiModel" list="modelList" placeholder="Kosongkan = dipilih otomatis">
+                  <datalist id="modelList"></datalist>
+                </label>
+                <label class="field" id="baseUrlField">Base URL <input id="apiBaseUrl" placeholder="https://.../v1"></label>
+              </div>
+              <div class="row wrap">
+                <button id="settingsSaveBtn" class="ghost">Simpan</button>
+                <button id="modelsBtn" class="ghost">Muat daftar model</button>
+                <span id="keyStatus" class="hint"></span>
+              </div>
+              <p class="hint" id="providerHint"></p>
               <p class="hint">API key hanya disimpan di laptop Anda (folder data). Tanpa API key, pakai tombol "Salin prompt".</p>
             </details>
           </section>

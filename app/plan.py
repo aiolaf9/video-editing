@@ -9,8 +9,8 @@ Jenis elemen:
 
 Tiga cara membuatnya:
 1. heuristic()   : gratis, lokal, berbasis kata kunci & energi suara
-2. build_prompt(): prompt ringkas untuk ditempel ke Claude.ai, hasil JSON-nya ditempel balik (gratis)
-3. ask_claude()  : otomatis lewat Claude API (butuh API key; token sangat sedikit karena hanya teks)
+2. build_prompt(): prompt ringkas untuk ditempel ke Claude.ai/Gemini/ChatGPT, JSON-nya ditempel balik (gratis)
+3. lewat API AI pilihan (lihat ai.py): token sangat sedikit karena hanya teks yang dikirim
 """
 import json
 import re
@@ -202,18 +202,19 @@ def user_message(transcript: dict, start: float, end: float, guidebook: str = ""
     return msg
 
 
+JSON_INSTRUCTION = (
+    '\nBalas HANYA dengan JSON, tanpa penjelasan, dengan format:\n'
+    '{"items": [{"type": "card", "start": 0.0, "end": 0.0, "text": "", "label": "", "items": []}]}\n'
+)
+
+
 def build_prompt(transcript: dict, start: float, end: float, guidebook: str = "") -> str:
-    """Prompt lengkap untuk disalin ke Claude.ai (tanpa API)."""
-    return (
-        SYSTEM_PROMPT
-        + "\n" + user_message(transcript, start, end, guidebook)
-        + '\nBalas HANYA dengan JSON, tanpa penjelasan, dengan format:\n'
-        + '{"items": [{"type": "card", "start": 0.0, "end": 0.0, "text": "", "label": "", "items": []}]}\n'
-    )
+    """Prompt lengkap untuk disalin ke chatbot mana pun (Claude.ai, Gemini, ChatGPT) tanpa API."""
+    return SYSTEM_PROMPT + "\n" + user_message(transcript, start, end, guidebook) + JSON_INSTRUCTION
 
 
 def parse_reply(text: str) -> list[dict]:
-    """Ambil daftar elemen dari balasan Claude (boleh ada ```json ... ``` atau teks di sekitarnya)."""
+    """Ambil daftar elemen dari balasan AI (boleh ada ```json ... ``` atau teks di sekitarnya)."""
     text = (text or "").strip()
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if fenced:

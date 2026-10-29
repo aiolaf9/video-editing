@@ -30,7 +30,8 @@ button.ghost, .ghost-btn {
 .ghost-btn { display: inline-block; border-radius: 8px; padding: 6px 12px; cursor: pointer; margin: 4px 0 8px; }
 button.danger { color: var(--danger); }
 button.big { width: 100%; padding: 12px; font-size: 15px; }
-input[type=url], input[type=number], select {
+[hidden] { display: none !important; }
+input[type=url], input[type=number], input[type=password], input[type=text], input:not([type]), select {
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; min-width: 0;
 }
 input[type=range] { width: 100%; accent-color: var(--accent); }

@@ -18,8 +18,8 @@ Transkrip dibuat oleh Whisper secara lokal, editing oleh FFmpeg, dan pemilihan k
 | Tune | Filter (Vivid, Cinematic, Hangat, Sejuk, Vintage, Hitam putih), kecerahan, kontras, saturasi, kecepatan 0.75×–2×, zoom-in perlahan, fade |
 | Backsound | Upload musik, atur volume, *auto-ducking* (musik mengecil saat ada suara), normalisasi loudness standar media sosial |
 | Bingkai otomatis | Melacak wajah (YuNet, lokal) sehingga bingkai 9:16 mengikuti pembicara secara halus |
-| Animasi sesuai omongan | Kartu, kata kunci besar bergradasi, chips, checklist, dan punch-in zoom yang muncul tepat saat hal itu diucapkan. Bisa dibuat **Otomatis** (gratis), **Salin prompt ke Claude.ai** (gratis), atau **Claude API**. Semua elemen bisa diedit sebelum render. |
-| Guidebook | Aturan gaya edit Anda sendiri, dipakai setiap kali Claude membuat rencana animasi agar hasil konsisten |
+| Animasi sesuai omongan | Kartu, kata kunci besar bergradasi, chips, checklist, dan punch-in zoom yang muncul tepat saat hal itu diucapkan. Bisa dibuat **Otomatis** (gratis), **Salin prompt** ke Claude/Gemini/ChatGPT (gratis), atau lewat **API AI apa saja** (Claude, Gemini, ChatGPT, OpenRouter, Ollama lokal, dll.). Semua elemen bisa diedit sebelum render. |
+| Guidebook | Aturan gaya edit Anda sendiri, dipakai setiap kali AI membuat rencana animasi agar hasil konsisten |
 | Render massal | Centang beberapa klip, render sekaligus. Bisa pakai GPU NVIDIA/Intel/AMD/Mac (otomatis kembali ke CPU bila gagal). |
 
 ## Instalasi
@@ -78,16 +78,28 @@ Setelah itu buka **http://localhost:8000** di browser.
 - **Link YouTube gagal**: pastikan Deno terpasang, lalu perbarui yt-dlp: `.venv\Scripts\pip install -U "yt-dlp[default]"`.
 - **Link Instagram gagal**: Instagram sering meminta login. Unduh videonya manual, lalu unggah filenya.
 
-## Animasi dengan Claude: hemat token
+## Animasi dengan AI pilihan Anda: hemat token
 
-Video tidak pernah dikirim ke Claude. Yang dikirim hanya **teks transkrip klip** (klip 30 detik ≈ 100 kata),
-lalu Claude membalas rencana animasi berupa JSON. Semua gambar dan render dikerjakan laptop Anda.
+Video tidak pernah dikirim ke AI. Yang dikirim hanya **teks transkrip klip** (klip 30 detik ≈ 100 kata),
+lalu AI membalas rencana animasi berupa JSON. Semua gambar dan render dikerjakan laptop Anda.
 
-- **Salin prompt untuk Claude.ai**: gratis dengan akun Claude biasa. Klik tombolnya, tempel di claude.ai,
-  lalu tempel jawaban JSON-nya kembali ke aplikasi.
-- **Claude API**: sekali klik, butuh API key dari https://console.anthropic.com. Pilih model di panel
-  Animasi; Haiku 5.5 paling hemat, Opus 5.5 paling pintar. Fitur *fallback* otomatis aktif: bila permintaan
-  ditolak filter keamanan, API mengulang di model cadangan.
+- **📋 Salin prompt (Claude / Gemini / ChatGPT)**: gratis dengan langganan chatbot biasa (termasuk Gemini Pro).
+  Klik tombolnya, tempel di chatbot, lalu tempel jawaban JSON-nya kembali ke aplikasi.
+- **🤖 Buat dengan AI API**: sekali klik. Pilih penyedia di *Guidebook gaya & pengaturan AI*:
+
+| Penyedia | API key dibuat di | Catatan |
+|---|---|---|
+| Claude | console.anthropic.com | Structured output (JSON dijamin valid) + fallback otomatis |
+| Gemini | aistudio.google.com/apikey | Key API terpisah dari langganan Gemini Pro |
+| ChatGPT (OpenAI) | platform.openai.com/api-keys | |
+| OpenRouter | openrouter.ai/settings/keys | Satu key untuk ratusan model |
+| Groq, DeepSeek | konsol masing-masing | |
+| Ollama (lokal) | tidak perlu key | Gratis & offline; pasang Ollama lalu `ollama pull qwen2.5:3b` |
+| Lainnya | sesuai penyedia | Isi Base URL API yang kompatibel dengan OpenAI |
+
+Kolom **Model** boleh dikosongkan (dipilih otomatis), atau klik **Muat daftar model** untuk memilih.
+Key bisa juga diatur lewat environment variable: `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`,
+`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`.
 
 ## Pengaturan lanjutan
 
@@ -116,7 +128,8 @@ app/
   subtitles.py   pembuat subtitle ASS animasi
   render.py      penyusun perintah FFmpeg (crop, zoom, warna, musik, overlay)
   faces.py       pelacakan wajah untuk bingkai otomatis
-  plan.py        rencana animasi: otomatis, prompt Claude.ai, Claude API
+  plan.py        rencana animasi: otomatis, prompt salin-tempel, Claude API
+  ai.py          penghubung ke penyedia AI (Claude, Gemini, ChatGPT, OpenRouter, Ollama, dll.)
   overlays.py    menggambar kartu/kata kunci/chips/checklist (Pillow)
   media.py       probe, preview, energi audio
   jobs.py        antrean pekerjaan di latar belakang

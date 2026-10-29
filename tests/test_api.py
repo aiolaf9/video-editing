@@ -139,9 +139,11 @@ def test_animation_plan_endpoints_and_render(sample_video, fake_transcript, monk
     r = client.post(f"/api/projects/{pid}/plan/ai", json=rng)
     assert r.status_code == 400 and "API key" in r.json()["detail"]
     monkeypatch.setattr(plan, "ask_claude", lambda *a, **k: [{"type": "keyword", "start": 2, "end": 3, "text": "AI"}])
-    client.put("/api/settings", json={"anthropic_api_key": "sk-ant-test-1234", "model": "claude-haiku-5-5", "guidebook": ""})
+    client.put("/api/settings", json={"provider": "claude", "api_key": "sk-ant-test-1234", "model": "claude-haiku-5-5"})
     s = client.get("/api/settings").json()
-    assert s["has_api_key"] and s["api_key_hint"] == "...1234" and "anthropic_api_key" not in s
+    claude = s["providers"]["claude"]
+    assert claude["has_key"] and claude["key_hint"] == "...1234" and "sk-ant-test-1234" not in str(s)
+    assert claude["model"] == "claude-haiku-5-5"
     ai = client.post(f"/api/projects/{pid}/plan/ai", json=rng).json()
     assert [i["text"] for i in ai if i["type"] == "keyword"] == ["AI"]
     client.post(f"/api/projects/{pid}/plan/import", json={**rng, "text": reply})
