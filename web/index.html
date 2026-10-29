@@ -25,6 +25,9 @@
   <aside class="sidebar">
     <section class="card">
       <h2>Video baru</h2>
+      <p class="storage-note">🕒 Video &amp; hasil render <b>disimpan sementara</b>: dihapus otomatis
+        <span id="retentionText">24 jam setelah aktivitas terakhir, paling lama 72 jam sejak upload</span>.
+        Unduh hasil render Anda sebelum itu.</p>
       <label class="dropzone" id="dropzone">
         <input type="file" id="fileInput" accept="video/*" hidden>
         <span>⬆️ Pilih atau seret file video ke sini</span>
@@ -59,11 +62,19 @@
 
     <div id="projectView" hidden>
       <div class="project-head">
-        <h1 id="projectTitle"></h1>
+        <div class="title-wrap">
+          <h1 id="projectTitle"></h1>
+          <span id="mediaBadge" class="media-badge" hidden></span>
+        </div>
         <div class="actions">
           <button class="ghost" id="reanalyzeBtn">Analisis ulang</button>
           <button class="ghost danger" id="deleteBtn">Hapus</button>
         </div>
+      </div>
+
+      <div id="mediaWarning" class="status warn" hidden></div>
+      <div id="mediaGone" class="status error" hidden>
+        <div class="status-text"><b>Media proyek ini sudah dihapus.</b> Video, preview, dan hasil render dihapus otomatis setelah masa simpan sementara berakhir. Proyek ini tidak bisa dibuka atau diedit lagi. Untuk mengedit ulang, unggah kembali videonya sebagai proyek baru.</div>
       </div>
 
       <div id="analyzeStatus" class="status" hidden>
@@ -74,7 +85,7 @@
         <div class="bar"><div></div></div>
       </div>
 
-      <div class="editor">
+      <div class="editor" id="editorArea">
         <div class="player-col">
           <div class="player-wrap" id="playerWrap">
             <video id="player" controls playsinline preload="metadata"></video>

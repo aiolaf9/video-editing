@@ -38,6 +38,8 @@ async function api(path, opts = {}) {
 
 const fmtTime = (t) => (t ? new Date(t * 1000).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "–");
 const quota = (used, limit) => `${used}${limit ? " / " + limit : ""}`;
+const fmtBytes = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round((b || 0) / 1e6) + " MB");
+const numOrNull = (v) => (v === "" || v === null ? null : Math.max(0, +v));
 
 // ------------------------------------------------------------ navigasi
 function allowed(el) {
@@ -67,6 +69,15 @@ async function loadStatus() {
       ["Unduhan antre", q.unduh.antre], ["Worker sibuk", st.queues.busy_workers],
     ].map(([label, n]) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`).join("");
     const name = (id) => (units.find((u) => u.id === id) || {}).name || (id === "-" ? "Tanpa unit" : "Unit terhapus");
+    const sto = st.storage || {};
+    const states = sto.projects_by_state || {};
+    const stats = [["Media sementara terpakai", fmtBytes(sto.media_bytes)],
+      ["Proyek dengan media", states.tersedia || 0], ["Media sudah dihapus", states.dihapus || 0]];
+    if (sto.disk) stats.push(["Sisa disk server", `${fmtBytes(sto.disk.free)} dari ${fmtBytes(sto.disk.total)}`]);
+    $("storageStats").innerHTML = stats.map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+    $("legacyHint").hidden = !sto.legacy_projects;
+    $("legacyHint").innerHTML = `${sto.legacy_projects} proyek lama belum masuk penyimpanan sementara dan tidak akan dihapus otomatis.
+      Untuk memindahkannya (dengan masa tenggang), jalankan di server: <code>python -m app.manage media-migrate</code> (lihat DEPLOY.md).`;
     const rows = Object.entries(st.last_30_days);
     $("usageTable").innerHTML = "<tr><th>Unit</th><th>Video dianalisis</th><th>Klip dirender</th><th>Permintaan AI</th></tr>" +
       (rows.map(([id, k]) => `<tr><td>${esc(name(id))}</td><td>${k.analyze || 0}</td><td>${k.render || 0}</td><td>${k.ai || 0}</td></tr>`).join("")
@@ -78,16 +89,17 @@ async function loadStatus() {
 async function loadUnits() {
   try {
     units = await api("/api/admin/units");
-    $("unitTable").innerHTML = "<tr><th>Unit</th><th>Anggota</th><th>Render hari ini</th><th>AI hari ini</th><th>Guidebook</th><th></th></tr>" +
+    $("unitTable").innerHTML = "<tr><th>Unit</th><th>Anggota</th><th>Render hari ini</th><th>AI hari ini</th><th>Media sementara</th><th>Guidebook</th><th></th></tr>" +
       (units.map((u) => `<tr>
         <td><b>${esc(u.name)}</b></td>
         <td>${u.members}</td>
         <td>${quota(u.renders_today, u.daily_render_quota)}</td>
         <td>${quota(u.ai_today, u.daily_ai_quota)}</td>
+        <td>${fmtBytes(u.storage_used)}${u.storage_quota ? " / " + fmtBytes(u.storage_quota) : ""}</td>
         <td class="muted">${u.guidebook ? esc(u.guidebook.slice(0, 60)) + (u.guidebook.length > 60 ? "…" : "") : "–"}</td>
         <td style="white-space:nowrap"><button class="ghost" data-edit="${u.id}">Atur</button>
           ${me.role === "admin" ? `<button class="ghost danger" data-del="${u.id}">Hapus</button>` : ""}</td>
-      </tr>`).join("") || '<tr><td colspan="6" class="muted">Belum ada unit. Tambahkan di bawah.</td></tr>');
+      </tr>`).join("") || '<tr><td colspan="7" class="muted">Belum ada unit. Tambahkan di bawah.</td></tr>');
   } catch (e) { toast(e.message, true); }
 }
 
@@ -99,6 +111,7 @@ function openUnitEditor(id) {
   $("editUnitName").value = editingUnit.name;
   $("editUnitRender").value = editingUnit.daily_render_quota;
   $("editUnitAi").value = editingUnit.daily_ai_quota;
+  $("editUnitStorage").value = editingUnit.storage_quota_mb ?? "";
   $("editUnitGuidebook").value = editingUnit.guidebook || "";
   $("unitEditor").scrollIntoView({ behavior: "smooth" });
 }
@@ -193,7 +206,8 @@ function bind() {
     e.preventDefault();
     try {
       await api("/api/admin/units", { method: "POST", json: { name: $("unitName").value.trim(),
-        daily_render_quota: +$("unitRenderQuota").value || 0, daily_ai_quota: +$("unitAiQuota").value || 0 } });
+        daily_render_quota: +$("unitRenderQuota").value || 0, daily_ai_quota: +$("unitAiQuota").value || 0,
+        storage_quota_mb: numOrNull($("unitStorageQuota").value) } });
       $("unitName").value = "";
       toast("Unit ditambahkan.");
       loadUnits();
@@ -214,7 +228,8 @@ function bind() {
     try {
       await api(`/api/admin/units/${editingUnit.id}`, { method: "PUT", json: {
         name: $("editUnitName").value.trim() || editingUnit.name, daily_render_quota: +$("editUnitRender").value || 0,
-        daily_ai_quota: +$("editUnitAi").value || 0, guidebook: $("editUnitGuidebook").value } });
+        daily_ai_quota: +$("editUnitAi").value || 0, guidebook: $("editUnitGuidebook").value,
+        ...(me.role === "admin" ? { storage_quota_mb: numOrNull($("editUnitStorage").value) } : {}) } });
       toast("Unit disimpan.");
       $("unitEditor").hidden = true;
       loadUnits();

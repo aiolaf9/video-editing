@@ -29,6 +29,32 @@ const fmt = (s) => {
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ACTIVE_JOB = ["antre", "jalan", "berhenti"];
 const isActive = (j) => ACTIVE_JOB.includes(j.status);
+// Sisa waktu yang mudah dibaca: "5 jam 20 menit", "40 menit".
+function fmtRemaining(sec) {
+  if (sec <= 0) return "kurang dari 1 menit";
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h ? `${h} jam${m ? " " + m + " menit" : ""}` : `${Math.max(1, m)} menit`;
+}
+const fmtDateTime = (t) => new Date(t * 1000).toLocaleString("id-ID", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+function mediaRemaining(media) {
+  if (!media || media.state !== "tersedia" || !media.expires_at) return null;
+  return media.expires_at - Date.now() / 1000;
+}
+
+function mediaGone(media) {
+  return !!media && ["dihapus", "menghapus", "kedaluwarsa"].includes(media.state);
+}
+
+function mediaListLabel(media) {
+  if (!media || media.state === "lama") return "";
+  if (mediaGone(media)) return ' · <span class="exp-gone">media dihapus</span>';
+  const rem = mediaRemaining(media);
+  if (rem === null) return "";
+  const cls = media.warning ? "exp-warn" : "";
+  return ` · <span class="${cls}">sisa ${fmtRemaining(rem)}</span>`;
+}
+
 const fmtSize = (b) => (b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.round(b / 1e3) + " KB");
 
 function toast(msg, isError = false) {
@@ -47,6 +73,10 @@ async function api(path, opts = {}) {
   if (res.status === 401 && !path.startsWith("/api/auth/login")) {
     location.replace("/login.html?next=" + encodeURIComponent(location.pathname + location.hash));
     throw new Error("Silakan login.");
+  }
+  if (res.status === 410 && state.project) {
+    // Media terhapus saat halaman terbuka: tampilkan keadaan terbaru.
+    setTimeout(() => api(`/api/projects/${state.project.id}`).then((p) => { state.project = p; refreshProjectData(); }).catch(() => {}), 0);
   }
   if (!res.ok) {
     let msg = data && data.detail ? data.detail : `Error ${res.status}`;
@@ -125,7 +155,7 @@ async function refreshProjects() {
   list.innerHTML = state.projects.map((p) => `
     <li data-id="${p.id}" class="${state.project && state.project.id === p.id ? "active" : ""}">
       <span class="name">${esc(p.name)}</span>
-      <span class="meta">${esc(p.status)}${p.duration ? " · " + fmt(p.duration) : ""}${p.render_count ? " · " + p.render_count + " klip" : ""}${p.owner_name ? " · " + esc(p.owner_name) : ""}${state.me && state.me.role === "admin" && p.unit_name ? " · " + esc(p.unit_name) : ""}</span>
+      <span class="meta">${esc(p.status)}${p.duration ? " · " + fmt(p.duration) : ""}${p.render_count ? " · " + p.render_count + " klip" : ""}${p.owner_name ? " · " + esc(p.owner_name) : ""}${state.me && state.me.role === "admin" && p.unit_name ? " · " + esc(p.unit_name) : ""}${mediaListLabel(p.media)}</span>
     </li>`).join("") || '<li class="muted">Belum ada proyek.</li>';
 }
 
@@ -152,9 +182,11 @@ async function refreshProjectData() {
   const p = state.project;
   if (!p) return;
   $("projectTitle").textContent = p.name;
+  renderMedia();
   renderStatus();
   renderMusicOptions();
   renderRenders();
+  if (mediaGone(p.media)) return;  // media sudah dihapus: jangan memuat preview/transkrip
   if (p.status === "siap") {
     if (!$("player").src) {
       $("player").src = `/api/projects/${p.id}/preview`;
@@ -443,6 +475,43 @@ function renderMusicOptions() {
   if (files.includes(current)) sel.value = current;
 }
 
+// Masa simpan media: badge di judul, peringatan menjelang dihapus, dan tampilan saat sudah dihapus.
+function renderMedia() {
+  const p = state.project;
+  const media = p.media || {};
+  const badge = $("mediaBadge");
+  const gone = mediaGone(media);
+  $("mediaGone").hidden = !gone;
+  $("editorArea").hidden = gone;
+  $("reanalyzeBtn").hidden = gone;
+  badge.hidden = false;
+  badge.className = "media-badge";
+  $("mediaWarning").hidden = true;
+  if (gone) {
+    badge.textContent = "Media dihapus";
+    badge.classList.add("gone");
+    const player = $("player");
+    if (player.src) { player.removeAttribute("src"); player.load(); }
+    return;
+  }
+  if (media.state === "lama" || !media.state) {
+    badge.textContent = "Proyek lama";
+    badge.title = "Dibuat sebelum penyimpanan sementara berlaku; belum dijadwalkan untuk dihapus.";
+    return;
+  }
+  const rem = mediaRemaining(media);
+  if (rem === null) { badge.hidden = true; return; }
+  badge.textContent = `Media tersimpan sampai ${fmtDateTime(media.expires_at)}`;
+  badge.title = "Diperpanjang setiap kali Anda bekerja di proyek ini, paling lama sampai " + fmtDateTime(media.hard_expires_at);
+  if (media.warning) {
+    badge.classList.add("warn");
+    const w = $("mediaWarning");
+    w.hidden = false;
+    w.innerHTML = `⚠️ <b>Media akan dihapus dalam ${fmtRemaining(rem)}</b> (${fmtDateTime(media.expires_at)}).
+      Unduh hasil render yang Anda perlukan sekarang. Setelah dihapus, proyek tidak bisa dibuka kembali.`;
+  }
+}
+
 function renderRenders() {
   const p = state.project;
   const done = [...(p.renders || [])].reverse();
@@ -464,13 +533,24 @@ function renderRenders() {
       </li>`),
     ...done.map((r) => {
       const url = `/api/projects/${p.id}/renders/${encodeURIComponent(r.file)}`;
+      if (mediaGone(p.media)) {
+        return `
+      <li class="render-item">
+        <div></div>
+        <div>
+          <div class="title">${esc(r.title)}</div>
+          <div class="muted">${esc(r.aspect)} · ${fmt(r.start)}–${fmt(r.end)}</div>
+          <div class="muted cancelled">File sudah tidak tersedia (masa simpan berakhir).</div>
+        </div>
+      </li>`;
+      }
       return `
       <li class="render-item">
         <video src="${url}" controls preload="metadata"></video>
         <div>
           <div class="title">${esc(r.title)}</div>
           <div class="muted">${esc(r.aspect)} · ${fmt(r.start)}–${fmt(r.end)} · ${fmtSize(r.size)}</div>
-          <p><a href="${url}?download=true">⬇ Unduh MP4</a></p>
+          <p><a class="download-btn" href="${url}?download=true" download>⬇ Download MP4</a></p>
         </div>
       </li>`;
     }),
@@ -779,6 +859,11 @@ async function loadMe() {
   $("whoami").innerHTML = `<b>${esc(me.name)}</b><br>${esc(me.role_label)}${me.unit_name ? " · " + esc(me.unit_name) : ""}`;
   $("adminLink").hidden = me.role === "editor";
   $("urlForm").hidden = $("urlOr").hidden = !me.url_import;
+  const pol = me.media_policy || {};
+  document.querySelector(".storage-note").hidden = pol.lifecycle === false;
+  if (pol.retention_hours) {
+    $("retentionText").textContent = `${pol.retention_hours} jam setelah aktivitas terakhir, paling lama ${pol.max_hours} jam sejak upload`;
+  }
   $("aiName").textContent = me.ai.name;
   $("planAiBtn").disabled = !me.ai.ready;
   $("planAiBtn").title = me.ai.ready ? "Otomatis lewat API AI yang diatur admin"
@@ -874,6 +959,7 @@ async function checkHealth() {
 
 bind();
 bindPlan();
+setInterval(() => { if (state.project) renderMedia(); }, 60_000);
 loadSettings();
 $("logoutBtn").addEventListener("click", async () => {
   try { await api("/api/auth/logout", { method: "POST" }); } catch { /* abaikan */ }

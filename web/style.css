@@ -227,3 +227,16 @@ table.grid td select, table.grid td input { padding: 4px 6px; }
 .status.info { border-color: var(--line); }
 .render-item .cancel { margin-top: 8px; }
 .render-item .muted.cancelled { color: var(--muted); font-style: italic; }
+
+/* ---------- media sementara (P2) ---------- */
+.storage-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; line-height: 1.45; }
+.storage-note b { color: var(--text); }
+.title-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.media-badge { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+.media-badge.warn { color: #111; background: var(--accent-2); border-color: var(--accent-2); }
+.media-badge.gone { color: var(--danger); border-color: var(--danger); }
+.status.warn { border-color: var(--accent-2); }
+.project-list .meta .exp-warn { color: var(--accent-2); }
+.project-list .meta .exp-gone { color: var(--danger); }
+.download-btn { display: inline-block; background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; padding: 7px 12px; border-radius: 8px; }
+.download-btn:hover { filter: brightness(1.1); }

@@ -29,6 +29,9 @@
   <section class="card" id="sec-status" hidden>
     <h3>Antrean pekerjaan</h3>
     <div class="stat-row" id="queueStats"></div>
+    <h3 style="margin-top:16px">Penyimpanan media sementara</h3>
+    <div class="stat-row" id="storageStats"></div>
+    <p class="hint" id="legacyHint" hidden></p>
     <h3 style="margin-top:16px">Pemakaian 30 hari terakhir</h3>
     <div class="table-wrap"><table class="grid" id="usageTable"></table></div>
     <p class="hint">Bila antrean "berat" sering panjang, tambah jumlah worker di server (lihat README, bagian deploy).</p>
@@ -42,6 +45,7 @@
       <label class="field">Nama unit baru <input id="unitName" required maxlength="120" placeholder="mis. Humas"></label>
       <label class="field">Kuota render/hari (0 = bebas) <input type="number" id="unitRenderQuota" min="0" value="0"></label>
       <label class="field">Kuota AI/hari (0 = bebas) <input type="number" id="unitAiQuota" min="0" value="0"></label>
+      <label class="field">Kuota media (MB, kosong = bawaan) <input type="number" id="unitStorageQuota" min="0" placeholder="bawaan"></label>
       <button type="submit">+ Tambah unit</button>
     </form>
     <div id="unitEditor" class="settings-box" hidden>
@@ -50,6 +54,7 @@
         <label class="field">Nama <input id="editUnitName" maxlength="120"></label>
         <label class="field">Kuota render/hari <input type="number" id="editUnitRender" min="0"></label>
         <label class="field">Kuota AI/hari <input type="number" id="editUnitAi" min="0"></label>
+        <label class="field">Kuota media sementara (MB; kosong = bawaan; 0 = bebas) <input type="number" id="editUnitStorage" min="0" placeholder="bawaan"></label>
       </div>
       <label class="field">Guidebook gaya unit
         <textarea id="editUnitGuidebook" rows="5" placeholder="Aturan gaya edit unit ini: nada bicara, label kartu, frekuensi animasi, dll."></textarea>
