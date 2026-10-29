@@ -9,6 +9,7 @@ Semua berjalan lokal tanpa AI berbayar. Skor menggabungkan:
 """
 import re
 from statistics import mean, pstdev
+from typing import Optional
 
 from .media import ENERGY_STEP
 
@@ -44,7 +45,8 @@ def _hook_score(text: str) -> float:
     return min(score, 1.0)
 
 
-def _score_window(segs: list[dict], target: float, energy: list[float], e_mean: float, e_std: float) -> dict:
+def _score_window(segs: list[dict], target: float, energy: list[float], e_mean: float, e_std: float,
+                  next_start: Optional[float] = None) -> dict:
     start, end = segs[0]["start"], segs[-1]["end"]
     length = end - start
     text = " ".join(s["text"] for s in segs).strip()
@@ -55,7 +57,9 @@ def _score_window(segs: list[dict], target: float, energy: list[float], e_mean: 
     energy_s = max(0.0, min(1.0, 0.5 + z / 2))
     density_s = min((words / length) / 3.0, 1.0) if length > 0 else 0.0
     hook_s = _hook_score(segs[0]["text"])
-    ending_s = 1.0 if text.rstrip().endswith((".", "!", "?")) else 0.0
+    # Akhir kalimat: tanda baca, atau jeda bicara yang jelas setelahnya (transkrip tanpa tanda baca).
+    pause_after = (next_start - end) if next_start is not None else 1.0
+    ending_s = 1.0 if text.rstrip().endswith((".", "!", "?")) or pause_after >= 0.6 else 0.0
     fit_s = max(0.0, 1 - abs(length - target) / target)
     gap_pen = min(gaps / length, 0.5) if length > 0 else 0.0
 
@@ -130,7 +134,8 @@ def suggest(transcript: dict, energy: list[float], duration: float,
             if length > max_len:
                 break
             if length >= min_len:
-                cands.append(_score_window(segs[i:j + 1], target, energy, e_mean, e_std))
+                nxt = segs[j + 1]["start"] if j + 1 < len(segs) else None
+                cands.append(_score_window(segs[i:j + 1], target, energy, e_mean, e_std, nxt))
 
     if not cands:
         # Transkrip terlalu pendek untuk target: pakai seluruh ucapan sebagai satu klip.

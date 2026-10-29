@@ -17,6 +17,9 @@ Transkrip dibuat oleh Whisper secara lokal, editing oleh FFmpeg, dan pemilihan k
 | Format | 9:16, 1:1, 4:5, 16:9, atau asli. Bingkai bisa digeser agar wajah tetap di tengah. |
 | Tune | Filter (Vivid, Cinematic, Hangat, Sejuk, Vintage, Hitam putih), kecerahan, kontras, saturasi, kecepatan 0.75×–2×, zoom-in perlahan, fade |
 | Backsound | Upload musik, atur volume, *auto-ducking* (musik mengecil saat ada suara), normalisasi loudness standar media sosial |
+| Bingkai otomatis | Melacak wajah (YuNet, lokal) sehingga bingkai 9:16 mengikuti pembicara secara halus |
+| Animasi sesuai omongan | Kartu, kata kunci besar bergradasi, chips, checklist, dan punch-in zoom yang muncul tepat saat hal itu diucapkan. Bisa dibuat **Otomatis** (gratis), **Salin prompt ke Claude.ai** (gratis), atau **Claude API**. Semua elemen bisa diedit sebelum render. |
+| Guidebook | Aturan gaya edit Anda sendiri, dipakai setiap kali Claude membuat rencana animasi agar hasil konsisten |
 | Render massal | Centang beberapa klip, render sekaligus. Bisa pakai GPU NVIDIA/Intel/AMD/Mac (otomatis kembali ke CPU bila gagal). |
 
 ## Instalasi
@@ -75,6 +78,17 @@ Setelah itu buka **http://localhost:8000** di browser.
 - **Link YouTube gagal**: pastikan Deno terpasang, lalu perbarui yt-dlp: `.venv\Scripts\pip install -U "yt-dlp[default]"`.
 - **Link Instagram gagal**: Instagram sering meminta login. Unduh videonya manual, lalu unggah filenya.
 
+## Animasi dengan Claude: hemat token
+
+Video tidak pernah dikirim ke Claude. Yang dikirim hanya **teks transkrip klip** (klip 30 detik ≈ 100 kata),
+lalu Claude membalas rencana animasi berupa JSON. Semua gambar dan render dikerjakan laptop Anda.
+
+- **Salin prompt untuk Claude.ai**: gratis dengan akun Claude biasa. Klik tombolnya, tempel di claude.ai,
+  lalu tempel jawaban JSON-nya kembali ke aplikasi.
+- **Claude API**: sekali klik, butuh API key dari https://console.anthropic.com. Pilih model di panel
+  Animasi; Haiku 5.5 paling hemat, Opus 5.5 paling pintar. Fitur *fallback* otomatis aktif: bila permintaan
+  ditolak filter keamanan, API mengulang di model cadangan.
+
 ## Pengaturan lanjutan
 
 Atur lewat environment variable sebelum menjalankan:
@@ -100,7 +114,10 @@ app/
   transcribe.py  Whisper lokal (faster-whisper)
   clipper.py     penilaian & pemilihan kandidat klip
   subtitles.py   pembuat subtitle ASS animasi
-  render.py      penyusun perintah FFmpeg (crop, zoom, warna, musik)
+  render.py      penyusun perintah FFmpeg (crop, zoom, warna, musik, overlay)
+  faces.py       pelacakan wajah untuk bingkai otomatis
+  plan.py        rencana animasi: otomatis, prompt Claude.ai, Claude API
+  overlays.py    menggambar kartu/kata kunci/chips/checklist (Pillow)
   media.py       probe, preview, energi audio
   jobs.py        antrean pekerjaan di latar belakang
 web/             UI (HTML/CSS/JS tanpa build)
@@ -115,9 +132,9 @@ pytest
 
 ## Rencana berikutnya
 
-- **Tahap 2**: penilaian klip dengan LLM (opsional: Claude/Gemini, atau model lokal via Ollama) membaca transkrip
-- **Tahap 3**: auto-reframe dengan pelacakan wajah, auto-zoom pada kata penting, transisi, emoji/teks pop-up, preset LUT
-- **Tahap 4**: template animasi, B-roll otomatis, editor timeline multi-track
+- Penilaian klip viral dengan Claude (membaca transkrip penuh)
+- Teks di belakang subjek (hapus background), emoji, transisi, preset LUT
+- Template animasi tambahan, B-roll otomatis, editor timeline multi-track
 
 ## Catatan
 

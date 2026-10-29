@@ -15,6 +15,8 @@ const state = {
   aspect: "9:16",
   playingClip: false,
   pollTimer: null,
+  plan: [],
+  faces: [],
 };
 
 // ------------------------------------------------------------ util
@@ -52,7 +54,7 @@ const postJSON = (path, body) => api(path, { method: "POST", headers: { "Content
 // ------------------------------------------------------------ pengaturan tersimpan
 const SETTING_IDS = ["cropX", "colorSelect", "brightness", "contrast", "saturation", "speedSelect", "zoomCheck", "fadeCheck",
   "subEnabled", "subStyle", "subFont", "subColor", "subHighlight", "subSize", "subWords", "subPosition", "subUpper",
-  "musicVolume", "duckCheck", "normCheck", "encoderSelect", "langSelect", "targetSelect"];
+  "musicVolume", "duckCheck", "normCheck", "encoderSelect", "langSelect", "targetSelect", "reframeCheck", "animEnabled"];
 
 function saveSettings() {
   const data = { aspect: state.aspect };
@@ -81,6 +83,8 @@ function renderSettings(start, end, title) {
     start, end, title,
     aspect: state.aspect,
     crop_x: +$("cropX").value,
+    reframe: $("reframeCheck").checked ? "auto" : "manual",
+    animations: $("animEnabled").checked,
     crop_y: 0.5,
     color: $("colorSelect").value,
     brightness: +$("brightness").value,
@@ -129,6 +133,8 @@ async function openProject(id) {
   player.removeAttribute("src");
   player.load();
   state.transcript = { segments: [] };
+  state.plan = [];
+  state.faces = [];
   state.words = [];
   state.clips = [];
   await refreshProjectData();
@@ -152,6 +158,9 @@ async function refreshProjectData() {
       state.transcript = tr;
       state.words = tr.segments.flatMap((s) => s.words && s.words.length ? s.words : []);
       state.clips = clips;
+      const [planItems, faces] = await Promise.all([api(`/api/projects/${p.id}/plan`), api(`/api/projects/${p.id}/faces`)]);
+      state.plan = planItems;
+      state.faces = faces;
       renderTranscript();
       renderClips();
       if (clips.length) selectClip(0, false);
@@ -243,6 +252,7 @@ function setSelection(start, end) {
   $("durLabel").textContent = `Durasi: ${(end - start).toFixed(1)} dtk`;
   renderTimeline();
   highlightTranscriptRange();
+  renderPlan();
 }
 
 function playSelection() {
@@ -332,7 +342,12 @@ function layoutCropFrame() {
     const target = ow / oh;
     if (r.w / r.h > target) { fh = r.h; fw = r.h * target; } else { fw = r.w; fh = r.w / target; }
   }
-  const cx = +$("cropX").value;
+  let cx = +$("cropX").value;
+  const fx = $("reframeCheck").checked ? faceCenterAt($("player").currentTime) : null;
+  if (fx !== null && r.w > fw + 1) cx = Math.max(0, Math.min(1, (fx * r.w - fw / 2) / (r.w - fw)));
+  // Di mode otomatis (dan wajah terdeteksi) geser manual tidak berlaku.
+  $("cropHandle").hidden = fx !== null;
+  $("cropX").disabled = fx !== null;
   frame.hidden = false;
   frame.style.width = fw + "px";
   frame.style.height = fh + "px";
@@ -340,6 +355,16 @@ function layoutCropFrame() {
   frame.style.top = r.y + (r.h - fh) * 0.5 + "px";
   frame.dataset.range = String(r.w - fw);
   updateCaptionPreview();
+  updateOverlayPreview();
+}
+
+// Posisi wajah (0..1) di sekitar waktu t, dirata-rata agar pratinjau bingkai tidak bergetar.
+function faceCenterAt(t) {
+  const f = state.faces;
+  if (!f || !f.length) return null;
+  const i = Math.round(t * 2);  // 2 sampel per detik
+  const xs = f.slice(Math.max(0, i - 2), i + 3).filter(Boolean).map((p) => p.x);
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
 }
 
 function chunkWords(words, maxWords, maxGap = 0.6) {
@@ -517,7 +542,8 @@ function bind() {
     if (state.playingClip && t >= state.sel.end) { player.pause(); state.playingClip = false; }
     updatePlayhead();
     highlightNowWord(t);
-    updateCaptionPreview();
+    if ($("reframeCheck").checked && state.faces.length) layoutCropFrame();
+    else { updateCaptionPreview(); updateOverlayPreview(); }
   });
   player.addEventListener("pause", () => (state.playingClip = false));
   window.addEventListener("resize", layoutCropFrame);
@@ -622,6 +648,177 @@ function bind() {
   }
 }
 
+// ------------------------------------------------------------ rencana animasi
+const PLAN_LABELS = { zoom: "🔍 Zoom", keyword: "🔤 Kata", card: "🪪 Kartu", chips: "🏷 Chips", checklist: "✅ Checklist" };
+
+function planInRange() {
+  return state.plan.filter((i) => i.end > state.sel.start && i.start < state.sel.end);
+}
+
+function renderPlan() {
+  const list = $("planList");
+  if (!list || !state.project) return;
+  const items = planInRange();
+  $("animCount").textContent = items.length ? `(${items.length})` : "";
+  if (!items.length) {
+    list.innerHTML = '<li class="muted">Belum ada animasi di klip ini. Klik "Otomatis", atau buat dengan Claude.</li>';
+    return;
+  }
+  list.innerHTML = items.map((it) => {
+    let fields = "";
+    if (it.type === "card") {
+      fields = `<input class="label" data-f="label" value="${esc(it.label)}" placeholder="Label">
+                <input data-f="text" value="${esc(it.text)}" placeholder="Judul kartu">`;
+    } else if (it.type === "keyword") {
+      fields = `<input data-f="text" value="${esc(it.text)}" placeholder="Kata kunci">`;
+    } else if (it.type === "chips" || it.type === "checklist") {
+      fields = `<input data-f="items" value="${esc(it.items.join(", "))}" placeholder="Pisahkan dengan koma">`;
+    } else {
+      fields = '<span class="muted">Punch-in zoom</span>';
+    }
+    return `<li class="plan-item" data-id="${esc(it.id)}">
+      <span class="type">${PLAN_LABELS[it.type] || it.type}</span>
+      <span class="times"><input type="number" step="0.1" data-f="start" value="${it.start}"> – <input type="number" step="0.1" data-f="end" value="${it.end}"></span>
+      <span class="fields">${fields}</span>
+      <span><button class="ghost" data-act="seek" title="Putar dari sini">▶</button> <button class="ghost danger" data-act="del" title="Hapus">✕</button></span>
+    </li>`;
+  }).join("");
+}
+
+let planSaveTimer = null;
+function savePlanSoon() {
+  clearTimeout(planSaveTimer);
+  planSaveTimer = setTimeout(async () => {
+    try {
+      state.plan = await api(`/api/projects/${state.project.id}/plan`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state.plan),
+      });
+    } catch (e) { toast(e.message, true); }
+  }, 500);
+}
+
+function updateOverlayPreview() {
+  const box = $("ovPreview");
+  if (!box) return;
+  const t = $("player").currentTime;
+  const frame = $("cropFrame");
+  if (!$("animEnabled").checked || frame.hidden) { box.innerHTML = ""; return; }
+  const active = state.plan.filter((i) => i.type !== "zoom" && t >= i.start && t < i.end);
+  const key = active.map((i) => i.id).join(",");
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const fh = frame.getBoundingClientRect().height;
+  const [ow, oh] = OUTPUT_SIZES[state.aspect] || [1, 1];
+  const unit = Math.min(ow, oh) * (fh / oh);
+  box.innerHTML = active.map((i) => {
+    if (i.type === "keyword") return `<div class="ovp-keyword" style="font-size:${unit * 0.13}px">${esc(i.text)}</div>`;
+    if (i.type === "card") return `<div class="ovp-card" style="font-size:${unit * 0.058}px">${i.label ? `<small style="font-size:${unit * 0.034}px">${esc(i.label)}</small>` : ""}${esc(i.text)}</div>`;
+    const cls = i.type === "chips" ? "ovp-chips" : "ovp-check";
+    return `<div class="${cls}" style="font-size:${unit * 0.04}px">${i.items.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`;
+  }).join("");
+}
+
+async function runPlan(kind) {
+  const body = { start: state.sel.start, end: state.sel.end, guidebook: $("guidebook").value };
+  const btn = { auto: "planAutoBtn", ai: "planAiBtn" }[kind];
+  const old = $(btn).textContent;
+  $(btn).disabled = true;
+  $(btn).textContent = kind === "ai" ? "⏳ Claude sedang membaca transkrip..." : "⏳ Memproses...";
+  try {
+    state.plan = await postJSON(`/api/projects/${state.project.id}/plan/${kind}`, body);
+    renderPlan();
+    updateOverlayPreview();
+    toast(`${planInRange().length} animasi siap. Putar klip untuk melihat pratinjaunya.`);
+  } catch (e) { toast(e.message, true); }
+  finally { $(btn).disabled = false; $(btn).textContent = old; }
+}
+
+async function loadAiSettings() {
+  try {
+    const s = await api("/api/settings");
+    $("guidebook").value = s.guidebook || "";
+    $("apiModel").value = s.model || "claude-opus-5-5";
+    $("keyStatus").textContent = s.has_api_key ? `Kunci tersimpan (${s.api_key_hint})` : "Belum ada API key";
+  } catch { /* abaikan */ }
+}
+
+async function saveAiSettings(showToast = true) {
+  try {
+    const s = await api("/api/settings", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ anthropic_api_key: $("apiKey").value.trim() || null, model: $("apiModel").value, guidebook: $("guidebook").value }),
+    });
+    $("apiKey").value = "";
+    $("keyStatus").textContent = s.has_api_key ? `Kunci tersimpan (${s.api_key_hint})` : "Belum ada API key";
+    if (showToast) toast("Pengaturan disimpan.");
+  } catch (e) { toast(e.message, true); }
+}
+
+function bindPlan() {
+  $("planAutoBtn").addEventListener("click", () => runPlan("auto"));
+  $("planAiBtn").addEventListener("click", () => runPlan("ai"));
+  $("planPromptBtn").addEventListener("click", async () => {
+    try {
+      const res = await postJSON(`/api/projects/${state.project.id}/plan/prompt`,
+        { start: state.sel.start, end: state.sel.end, guidebook: $("guidebook").value });
+      try { await navigator.clipboard.writeText(res.prompt); }
+      catch { $("pasteInput").value = res.prompt; toast("Salin otomatis gagal: prompt ada di kotak di bawah, salin manual.", true); }
+      $("pasteBox").hidden = false;
+      $("pasteInput").focus();
+    } catch (e) { toast(e.message, true); }
+  });
+  $("pasteCancelBtn").addEventListener("click", () => { $("pasteBox").hidden = true; $("pasteInput").value = ""; });
+  $("pasteApplyBtn").addEventListener("click", async () => {
+    try {
+      state.plan = await postJSON(`/api/projects/${state.project.id}/plan/import`,
+        { start: state.sel.start, end: state.sel.end, text: $("pasteInput").value });
+      $("pasteBox").hidden = true;
+      $("pasteInput").value = "";
+      renderPlan();
+      toast(`${planInRange().length} animasi dari Claude diterapkan.`);
+    } catch (e) { toast(e.message, true); }
+  });
+  $("planList").addEventListener("input", (e) => {
+    const li = e.target.closest("li[data-id]");
+    const item = li && state.plan.find((i) => i.id === li.dataset.id);
+    if (!item) return;
+    const f = e.target.dataset.f;
+    if (f === "start" || f === "end") item[f] = +e.target.value;
+    else if (f === "items") item.items = e.target.value.split(",").map((x) => x.trim()).filter(Boolean);
+    else item[f] = e.target.value;
+    $("ovPreview").dataset.key = "";
+    savePlanSoon();
+  });
+  $("planList").addEventListener("click", (e) => {
+    const li = e.target.closest("li[data-id]");
+    const act = e.target.dataset.act;
+    if (!li || !act) return;
+    const item = state.plan.find((i) => i.id === li.dataset.id);
+    if (act === "del") {
+      state.plan = state.plan.filter((i) => i.id !== li.dataset.id);
+      renderPlan();
+      savePlanSoon();
+    } else if (act === "seek" && item) {
+      $("player").currentTime = item.start;
+      $("player").play().catch(() => {});
+    }
+  });
+  $("planAddBtn").addEventListener("click", () => {
+    const type = $("planAddType").value;
+    const t = Math.max(state.sel.start, Math.min($("player").currentTime, state.sel.end - 1));
+    const item = { id: Math.random().toString(16).slice(2, 14), type, start: +t.toFixed(1),
+      end: +Math.min(state.sel.end, t + (type === "zoom" ? 1.5 : 3)).toFixed(1),
+      text: type === "card" ? "Judul kartu" : type === "keyword" ? "KATA" : "", label: type === "card" ? "Tips" : "",
+      items: type === "chips" || type === "checklist" ? ["Poin 1", "Poin 2"] : [] };
+    state.plan.push(item);
+    state.plan.sort((a, b) => a.start - b.start);
+    renderPlan();
+    savePlanSoon();
+  });
+  $("settingsSaveBtn").addEventListener("click", () => saveAiSettings());
+  $("guidebook").addEventListener("change", () => saveAiSettings(false));
+}
+
 async function checkHealth() {
   try {
     const h = await api("/api/health");
@@ -630,6 +827,8 @@ async function checkHealth() {
 }
 
 bind();
+bindPlan();
+loadAiSettings();
 loadSettings();
 checkHealth();
 refreshProjects();

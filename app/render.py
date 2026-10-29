@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Optional
 
 from .config import FONTS_DIR
+from .faces import crop_x_expression
+from .overlays import ANIM_IN
 from .schemas import RenderRequest
 
 OUTPUT_SIZES = {
@@ -77,9 +79,33 @@ def _filter_path(path: Path, cwd: Path) -> str:
     return f"'{p}'"
 
 
+PUNCH = 0.14      # besar punch-in zoom (14%)
+PUNCH_EASE = 0.15  # durasi transisi masuk/keluar punch-in
+
+
+def zoom_expression(slow: bool, in_dur: float, punches: list[tuple[float, float]]) -> Optional[str]:
+    """Faktor skala z(t) >= 1: zoom perlahan sepanjang klip dikali punch-in pada titik penekanan."""
+    terms = []
+    if slow:
+        terms.append(f"(1+0.12*t/{in_dur:.3f})")
+    if punches:
+        bumps = "+".join(
+            f"{PUNCH}*clip(min((t-{s:.3f})/{PUNCH_EASE},({e:.3f}-t)/{PUNCH_EASE}),0,1)" for s, e in punches[:60])
+        terms.append(f"(1+{bumps})")
+    return "*".join(terms) or None
+
+
 def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
-                  subs_file: Optional[Path], music_file: Optional[Path], workdir: Path) -> list[str]:
-    """Mengembalikan argumen FFmpeg (tanpa 'ffmpeg -y' di depannya)."""
+                  subs_file: Optional[Path], music_file: Optional[Path], workdir: Path,
+                  camera: Optional[list[tuple[float, float]]] = None,
+                  punches: Optional[list[tuple[float, float]]] = None,
+                  layers: Optional[list] = None) -> list[str]:
+    """Mengembalikan argumen FFmpeg (tanpa 'ffmpeg -y' di depannya).
+
+    camera  : titik kunci (detik klip, pusat x 0..1) agar bingkai mengikuti wajah
+    punches : rentang (detik klip) untuk punch-in zoom
+    layers  : PNG animasi (overlays.Layer) dengan waktu di timeline output
+    """
     src_w, src_h = info["width"], info["height"]
     in_dur = req.end - req.start
     out_dur = in_dur / req.speed
@@ -89,16 +115,24 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
     args = ["-ss", f"{req.start:.3f}", "-t", f"{in_dur:.3f}", "-i", str(src)]
     if music_file is not None:
         args += ["-stream_loop", "-1", "-t", f"{out_dur:.3f}", "-i", str(music_file)]
+    layers = layers or []
+    first_layer = 1 + (music_file is not None)
+    for layer in layers:
+        args += ["-loop", "1", "-framerate", "30", "-t", f"{out_dur:.3f}", "-i", str(layer.path)]
 
     # ---- video ----
     v = []
     if (cw, ch) != (src_w, src_h):
-        v.append(f"crop={cw}:{ch}:{cx}:{cy}")
-    if req.zoom == "slow":
-        # Zoom-in perlahan 12% sepanjang klip (efek "Ken Burns").
-        z = f"(1+0.12*t/{out_dur:.3f})"
+        if camera and cw < src_w:
+            # Bingkai bergerak mengikuti wajah (x dievaluasi per frame).
+            v.append(f"crop={cw}:{ch}:x='{crop_x_expression(camera, src_w, cw)}':y={cy}")
+        else:
+            v.append(f"crop={cw}:{ch}:{cx}:{cy}")
+    z = zoom_expression(req.zoom == "slow", in_dur, punches or [])
+    if z:
         v.append(f"scale=w='trunc({ow}*{z}/2)*2':h='trunc({oh}*{z}/2)*2':eval=frame:flags=bicubic")
-        v.append(f"crop={ow}:{oh}")
+        # Pusat zoom sedikit di atas tengah: biasanya posisi wajah.
+        v.append(f"crop={ow}:{oh}:(iw-{ow})/2:(ih-{oh})*0.4")
     else:
         v.append(f"scale={ow}:{oh}:flags=lanczos")
     if abs(req.speed - 1.0) >= 1e-3:
@@ -106,6 +140,25 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
     v += COLOR_PRESETS[req.color]
     if req.brightness or req.contrast != 1.0 or req.saturation != 1.0:
         v.append(f"eq=brightness={req.brightness:.3f}:contrast={req.contrast:.3f}:saturation={req.saturation:.3f}")
+
+    graph = []
+    if layers:
+        # Grafis ditumpuk setelah color grading agar warnanya tidak ikut berubah.
+        graph.append(f"[0:v]{','.join(v)}[base0]")
+        cur = "[base0]"
+        for i, layer in enumerate(layers):
+            idx = first_layer + i
+            s, e = layer.start, max(layer.start + 0.1, layer.end)
+            graph.append(f"[{idx}:v]format=rgba,fade=t=in:st={s:.3f}:d={ANIM_IN}:alpha=1,"
+                         f"fade=t=out:st={max(s, e - ANIM_IN):.3f}:d={ANIM_IN}:alpha=1[ov{i}]")
+            y = f"{layer.y}+{layer.slide}*max(0,1-(t-{s:.3f})/{ANIM_IN})"
+            graph.append(f"{cur}[ov{i}]overlay=x={layer.x}:y='{y}':eval=frame:"
+                         f"enable='between(t,{s:.3f},{e:.3f})'[base{i + 1}]")
+            cur = f"[base{i + 1}]"
+        v = []
+        src_label = cur
+    else:
+        src_label = "[0:v]"
     if req.fade and out_dur > FADE * 3:
         v.append(f"fade=t=in:st=0:d={FADE}")
         v.append(f"fade=t=out:st={out_dur - FADE:.3f}:d={FADE}")
@@ -115,7 +168,7 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
             sub += f":fontsdir={_filter_path(FONTS_DIR, workdir)}"
         v.append(sub)
     v += ["setsar=1", "format=yuv420p"]
-    graph = [f"[0:v]{','.join(v)}[vout]"]
+    graph.append(f"{src_label}{','.join(v)}[vout]")
 
     # ---- audio ----
     a_fade = [f"afade=t=in:st=0:d={FADE}", f"afade=t=out:st={out_dur - FADE:.3f}:d={FADE}"] \

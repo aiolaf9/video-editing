@@ -1,5 +1,7 @@
 """Server FastAPI: API + UI web statis. Jalankan: uvicorn app.main:app --port 8000"""
+import json
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -8,10 +10,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import clipper, pipeline, storage
-from .config import FFMPEG, FFPROBE, JOB_WORKERS, WEB_DIR, WHISPER_MODEL
+from . import clipper, pipeline, plan, storage
+from .config import DATA_DIR, FFMPEG, FONTS_DIR, FFPROBE, JOB_WORKERS, WEB_DIR, WHISPER_MODEL
 from .jobs import JobManager
-from .schemas import RenderRequest, SuggestRequest, UrlImport
+from .schemas import PlanImport, PlanItem, RangeRequest, RenderRequest, Settings, SuggestRequest, UrlImport
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -182,4 +184,120 @@ def get_job(job_id: str):
     return jobs.view(job)
 
 
+# ------------------------------------------------------------------ rencana animasi
+
+def _load_settings() -> dict:
+    path = DATA_DIR / "settings.json"
+    data = Settings().model_dump()
+    if path.exists():
+        try:
+            data.update(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return data
+
+
+def _plan_context(pid: str, start: float, end: float) -> dict:
+    meta = _project_or_404(pid)
+    if meta.get("status") != "siap":
+        raise HTTPException(409, "Video belum selesai dianalisis.")
+    end = min(end, meta.get("duration") or end)
+    if end - start < 1:
+        raise HTTPException(400, "Rentang klip tidak valid.")
+    return {"transcript": storage.read_data(pid, "transcript", {}) or {}, "start": start, "end": end}
+
+
+def _save_range(pid: str, items: list[dict], start: float, end: float) -> list[dict]:
+    new = plan.normalize(items, start, end)
+    merged = plan.merge(storage.read_data(pid, "plan", []) or [], new, start, end)
+    storage.write_data(pid, "plan", merged)
+    return merged
+
+
+@app.get("/api/settings")
+def get_settings():
+    data = _load_settings()
+    key = data.pop("anthropic_api_key", None) or os.environ.get("ANTHROPIC_API_KEY")
+    data["has_api_key"] = bool(key)
+    data["api_key_hint"] = f"...{key[-4:]}" if key else ""
+    return data
+
+
+@app.put("/api/settings")
+def put_settings(body: Settings):
+    data = _load_settings()
+    update = body.model_dump()
+    if not update.get("anthropic_api_key"):
+        update.pop("anthropic_api_key")  # kosong = tetap pakai kunci lama
+    data.update(update)
+    path = DATA_DIR / "settings.json"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return get_settings()
+
+
+@app.get("/api/projects/{pid}/faces")
+def get_faces(pid: str):
+    _project_or_404(pid)
+    return storage.read_data(pid, "faces", []) or []
+
+
+@app.get("/api/projects/{pid}/plan")
+def get_plan(pid: str):
+    _project_or_404(pid)
+    return storage.read_data(pid, "plan", []) or []
+
+
+@app.put("/api/projects/{pid}/plan")
+def put_plan(pid: str, items: list[PlanItem]):
+    meta = _project_or_404(pid)
+    data = plan.normalize([i.model_dump() for i in items], 0, meta.get("duration") or 1e9)
+    storage.write_data(pid, "plan", data)
+    return data
+
+
+@app.post("/api/projects/{pid}/plan/auto")
+def plan_auto(pid: str, body: RangeRequest):
+    ctx = _plan_context(pid, body.start, body.end)
+    items = plan.heuristic(ctx["transcript"], storage.read_data(pid, "energy", []) or [], ctx["start"], ctx["end"])
+    return _save_range(pid, items, ctx["start"], ctx["end"])
+
+
+@app.post("/api/projects/{pid}/plan/prompt")
+def plan_prompt(pid: str, body: RangeRequest):
+    ctx = _plan_context(pid, body.start, body.end)
+    return {"prompt": plan.build_prompt(ctx["transcript"], ctx["start"], ctx["end"], body.guidebook)}
+
+
+@app.post("/api/projects/{pid}/plan/import")
+def plan_import(pid: str, body: PlanImport):
+    ctx = _plan_context(pid, body.start, body.end)
+    try:
+        items = plan.parse_reply(body.text)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    saved = _save_range(pid, items, ctx["start"], ctx["end"])
+    if not any(ctx["start"] <= i["start"] < ctx["end"] for i in saved):
+        raise HTTPException(400, "JSON terbaca, tetapi tidak ada elemen yang waktunya di dalam rentang klip ini.")
+    return saved
+
+
+@app.post("/api/projects/{pid}/plan/ai")
+def plan_ai(pid: str, body: RangeRequest):
+    ctx = _plan_context(pid, body.start, body.end)
+    settings = _load_settings()
+    key = settings.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise HTTPException(400, "API key Claude belum diisi. Isi di panel Animasi, atau pakai mode salin-tempel.")
+    try:
+        items = plan.ask_claude(ctx["transcript"], ctx["start"], ctx["end"], body.guidebook,
+                                key, settings.get("model") or "claude-opus-5-5")
+    except ImportError:
+        raise HTTPException(500, "Library 'anthropic' belum terpasang. Jalankan: pip install -r requirements.txt")
+    except Exception as exc:  # error API (kunci salah, kuota, jaringan) ditampilkan apa adanya
+        logging.getLogger("video-editing.plan").exception("Claude API gagal")
+        raise HTTPException(502, f"Claude API gagal: {exc}")
+    return _save_range(pid, items, ctx["start"], ctx["end"])
+
+
+app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

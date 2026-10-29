@@ -26,6 +26,8 @@ class RenderRequest(BaseModel):
     end: float = Field(gt=0)
     title: str = Field("", max_length=120)
     aspect: Literal["9:16", "1:1", "4:5", "16:9", "original"] = "9:16"
+    reframe: Literal["manual", "auto"] = "auto"  # auto = bingkai mengikuti wajah
+    animations: bool = True                       # pakai rencana animasi di rentang klip
     crop_x: float = Field(0.5, ge=0, le=1)   # posisi horizontal bingkai (0 = kiri, 1 = kanan)
     crop_y: float = Field(0.5, ge=0, le=1)
     color: Literal["none", "vivid", "cinematic", "warm", "cool", "bw", "vintage"] = "none"
@@ -57,3 +59,29 @@ class UrlImport(BaseModel):
 class SuggestRequest(BaseModel):
     target: float = Field(30, ge=5, le=180)
     top_n: int = Field(8, ge=1, le=30)
+
+
+class RangeRequest(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    guidebook: str = Field("", max_length=4000)
+
+
+class PlanImport(RangeRequest):
+    text: str = Field(min_length=2, max_length=100_000)
+
+
+class PlanItem(BaseModel):
+    id: Optional[str] = None
+    type: Literal["zoom", "keyword", "card", "chips", "checklist"]
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    text: str = Field("", max_length=200)
+    label: str = Field("", max_length=80)
+    items: list[str] = Field(default_factory=list, max_length=10)
+
+
+class Settings(BaseModel):
+    anthropic_api_key: Optional[str] = Field(None, max_length=300)
+    model: str = Field("claude-opus-5-5", max_length=60)
+    guidebook: str = Field("", max_length=4000)

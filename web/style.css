@@ -1,3 +1,8 @@
+@font-face { font-family: "Poppins"; font-weight: 600; src: url("/fonts/Poppins-SemiBold.ttf"); }
+@font-face { font-family: "Poppins"; font-weight: 700; src: url("/fonts/Poppins-Bold.ttf"); }
+@font-face { font-family: "Poppins"; font-weight: 800; src: url("/fonts/Poppins-ExtraBold.ttf"); }
+@font-face { font-family: "Anton"; src: url("/fonts/Anton-Regular.ttf"); }
+@font-face { font-family: "Bebas Neue"; src: url("/fonts/BebasNeue-Regular.ttf"); }
 :root {
   --bg: #0f1115;
   --panel: #171a21;
@@ -150,3 +155,34 @@ h3 { font-size: 14px; margin: 0 0 10px; }
   .layout { grid-template-columns: 1fr; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
 }
+
+textarea { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; color: var(--text); font: 13px/1.4 ui-monospace, Consolas, monospace; resize: vertical; }
+#guidebook { font-family: inherit; }
+.paste-box, .settings-box { margin-top: 10px; padding: 10px; border: 1px dashed var(--line); border-radius: 8px; }
+.paste-box a { color: var(--accent-2); }
+.settings-box summary { cursor: pointer; font-weight: 600; }
+.plan-list { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.plan-item { display: grid; grid-template-columns: 92px 150px 1fr auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.plan-item.now { border-color: var(--accent-2); }
+.plan-item .type { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--panel-2); text-align: center; }
+.plan-item .times { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 12px; }
+.plan-item .times input { width: 64px; padding: 4px 6px; }
+.plan-item .fields { display: flex; gap: 6px; min-width: 0; }
+.plan-item .fields input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
+.plan-item .fields input.label { flex: 0 0 110px; }
+.plan-item button { padding: 4px 9px; }
+@media (max-width: 760px) { .plan-item { grid-template-columns: 1fr; } }
+
+/* Pratinjau animasi di atas player (perkiraan tampilan hasil render) */
+.ov-preview { position: absolute; inset: 0; pointer-events: none; overflow: hidden; font-family: Poppins, system-ui, sans-serif; }
+.ov-preview > * { position: absolute; animation: ovIn .25s ease-out; }
+@keyframes ovIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.ovp-keyword { left: 4%; right: 4%; top: 30%; transform: translateY(-50%); text-align: center; font-family: Anton, Impact, sans-serif; text-transform: uppercase; line-height: 1.05;
+  background: linear-gradient(90deg, var(--accent), #ffd43b); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-stroke: 1px rgba(0,0,0,.6); }
+.ovp-card { left: 8%; right: 8%; top: 10%; background: rgba(22,24,30,.85); border: 1px solid rgba(255,255,255,.25); border-radius: 8px; padding: 6% 6%; color: #fff; font-weight: 700; line-height: 1.2; }
+.ovp-card small { display: block; color: var(--accent); font-weight: 600; margin-bottom: 3px; }
+.ovp-chips { left: 5%; right: 5%; top: 14%; display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.ovp-chips span { background: rgba(255,255,255,.92); color: #141418; font-weight: 600; border-radius: 999px; padding: 2px 8px; }
+.ovp-check { left: 8%; top: 12%; display: flex; flex-direction: column; gap: 4px; }
+.ovp-check span { background: rgba(22,24,30,.88); color: #fff; font-weight: 600; border-radius: 999px; padding: 2px 9px; }
+.ovp-check span::before { content: "✓ "; color: var(--ok); }

@@ -102,3 +102,52 @@ def test_failed_download_marks_project(monkeypatch):
     job = _wait(client, res["job"]["id"])
     assert job["status"] == "gagal" and "Video unavailable" in job["error"]
     assert client.get(f"/api/projects/{res['project']['id']}").json()["status"] == "gagal"
+
+
+def test_animation_plan_endpoints_and_render(sample_video, fake_transcript, monkeypatch):
+    from app import plan
+
+    monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
+    client = TestClient(main.app)
+    with sample_video.open("rb") as fh:
+        res = client.post("/api/projects", files={"file": ("anim.mp4", fh, "video/mp4")}).json()
+    pid = res["project"]["id"]
+    assert _wait(client, res["job"]["id"])["status"] == "selesai"
+    assert isinstance(client.get(f"/api/projects/{pid}/faces").json(), list)
+
+    rng = {"start": 0, "end": 8}
+    auto = client.post(f"/api/projects/{pid}/plan/auto", json=rng).json()
+    assert any(i["type"] == "zoom" for i in auto)
+
+    prompt = client.post(f"/api/projects/{pid}/plan/prompt", json={**rng, "guidebook": "Gaya santai"}).json()["prompt"]
+    assert "Gaya santai" in prompt and "Kenapa" in prompt
+
+    reply = '```json\n{"items": [{"type": "card", "start": 0.5, "end": 3, "label": "Langkah 1", "text": "Kenapa viral?"},' \
+            '{"type": "chips", "start": 3.2, "end": 5.5, "items": ["Rapi", "Cepat"]},' \
+            '{"type": "keyword", "start": 5.7, "end": 7, "text": "Ayo"},' \
+            '{"type": "zoom", "start": 1, "end": 2.2}]}\n```'
+    items = client.post(f"/api/projects/{pid}/plan/import", json={**rng, "text": reply}).json()
+    assert [i["type"] for i in items] == ["card", "zoom", "chips", "keyword"]
+    assert client.post(f"/api/projects/{pid}/plan/import", json={**rng, "text": "halo"}).status_code == 400
+
+    items[0]["text"] = "Diedit manual"
+    saved = client.put(f"/api/projects/{pid}/plan", json=items).json()
+    assert saved[0]["text"] == "Diedit manual"
+
+    # Tanpa API key: pesan jelas, bukan crash.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    r = client.post(f"/api/projects/{pid}/plan/ai", json=rng)
+    assert r.status_code == 400 and "API key" in r.json()["detail"]
+    monkeypatch.setattr(plan, "ask_claude", lambda *a, **k: [{"type": "keyword", "start": 2, "end": 3, "text": "AI"}])
+    client.put("/api/settings", json={"anthropic_api_key": "sk-ant-test-1234", "model": "claude-haiku-5-5", "guidebook": ""})
+    s = client.get("/api/settings").json()
+    assert s["has_api_key"] and s["api_key_hint"] == "...1234" and "anthropic_api_key" not in s
+    ai = client.post(f"/api/projects/{pid}/plan/ai", json=rng).json()
+    assert [i["text"] for i in ai if i["type"] == "keyword"] == ["AI"]
+    client.post(f"/api/projects/{pid}/plan/import", json={**rng, "text": reply})
+
+    body = {"start": 0, "end": 8, "reframe": "auto", "animations": True, "subtitles": {"style": "pop"}}
+    job = _wait(client, client.post(f"/api/projects/{pid}/render", json=body).json()["id"])
+    assert job["status"] == "selesai", job
+    folder = main.storage.project_dir(pid) / "renders"
+    assert not list(folder.glob("tmp_*")), "PNG sementara harus dibersihkan"

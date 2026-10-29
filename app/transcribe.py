@@ -36,10 +36,32 @@ def _get_model(force_cpu: bool = False):
     return _model
 
 
+# Whisper meniru gaya teks pada prompt awal. Contoh kalimat bertanda baca membuat
+# transkrip ikut bertanda baca, sehingga subtitle & klip terpotong di akhir kalimat.
+PUNCTUATION_PROMPTS = {
+    "id": "Halo, semuanya! Jadi, hari ini kita bahas hal yang penting. Kenapa? Karena banyak orang belum tahu.",
+    "ms": "Hai, semua! Jadi, hari ini kita bincangkan perkara penting. Kenapa? Sebab ramai yang belum tahu.",
+    "jv": "Halo, kanca kabeh! Dadi, dina iki awake dhewe ngrembug bab sing penting. Kenapa? Amarga akeh sing durung ngerti.",
+    "en": "Hello, everyone! So, today we're talking about something important. Why? Because most people don't know.",
+}
+
+
+def _detect_language(model, audio) -> Optional[str]:
+    try:
+        lang, _prob, _all = model.detect_language(audio[: 16000 * 30])
+        return lang
+    except Exception as exc:  # metode ini tidak ada di semua versi faster-whisper
+        log.info("Deteksi bahasa awal dilewati: %s", exc)
+        return None
+
+
 def _run(model, audio, duration: float, language: Optional[str], progress) -> dict:
+    if not language:
+        language = _detect_language(model, audio)
     segments, info = model.transcribe(
         audio,
         language=language or None,
+        initial_prompt=PUNCTUATION_PROMPTS.get(language or ""),
         word_timestamps=True,
         vad_filter=True,
         beam_size=5,

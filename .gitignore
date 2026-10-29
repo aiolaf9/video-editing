@@ -5,6 +5,3 @@ venv/
 data/
 .pytest_cache/
 .DS_Store
-fonts/*.ttf
-fonts/*.otf
-!fonts/README.md

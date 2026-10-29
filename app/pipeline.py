@@ -1,10 +1,11 @@
 """Alur kerja utama: impor video, analisis (preview + transkrip + kandidat klip), dan render."""
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
 
-from . import clipper, media, storage, transcribe
+from . import clipper, faces, media, overlays, storage, transcribe
 from .jobs import Job
 from .render import build_command, output_size
 from .schemas import RenderRequest
@@ -99,14 +100,15 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     storage.update_project(pid, **info)
 
     media.make_preview(src, folder / "preview.mp4", info["duration"], info["has_audio"],
-                       job.stage(0, 20, "Membuat preview..."))
+                       job.stage(0, 18, "Membuat preview..."))
+    track_faces(pid, job.stage(18, 25, "Melacak posisi wajah..."))
 
     energy: list[float] = []
     transcript: dict = {"language": None, "segments": []}
     if info["has_audio"]:
-        job.update(22, "Menganalisis audio...")
+        job.update(26, "Menganalisis audio...")
         energy = media.audio_energy(src)
-        progress = job.stage(25, 92, "Membuat transkrip dengan Whisper (bisa beberapa menit)...")
+        progress = job.stage(28, 92, "Membuat transkrip dengan Whisper (bisa beberapa menit)...")
         transcript = transcribe.transcribe(src, info["duration"], language, progress)
     storage.write_data(pid, "energy", energy)
     storage.write_data(pid, "transcript", transcript)
@@ -117,6 +119,19 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     storage.update_project(pid, status="siap", language=transcript.get("language"))
     job.update(100, "Analisis selesai!")
     return {"clips": len(clips)}
+
+
+def track_faces(pid: str, progress=None) -> list:
+    """Lacak wajah pada preview dan simpan ke faces.json. Gagal = daftar kosong (bingkai manual)."""
+    meta = storage.load_project(pid)
+    preview = storage.project_dir(pid) / "preview.mp4"
+    try:
+        data = faces.track(preview, meta["width"], meta["height"], meta.get("duration") or 0, progress)
+    except Exception as exc:
+        log.warning("Pelacakan wajah gagal, bingkai manual dipakai: %s", exc)
+        data = []
+    storage.write_data(pid, "faces", data)
+    return data
 
 
 def safe_analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
@@ -161,16 +176,45 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
         music = candidate
 
     duration = (req.end - req.start) / req.speed
+
+    camera = None
+    if req.reframe == "auto" and req.aspect != "original":
+        track = storage.read_data(pid, "faces")
+        if track is None:  # proyek lama yang dianalisis sebelum fitur ini ada
+            track = track_faces(pid, job.stage(0, 2, "Melacak posisi wajah..."))
+        camera = faces.camera_path(track, req.start, req.end) or None
+
+    punches: list[tuple[float, float]] = []
+    layers = []
+    overlay_dir = renders / f"tmp_{rid}"
+    if req.animations:
+        overlay_dir.mkdir(exist_ok=True)
+        for item in storage.read_data(pid, "plan", []) or []:
+            s, e = max(item["start"], req.start), min(item["end"], req.end)
+            if e - s < 0.3:
+                continue
+            if item["type"] == "zoom":
+                punches.append((s - req.start, e - req.start))
+            else:
+                layers += overlays.render_item(item, overlay_dir, (width, height),
+                                               (s - req.start) / req.speed, (e - req.start) / req.speed)
+
+    def run(r: RenderRequest) -> None:
+        cmd = build_command(src, out, r, meta, subs, music, renders, camera, punches, layers)
+        media.run_ffmpeg(cmd, duration, progress, cwd=renders)
+
     progress = job.stage(2, 98, "Merender video...")
     try:
-        media.run_ffmpeg(build_command(src, out, req, meta, subs, music, renders), duration, progress, cwd=renders)
-    except media.MediaError:
-        if req.encoder == "cpu":
-            raise
-        # Encoder GPU tidak tersedia di komputer ini: ulangi dengan CPU.
-        job.update(2, "Encoder GPU gagal, mengulang dengan CPU...")
-        req = req.model_copy(update={"encoder": "cpu"})
-        media.run_ffmpeg(build_command(src, out, req, meta, subs, music, renders), duration, progress, cwd=renders)
+        try:
+            run(req)
+        except media.MediaError:
+            if req.encoder == "cpu":
+                raise
+            # Encoder GPU tidak tersedia di komputer ini: ulangi dengan CPU.
+            job.update(2, "Encoder GPU gagal, mengulang dengan CPU...")
+            run(req.model_copy(update={"encoder": "cpu"}))
+    finally:
+        shutil.rmtree(overlay_dir, ignore_errors=True)
 
     item = {
         "id": rid,
