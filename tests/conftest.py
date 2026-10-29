@@ -12,7 +12,16 @@ os.environ.setdefault("EMBEDDED_WORKERS", "1")
 os.environ.setdefault("ADMIN_EMAIL", "admin@test.local")
 os.environ.setdefault("ADMIN_PASSWORD", "rahasia-admin-123")
 os.environ.setdefault("MAX_PENDING_PER_USER", "50")
+# Pembersihan media dijalankan eksplisit oleh tes (lifecycle.sweep(now=...)), bukan oleh worker bawaan.
+os.environ.setdefault("CLEANUP_INTERVAL", "1000000")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def pytest_configure(config):
+    # Folder sementara pytest di luar DATA_DIR: aplikasi mengarahkan tempfile ke DATA_DIR/tmp dan
+    # tes pembersihan (sweep dengan waktu di masa depan) akan menganggapnya file tertinggal.
+    if not config.option.basetemp:
+        config.option.basetemp = tempfile.mkdtemp(prefix="ve-pytest-")
 
 
 def _ffmpeg(*args):
