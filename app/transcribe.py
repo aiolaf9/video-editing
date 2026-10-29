@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import media
 from .config import WHISPER_DEVICE, WHISPER_MODEL
 
 log = logging.getLogger("video-editing.transcribe")
@@ -35,9 +36,9 @@ def _get_model(force_cpu: bool = False):
     return _model
 
 
-def _run(model, path: Path, duration: float, language: Optional[str], progress) -> dict:
+def _run(model, audio, duration: float, language: Optional[str], progress) -> dict:
     segments, info = model.transcribe(
-        str(path),
+        audio,
         language=language or None,
         word_timestamps=True,
         vad_filter=True,
@@ -63,13 +64,18 @@ def _run(model, path: Path, duration: float, language: Optional[str], progress) 
 
 def transcribe(path: Path, duration: float, language: Optional[str] = None,
                progress: Optional[Callable[[float], None]] = None) -> dict:
+    # Audio di-decode sendiri dengan FFmpeg: lebih tahan terhadap format aneh dan
+    # tidak bergantung pada PyAV (versi barunya tidak cocok dengan faster-whisper).
+    audio = media.decode_audio(path)
+    if audio.size == 0:
+        return {"language": language, "segments": []}
     with _lock:
         model = _get_model()
         try:
-            return _run(model, path, duration, language, progress)
+            return _run(model, audio, duration, language, progress)
         except RuntimeError as exc:
             # Library CUDA (cuBLAS/cuDNN) baru ketahuan hilang saat inferensi.
             if _model_device == "cpu" or not any(k in str(exc).lower() for k in ("cuda", "cublas", "cudnn")):
                 raise
             log.warning("Whisper GPU gagal (%s), mengulang di CPU.", exc)
-            return _run(_get_model(force_cpu=True), path, duration, language, progress)
+            return _run(_get_model(force_cpu=True), audio, duration, language, progress)

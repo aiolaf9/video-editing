@@ -107,3 +107,12 @@ def audio_energy(src: Path) -> list[float]:
     rms = np.sqrt(np.mean(blocks ** 2, axis=1))
     db = 20 * np.log10(np.maximum(rms, 1e-5))
     return [round(float(v), 2) for v in db]
+
+
+def decode_audio(src: Path, rate: int = 16000) -> np.ndarray:
+    """Decode audio ke mono float32 dengan FFmpeg (format masukan yang dipakai Whisper)."""
+    cmd = [FFMPEG, "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "f32le", "-"]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        raise MediaError(f"Gagal membaca audio: {proc.stderr.decode(errors='replace').strip()[-400:]}")
+    return np.frombuffer(proc.stdout, dtype=np.float32).copy()
