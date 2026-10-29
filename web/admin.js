@@ -64,10 +64,12 @@ async function loadStatus() {
     const [st, us] = await Promise.all([api("/api/admin/stats"), api("/api/admin/units")]);
     units = us;
     const q = st.queues;
+    const count = (name, key) => (q[name] || {})[key] || 0;
     $("queueStats").innerHTML = [
-      ["Analisis/render antre", q.berat.antre], ["Analisis/render berjalan", q.berat.jalan],
-      ["Unduhan antre", q.unduh.antre], ["Worker sibuk", st.queues.busy_workers],
+      ["Analisis antre", count("analisis", "antre")], ["Render antre", count("render", "antre")],
+      ["Unduhan antre", count("io", "antre")], ["Worker sibuk", q.busy_workers],
     ].map(([label, n]) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`).join("");
+    if (me.role === "admin") loadMetrics();
     const name = (id) => (units.find((u) => u.id === id) || {}).name || (id === "-" ? "Tanpa unit" : "Unit terhapus");
     const sto = st.storage || {};
     const states = sto.projects_by_state || {};
@@ -83,6 +85,46 @@ async function loadStatus() {
       (rows.map(([id, k]) => `<tr><td>${esc(name(id))}</td><td>${k.analyze || 0}</td><td>${k.render || 0}</td><td>${k.ai || 0}</td></tr>`).join("")
         || '<tr><td colspan="4" class="muted">Belum ada pemakaian.</td></tr>');
   } catch (e) { toast(e.message, true); }
+}
+
+// Monitoring rinci (admin pusat): mesin, antrean, dan worker. Diperbarui tiap 10 detik selama halaman Status dibuka.
+const QUEUE_NAMES = { analisis: "Analisis (Whisper)", render: "Render (FFmpeg)", io: "Unduhan dari link" };
+const WORKER_STATE = { idle: "siap", sibuk: "bekerja", menunggu: "menunggu resource", berhenti: "berhenti" };
+const secs = (v) => (v === null || v === undefined ? "–" : v < 90 ? `${Math.round(v)} dtk` : `${(v / 60).toFixed(1)} mnt`);
+const pctTxt = (v) => (v === null || v === undefined ? "–" : `${Math.round(v)}%`);
+let metricsTimer = null;
+
+async function loadMetrics() {
+  $("metricsBox").hidden = false;
+  try {
+    const m = await api("/api/admin/metrics");
+    const web = m.web || {};
+    const gpu = (web.gpus || []).map((g) => `${esc(g.name)}: ${pctTxt(g.util_pct)}, VRAM ${g.mem_used_mb}/${g.mem_total_mb} MB`).join("<br>") || "Tidak ada (CPU saja)";
+    $("systemStats").innerHTML = [
+      ["CPU server web", `${pctTxt(web.cpu_pct)} · ${web.cpus} core`],
+      ["Load 1 menit", web.load ? web.load[0] : "–"],
+      ["RAM tersedia", web.mem_total ? `${fmtBytes(web.mem_available)} dari ${fmtBytes(web.mem_total)}` : "–"],
+      ["Disk data tersisa", `${fmtBytes(m.disk.free)} dari ${fmtBytes(m.disk.total)}`],
+      ["GPU", gpu],
+    ].map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+    $("queueTable").innerHTML = "<tr><th>Antrean</th><th>Menunggu</th><th>Berjalan</th><th>Tertua menunggu</th><th>Tunggu p50 / p95</th><th>Durasi p95</th><th>Selesai / gagal (1 jam)</th></tr>" +
+      Object.entries(m.queues).map(([name, s]) => {
+        const dur = Object.values(s.duration || {})[0];
+        return `<tr><td><b>${QUEUE_NAMES[name] || esc(name)}</b></td><td>${s.queued}</td><td>${s.running}</td>
+          <td>${s.queued ? secs(s.oldest_wait) : "–"}</td><td>${secs(s.wait_p50)} / ${secs(s.wait_p95)}</td>
+          <td>${dur ? secs(dur.p95) : "–"}</td><td>${s.done} / <span class="${s.failed ? "exp-gone" : ""}">${s.failed}</span></td></tr>`;
+      }).join("");
+    const ws = m.workers || [];
+    $("workerTable").innerHTML = "<tr><th>Worker</th><th>Antrean</th><th>Status</th><th>CPU</th><th>RAM</th><th>Thread</th><th>Selesai / gagal</th><th>Kabar terakhir</th></tr>" +
+      (ws.map((w) => `<tr class="${w.alive ? "" : "muted"}">
+        <td>${esc(w.name)}<div class="muted">${esc(w.host)}</div></td><td>${esc(w.queues)}</td>
+        <td>${w.alive ? (WORKER_STATE[w.state] || esc(w.state)) : "<span class='exp-gone'>tidak merespons</span>"}${w.reason ? `<div class="muted">${esc(w.reason)}</div>` : ""}</td>
+        <td>${pctTxt(w.cpu_pct)}</td><td>${w.rss_mb ? Math.round(w.rss_mb) + " MB" : "–"}</td><td>${w.threads || "–"}</td>
+        <td>${w.jobs_ok} / ${w.jobs_failed}</td><td>${secs(w.heartbeat_age)} lalu</td></tr>`).join("")
+        || '<tr><td colspan="8" class="muted">Belum ada worker yang melapor.</td></tr>');
+  } catch (e) { toast(e.message, true); }
+  clearTimeout(metricsTimer);
+  metricsTimer = setTimeout(() => { if (!$("sec-status").hidden) loadMetrics(); }, 10000);
 }
 
 // ------------------------------------------------------------ unit

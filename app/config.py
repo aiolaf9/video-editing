@@ -81,3 +81,44 @@ STORAGE_QUOTA_MB_DEFAULT = float(os.environ.get("STORAGE_QUOTA_MB_DEFAULT", "0")
 # File upload sementara (multipart) ditulis di disk data, bukan /tmp sistem: ikut terhitung & dibersihkan.
 UPLOAD_TMP_DIR = DATA_DIR / "tmp"
 UPLOAD_TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---- Resource & penjadwalan (P3) ----
+# Thread CPU per job berat (FFmpeg, Whisper, OpenCV). 0 = otomatis: core tersedia (termasuk batas
+# `cpus` container) dibagi HOST_HEAVY_WORKERS, yaitu jumlah worker analisis+render yang berjalan
+# bersamaan di satu mesin.
+WORKER_THREADS = int(os.environ.get("WORKER_THREADS", "0"))
+HOST_HEAVY_WORKERS = int(os.environ.get("HOST_HEAVY_WORKERS", "2"))
+# Opsional: worker menunda mengambil job bila load rata-rata 1 menit per core melebihi ini, paling lama
+# CPU_WAIT_MAX detik. Bawaan MATI (0): CPU sudah dibatasi anggaran thread & `cpus` container, sedangkan load
+# average tertinggal ±1 menit dan ikut naik karena worker sendiri, sehingga render bisa tertahan tanpa
+# alasan (terukur di benchmark P3). Aktifkan hanya bila server juga dipakai proses berat lain.
+CPU_MAX_LOAD_PER_CORE = float(os.environ.get("CPU_MAX_LOAD_PER_CORE", "0"))
+CPU_WAIT_MAX = float(os.environ.get("CPU_WAIT_MAX", "60"))
+# Penjaga RAM: job hanya diambil bila RAM tersedia >= kebutuhan job + cadangan. Kebutuhan analisis
+# mengikuti ukuran model Whisper (dimuat sekali per proses worker).
+MEM_RESERVE_MB = int(os.environ.get("MEM_RESERVE_MB", "512"))
+_WHISPER_MEM = {"tiny": 700, "base": 900, "small": 1600, "medium": 3200, "large-v3": 5500, "large-v2": 5500}
+TASK_MEM_MB = {
+    "analisis": int(os.environ.get("ANALYSIS_MEM_MB", str(_WHISPER_MEM.get(WHISPER_MODEL, 2500)))),
+    "analisis_loaded": int(os.environ.get("ANALYSIS_LOADED_MEM_MB", "600")),
+    "render": int(os.environ.get("RENDER_MEM_MB", "700")),
+    "io": int(os.environ.get("IO_MEM_MB", "300")),
+}
+# GPU dipakai hanya bila terdeteksi (nvidia-smi) dengan VRAM bebas minimal ini.
+GPU_MIN_FREE_MB = int(os.environ.get("GPU_MIN_FREE_MB", "2048"))
+# Penjadwalan antrean
+AGING_SECONDS = float(os.environ.get("AGING_SECONDS", "60"))        # prioritas naik 1 tingkat per N detik menunggu
+MAX_RUNNING_PER_UNIT = int(os.environ.get("MAX_RUNNING_PER_UNIT", "3"))   # per antrean; 0 = tanpa batas
+MAX_QUEUED_PER_UNIT = int(os.environ.get("MAX_QUEUED_PER_UNIT", "30"))    # job menunggu per unit; 0 = tanpa batas
+MAX_QUEUE_DEPTH = int(os.environ.get("MAX_QUEUE_DEPTH", "300"))           # job menunggu per antrean (seluruh server)
+# Batas job berjalan bersamaan per antrean di seluruh server (0 = sebanyak worker yang ada).
+MAX_CONCURRENT = {
+    "analisis": int(os.environ.get("MAX_CONCURRENT_ANALYSES", "0")),
+    "render": int(os.environ.get("MAX_CONCURRENT_RENDERS", "0")),
+    "io": int(os.environ.get("MAX_CONCURRENT_IO", "0")),
+}
+# Worker bawaan (mode satu komputer): jumlah thread worker per antrean.
+ANALYSIS_WORKERS = int(os.environ.get("ANALYSIS_WORKERS", "1"))
+WORKER_REPORT_INTERVAL = float(os.environ.get("WORKER_REPORT_INTERVAL", "10"))
+# Token untuk /metrics (format Prometheus). Kosong = endpoint dimatikan.
+METRICS_TOKEN = os.environ.get("METRICS_TOKEN", "")

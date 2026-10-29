@@ -5,15 +5,19 @@ Panduan memasang aplikasi di server cloud supaya bisa dipakai banyak unit lewat 
 ## Gambaran
 
 ```
-Pengguna (browser) ──HTTPS──▶ Caddy ──▶ web (2 proses)  ──▶ PostgreSQL
-                                             │ antrean di database
-                                             ▼
-                                worker × N (Whisper + FFmpeg)   worker-unduh
+Pengguna (browser) ──HTTPS──▶ Caddy ──▶ web (2 proses)  ──▶ PostgreSQL (data + antrean)
+                                                                  │
+                    ┌─────────────────────────────┬───────────────┴──────────┐
+                    ▼                             ▼                          ▼
+          worker-analisis × N            worker-render × N             worker-io
+          (Whisper, wajah, preview)      (FFmpeg)                      (unduhan dari link)
 ```
 
 - **web**: halaman & API, ringan. Tetap cepat walau banyak render berjalan.
-- **worker**: mengerjakan analisis (transkrip) dan render satu per satu dari antrean.
-  Bila antrean sering panjang, tambah jumlah worker.
+- **worker-analisis / worker-render / worker-io**: tiga antrean terpisah, sehingga transkripsi video
+  panjang tidak menahan render pendek pengguna lain.
+- Di setiap antrean, unit yang sedang paling sedikit dilayani didahulukan (adil antar-unit); render pendek
+  didahulukan dari render panjang, dan job yang menunggu lama naik prioritasnya (tidak ada yang tertahan selamanya).
 - Semua pekerjaan tersimpan di database: bila worker/server restart, pekerjaan diulang otomatis.
 
 ## 1. Pilih server
@@ -90,16 +94,56 @@ Ubah di `.env`, lalu jalankan ulang `docker compose up -d`:
 
 | Gejala | Tindakan |
 |---|---|
-| Antrean analisis/render sering panjang (lihat **Admin → Status**) | Naikkan `HEAVY_WORKERS` (±1 per 2–3 vCPU) |
+| Antrean **render** sering panjang (Admin → Status, kolom "Tertua menunggu") | Naikkan `RENDER_WORKERS` (±1 per 2 vCPU) |
+| Antrean **analisis** sering panjang | Naikkan `ANALYSIS_WORKERS` (butuh ±2–3 GB RAM per worker dengan model `small`) |
+| Worker berstatus "menunggu resource" | RAM server kurang: kurangi worker analisis, pakai `WHISPER_MODEL=base`, atau tambah RAM |
+| Pengguna mendapat pesan "antrean unit penuh" | Naikkan `MAX_QUEUED_PER_UNIT`, atau tambah worker bila antrean memang panjang |
 | Transkrip terasa lama | `WHISPER_MODEL=base` (lebih cepat, sedikit kurang akurat), atau server dengan vCPU lebih banyak |
 | Disk cepat penuh | Turunkan `MEDIA_RETENTION_HOURS`/`MEDIA_MAX_HOURS`, turunkan `MAX_UPLOAD_MB`, atur kuota media per unit |
 | Satu unit memakai terlalu banyak | Atur kuota render/AI per unit di **Admin → Unit** |
 
-Aturan praktis: `HEAVY_WORKERS × WHISPER_THREADS ≈ jumlah vCPU`.
+Lihat juga "Kelas server" di bawah untuk nilai awal per ukuran server.
 
 Uji beban di lingkungan pengembangan (4 vCPU, 4 proses web, 2 worker, PostgreSQL):
 200 pengguna aktif + 40 render diajukan bersamaan → 40/40 render selesai, 0 error,
 waktu respons halaman median 28 ms (p95 90 ms).
+
+## Kelas server
+
+Server **tanpa GPU** (CPU saja) adalah bawaan. Nilai di bawah adalah titik awal; pantau **Admin → Status**
+lalu sesuaikan. `cpus` adalah batas keras per container; `cpu_shares` membuat render didahulukan dari
+analisis saat CPU diperebutkan, tetapi analisis tetap boleh memakai CPU yang kosong.
+
+| Kelas | Web | Analisis | Render | Pengaturan `.env` |
+|---|---|---|---|---|
+| **Kecil** 4 vCPU / 8 GB | `WEB_WORKERS=2` | 1 × (cpus 3, 3 GB) | 1 × (cpus 3, 1,5 GB) | `WHISPER_MODEL=base`, `MAX_QUEUED_PER_UNIT=15`, `MAX_QUEUE_DEPTH=100` |
+| **Menengah** 8 vCPU / 16 GB | `WEB_WORKERS=2` | 1 × (cpus 4, 3 GB) | 2 × (cpus 3, 1,5 GB) | `WHISPER_MODEL=small`, `MAX_RUNNING_PER_UNIT=2` |
+| **Besar** 16 vCPU / 32 GB | `WEB_WORKERS=4` | 2 × (cpus 4, 3,5 GB) | 4 × (cpus 3, 1,5 GB) | `MAX_RUNNING_PER_UNIT=2`, `DB_POOL_SIZE=5`, cek `max_connections` PostgreSQL |
+| **GPU NVIDIA** (≥ 8 GB VRAM) | sama | 1 per GPU | sesuai CPU | `WHISPER_DEVICE=auto`, perlu NVIDIA Container Toolkit (`gpus: all`); belum diuji di lingkungan pengembangan |
+
+Isi `.env` sesuai kolom: `ANALYSIS_WORKERS`, `ANALYSIS_CPUS`, `ANALYSIS_MEM`, `RENDER_WORKERS`, `RENDER_CPUS`, `RENDER_MEM`.
+Total `cpus` boleh melebihi jumlah vCPU (contoh kelas kecil: 3 + 3 pada 4 vCPU): batas itu mencegah satu worker
+memakai semua core (selalu tersisa CPU untuk web & database), sedangkan `cpu_shares` mengatur siapa didahulukan.
+
+Perlindungan yang selalu aktif:
+- **RAM**: worker tidak mengambil job bila RAM tersedia kurang dari kebutuhan job + `MEM_RESERVE_MB`. Job menunggu
+  di antrean (status worker "menunggu resource") daripada proses dibunuh karena kehabisan memori.
+- **CPU**: jumlah thread FFmpeg/OpenCV per job dibagi di antara job yang sedang berjalan; render didahulukan dari
+  analisis (prioritas proses). Halaman web tetap responsif.
+- **Antrean**: per unit paling banyak `MAX_QUEUED_PER_UNIT` job menunggu (pesan 429) dan per antrean
+  `MAX_QUEUE_DEPTH` (pesan 503, coba lagi nanti), sehingga lonjakan tidak membuat antrean tak terbatas.
+- **GPU** tidak pernah diasumsikan. Dipakai hanya bila `nvidia-smi` mendeteksi GPU dengan VRAM bebas cukup;
+  encoder NVENC yang dipilih pengguna tanpa GPU otomatis diganti CPU.
+
+## Monitoring
+
+**Admin → Status** (admin pusat) menampilkan: CPU, load, RAM, disk, GPU; per antrean jumlah menunggu/berjalan,
+umur job tertua, waktu tunggu p50/p95, durasi p95, selesai/gagal 1 jam terakhir; per worker status, job, CPU & RAM
+(termasuk FFmpeg yang dijalankannya), jumlah thread, dan kabar terakhir. Worker yang tidak melapor > ±1 menit
+ditandai "tidak merespons" (job-nya otomatis diulang setelah 2 menit).
+
+Untuk Prometheus/Grafana, isi `METRICS_TOKEN` di `.env` lalu ambil `https://domain/metrics` dengan header
+`Authorization: Bearer <token>` (metrik `ve_queue_*`, `ve_worker_*`, `ve_cpu_percent`, `ve_memory_*`, `ve_disk_free_bytes`).
 
 ## Penyimpanan media sementara
 

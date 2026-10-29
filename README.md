@@ -122,7 +122,7 @@ Atur lewat environment variable sebelum menjalankan:
 |---|---|---|
 | `WHISPER_MODEL` | `small` | `tiny`/`base` lebih cepat, `medium`/`large-v3` lebih akurat |
 | `WHISPER_DEVICE` | `auto` | `cuda` untuk GPU NVIDIA, `cpu` untuk memaksa CPU |
-| `JOB_WORKERS` | `1` | Jumlah render yang berjalan bersamaan (mode satu komputer) |
+| `JOB_WORKERS` | `1` | Jumlah render yang berjalan bersamaan (mode satu komputer; analisis & unduhan punya worker sendiri) |
 | `VIDEO_APP_DATA` | `./data` | Lokasi penyimpanan proyek, hasil render, dan database SQLite |
 | `DATABASE_URL` | SQLite di folder data | PostgreSQL untuk server, mis. `postgresql+psycopg://user:pass@host/db` |
 

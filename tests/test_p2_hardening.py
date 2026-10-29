@@ -107,12 +107,15 @@ def test_concurrent_uploads_same_workspace(client, unit, sample_video, fake_tran
                                           "unit_id": u["id"]})
     clients = [login_client(email, "password-123") for _ in range(6)]
     barrier = threading.Barrier(6)
-    codes = []
+    codes, accepted = [], []
 
     def upload(c):
         barrier.wait()
         with sample_video.open("rb") as fh:
-            codes.append(c.post("/api/projects", files={"file": ("p.mp4", fh, "video/mp4")}).status_code)
+            r = c.post("/api/projects", files={"file": ("p.mp4", fh, "video/mp4")})
+        codes.append(r.status_code)
+        if r.status_code == 200:
+            accepted.append(r.json()["job"]["id"])
 
     threads = [threading.Thread(target=upload, args=(c,)) for c in clients]
     for t in threads:
@@ -123,6 +126,9 @@ def test_concurrent_uploads_same_workspace(client, unit, sample_video, fake_tran
     assert _leases(unit_id=u["id"]) == []  # semua reservasi sudah diganti ukuran aktual / dilepas
     projects = [p for p in client.get(f"/api/projects?unit={u['id']}").json() if p["id"] != filler]
     assert len(projects) == 2  # upload yang ditolak tidak meninggalkan proyek
+    deadline = time.time() + 120  # selesaikan analisis selagi transkripsi masih dipalsukan (tanpa unduh model)
+    while any(jobs.get(j)["status"] not in jobs.DONE for j in accepted) and time.time() < deadline:
+        time.sleep(0.2)
 
 
 def test_failed_upload_releases_reservation(client, unit, sample_video, monkeypatch):

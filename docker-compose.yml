@@ -44,18 +44,46 @@ services:
       timeout: 10s
       retries: 3
 
-  # Analisis (Whisper) & render (FFmpeg). Tambah salinan bila antrean panjang: HEAVY_WORKERS.
-  worker:
+  # Worker dipisah per antrean (P3) agar analisis video panjang tidak menahan render pendek.
+  # Batas CPU/RAM per container: worker tidak bisa menghabiskan resource server; thread FFmpeg/Whisper
+  # otomatis mengikuti batas `cpus` (lihat app/resources.py). Sesuaikan dengan kelas server di DEPLOY.md.
+  worker-analisis:
     <<: *app
-    command: ["python", "-m", "app.worker", "--queues", "berat"]
+    command: ["python", "-m", "app.worker", "--queues", "analisis"]
     deploy:
-      replicas: ${HEAVY_WORKERS:-2}
+      replicas: ${ANALYSIS_WORKERS:-1}
+    cpus: ${ANALYSIS_CPUS:-2}
+    cpu_shares: 256          # saat CPU diperebutkan: render (1024) didahulukan, analisis memakai sisa
+    mem_limit: ${ANALYSIS_MEM:-3g}
+    environment:
+      DATABASE_URL: postgresql+psycopg://videoapp:${POSTGRES_PASSWORD}@db:5432/videoapp
+      EMBEDDED_WORKERS: "0"
+      HOST_HEAVY_WORKERS: "1"   # thread = batas cpus container ini
+      MALLOC_ARENA_MAX: "2"      # cegah RAM membengkak karena fragmentasi (Python + banyak thread)
     stop_grace_period: 2m
 
-  # Unduhan dari link (YouTube, dll.), terpisah agar tidak menahan render.
-  worker-unduh:
+  worker-render:
     <<: *app
-    command: ["python", "-m", "app.worker", "--queues", "unduh"]
+    command: ["python", "-m", "app.worker", "--queues", "render"]
+    deploy:
+      replicas: ${RENDER_WORKERS:-1}
+    cpus: ${RENDER_CPUS:-2}
+    cpu_shares: 1024
+    mem_limit: ${RENDER_MEM:-1500m}
+    environment:
+      DATABASE_URL: postgresql+psycopg://videoapp:${POSTGRES_PASSWORD}@db:5432/videoapp
+      EMBEDDED_WORKERS: "0"
+      HOST_HEAVY_WORKERS: "1"
+      MALLOC_ARENA_MAX: "2"
+    stop_grace_period: 2m
+
+  # Unduhan dari link (YouTube, dll.): hampir tidak memakai CPU.
+  worker-io:
+    <<: *app
+    command: ["python", "-m", "app.worker", "--queues", "io"]
+    cpus: ${IO_CPUS:-0.5}
+    cpu_shares: 512
+    mem_limit: ${IO_MEM:-512m}
 
   # HTTPS otomatis (Let's Encrypt) untuk domain di .env.
   caddy:

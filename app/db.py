@@ -129,7 +129,7 @@ jobs = Table(
     Column("id", String(12), primary_key=True),
     Column("task", String(20), nullable=False),             # analyze | download | render
     Column("kind", String(20), nullable=False),             # analisis | render (untuk tampilan)
-    Column("queue", String(20), nullable=False, index=True),  # berat | unduh
+    Column("queue", String(20), nullable=False, index=True),  # analisis | render | io (lama: berat | unduh)
     Column("project_id", String(12), nullable=False, index=True),
     Column("user_id", String(12), nullable=True),
     Column("unit_id", String(12), nullable=True, index=True),
@@ -146,6 +146,28 @@ jobs = Table(
     Column("started", Float, nullable=True),
     Column("finished", Float, nullable=True),
     Column("heartbeat", Float, nullable=True),
+    Column("priority", Integer, nullable=True),  # lebih kecil = lebih dulu (lihat jobs.priority_for)
+)
+
+# Registri worker (P3): status, job yang sedang dikerjakan, dan pemakaian resource. Diperbarui berkala
+# oleh setiap worker; baris dengan heartbeat basi = worker mati/berhenti.
+workers = Table(
+    "workers", metadata,
+    Column("name", String(120), primary_key=True),
+    Column("host", String(80), nullable=False, default=""),
+    Column("pid", Integer, nullable=True),
+    Column("queues", String(60), nullable=False, default=""),
+    Column("state", String(10), nullable=False, default="idle"),   # idle | sibuk | menunggu | berhenti
+    Column("reason", String(200), nullable=True),                  # alasan menunggu (RAM/CPU)
+    Column("job_id", String(12), nullable=True),
+    Column("threads", Integer, nullable=True),
+    Column("cpu_pct", Float, nullable=True),
+    Column("rss_mb", Float, nullable=True),
+    Column("jobs_ok", Integer, nullable=False, default=0),
+    Column("jobs_failed", Integer, nullable=False, default=0),
+    Column("system", Text, nullable=True),                         # snapshot mesin (JSON)
+    Column("started", Float, nullable=False),
+    Column("heartbeat", Float, nullable=False, index=True),
 )
 
 settings = Table(
@@ -199,6 +221,13 @@ def engine() -> Engine:
 # (aman & mundur-kompatibel). Sementara sampai Alembic dipasang (Phase 1 / P5).
 ADDED_COLUMNS = [
     ("units", "storage_quota_mb", "INTEGER"),
+    ("jobs", "priority", "INTEGER"),
+]
+
+# Indeks untuk penjadwalan (P3). CREATE INDEX IF NOT EXISTS didukung SQLite & PostgreSQL.
+ADDED_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS ix_jobs_queue_status ON jobs (queue, status)",
+    "CREATE INDEX IF NOT EXISTS ix_jobs_queue_started ON jobs (queue, started)",
 ]
 
 
@@ -207,6 +236,8 @@ def _add_missing_columns(conn) -> None:
     for table, column, sql_type in ADDED_COLUMNS:
         if column not in existing[table]:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+    for stmt in ADDED_INDEXES:
+        conn.execute(text(stmt))
 
 
 def is_postgres() -> bool:

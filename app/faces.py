@@ -31,10 +31,14 @@ def track(video: Path, width: int, height: int, duration: float,
     """Posisi wajah utama per 1/SAMPLE_FPS detik: {"x","y","s"} ternormalisasi 0..1, atau None."""
     import cv2
 
+    from . import resources
+
+    threads = resources.cpu_threads()
+    cv2.setNumThreads(threads)  # OpenCV bawaan memakai semua core
     w, h = _frame_size(width, height)
     detector = cv2.FaceDetectorYN.create(str(MODEL_PATH), "", (w, h), 0.6, 0.3, 20)
     detector.setInputSize((w, h))
-    cmd = [FFMPEG, "-v", "error", "-i", str(video), "-an", "-vf", f"fps={SAMPLE_FPS},scale={w}:{h}",
+    cmd = [FFMPEG, "-v", "error", "-threads", str(threads), "-i", str(video), "-an", "-vf", f"fps={SAMPLE_FPS},scale={w}:{h}",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
     proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert proc.stdout is not None

@@ -1,7 +1,10 @@
 """Worker: mengambil pekerjaan dari antrean database dan menjalankannya.
 
-Server  : python -m app.worker --queues berat        (jalankan beberapa salinan sesuai jumlah CPU)
-          python -m app.worker --queues unduh
+Server  : python -m app.worker --queues analisis    (Whisper; RAM besar, 1 per 2-4 vCPU)
+          python -m app.worker --queues render      (FFmpeg; tambah salinan bila render sering antre)
+          python -m app.worker --queues io          (unduhan dari link)
+          Nama lama tetap bisa: berat (= analisis,render) dan unduh (= io). Beberapa antrean dipisah koma;
+          urutannya = prioritas (mis. "render,analisis": render didahulukan, analisis bila render kosong).
 Lokal   : otomatis dijalankan sebagai thread di dalam proses web (EMBEDDED_WORKERS=1).
 """
 import argparse
@@ -15,9 +18,10 @@ import traceback
 from typing import Optional
 
 
-from . import db, jobcontrol, jobs, lifecycle, pipeline, storage
-from .config import (CANCEL_GRACE, CLEANUP_INTERVAL, DOWNLOAD_TIMEOUT, JOB_TIMEOUT_MAX, RENDER_TIMEOUT_BASE,
-                     RENDER_TIMEOUT_PER_SEC, RETENTION_DAYS)
+from . import db, jobcontrol, jobs, lifecycle, monitor, pipeline, resources, storage
+from .config import (ANALYSIS_WORKERS, CANCEL_GRACE, CLEANUP_INTERVAL, CPU_WAIT_MAX, DOWNLOAD_TIMEOUT,
+                     JOB_TIMEOUT_MAX, RENDER_TIMEOUT_BASE, RENDER_TIMEOUT_PER_SEC, RETENTION_DAYS,
+                     WORKER_REPORT_INTERVAL)
 from .schemas import RenderRequest
 
 log = logging.getLogger("video-editing.worker")
@@ -84,11 +88,17 @@ def initial_timeout(job: jobs.Job) -> float:
 
 
 def _watchdog(job_id: str, control: jobcontrol.JobControl, done: threading.Event, abandoned: threading.Event,
-              standalone: bool) -> None:
+              standalone: bool, name: Optional[str] = None, meter: Optional[resources.UsageMeter] = None) -> None:
     """Berjalan di samping job: heartbeat, permintaan batal dari UI/API, batas waktu, dan job yang macet."""
-    last_touch = time.time()
+    last_touch = last_report = time.time()
     while not done.wait(2.0):
         now = time.time()
+        if name and now - last_report >= WORKER_REPORT_INTERVAL:
+            last_report = now
+            try:  # pemakaian CPU/RAM worker + FFmpeg selama job berjalan
+                monitor.report(name, "sibuk", job_id, usage=meter.sample() if meter else None)
+            except Exception:
+                pass
         try:
             if not control.cancelled:
                 if now > control.deadline:
@@ -117,25 +127,43 @@ def _watchdog(job_id: str, control: jobcontrol.JobControl, done: threading.Event
             log.warning("Watchdog job %s: %s", job_id, traceback.format_exc(limit=1))
 
 
-def run_one(queues: tuple[str, ...], name: str, standalone: bool = False) -> bool:
+def _report(name: str, state: str, **kw) -> None:
+    try:
+        monitor.report(name, state, **kw)
+    except Exception:  # monitoring tidak boleh menghentikan worker
+        log.debug("Laporan worker gagal:\n%s", traceback.format_exc(limit=1))
+
+
+def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
+            meter: Optional[resources.UsageMeter] = None) -> bool:
     """Jalankan satu pekerjaan bila ada. Mengembalikan False bila antrean kosong."""
     data = jobs.claim(queues, name)
     if data is None:
         return False
     job = jobs.Job(data)
     control = jobcontrol.JobControl(job.id, initial_timeout(job))
-    log.info("[%s] mulai %s %s (proyek %s)", name, job.task, job.id, job.project_id)
+    try:
+        busy_threads, busy_jobs = monitor.busy_on_host(name)
+    except Exception:
+        busy_threads, busy_jobs = 0, None
+    threads = resources.plan_job_threads(busy_threads, busy_jobs)
+    log.info("[%s] mulai %s %s (proyek %s, %d thread)", name, job.task, job.id, job.project_id, threads)
+    _report(name, "sibuk", job_id=job.id, threads=threads)
     done, abandoned = threading.Event(), threading.Event()
-    threading.Thread(target=_watchdog, args=(job.id, control, done, abandoned, standalone), daemon=True).start()
+    threading.Thread(target=_watchdog, args=(job.id, control, done, abandoned, standalone, name, meter),
+                     daemon=True).start()
+    outcome = "failed"
     try:
         with jobcontrol.activate(control):
             result = _run_task(job)
         if not abandoned.is_set():
             jobs.finish(job.id, result=result)
             log.info("[%s] selesai %s", name, job.id)
+            outcome = "ok"
         _refresh_size(job.project_id)
     except jobcontrol.JobCancelled as exc:
         log.info("[%s] %s %s", name, exc.reason, job.id)
+        outcome = "cancelled"
         if exc.reason == "shutdown":
             jobs.requeue(job.id)  # server dimatikan: bukan kesalahan pengguna, lanjutkan nanti
         elif not abandoned.is_set():
@@ -153,8 +181,24 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False) -> boo
         _refresh_size(job.project_id)
     finally:
         done.set()
+        resources.clear_job_threads()
         _collect(job.project_id)
+        _report(name, "idle", usage=meter.sample() if meter else None,
+                ok=int(outcome == "ok"), failed=int(outcome == "failed"))
     return True
+
+
+def admitted(queues: tuple[str, ...], waiting_since: Optional[float]) -> tuple[tuple[str, ...], str]:
+    """Antrean yang boleh diambil sekarang menurut resource mesin (lihat resources.admit).
+    RAM: tegas (job menunggu). CPU jenuh: ditunda paling lama CPU_WAIT_MAX detik lalu tetap jalan."""
+    allowed, reasons = [], []
+    for q in queues:
+        ok, why = resources.admit(q)
+        if ok or (why.startswith("CPU") and waiting_since is not None and time.time() - waiting_since > CPU_WAIT_MAX):
+            allowed.append(q)
+        else:
+            reasons.append(f"{q}: {why}")
+    return tuple(allowed), "; ".join(reasons)
 
 
 def _refresh_size(pid: str) -> None:
@@ -174,36 +218,63 @@ def _collect(pid: str) -> None:
 
 def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[threading.Event] = None,
          poll: float = 1.0, standalone: bool = False) -> None:
+    queues = jobs.expand_queues(queues)
     name = name or f"{socket.gethostname()}-{os.getpid()}-{'+'.join(queues)}"
     stop = stop or threading.Event()
-    last_maintenance = last_sweep = 0.0
-    log.info("Worker %s siap (antrean: %s)", name, ", ".join(queues))
+    last_maintenance = last_sweep = last_report = 0.0
+    waiting_since: Optional[float] = None
+    meter = resources.UsageMeter()
+    nice = resources.lower_priority(queues)
+    log.info("Worker %s siap (antrean: %s, jatah minimum %d thread, nice %s)", name, ", ".join(queues),
+             resources.fair_share(), nice)
     if RETENTION_DAYS:
         log.warning("RETENTION_DAYS tidak dipakai lagi; masa simpan media diatur MEDIA_RETENTION_HOURS/"
                     "MEDIA_MAX_HOURS (P2).")
+    try:
+        monitor.register(name, queues)
+    except Exception:
+        log.warning("Registrasi worker gagal:\n%s", traceback.format_exc(limit=1))
     while not stop.is_set():
         try:
-            if time.time() - last_maintenance > 60:
-                last_maintenance = time.time()
+            now = time.time()
+            if now - last_maintenance > 60:
+                last_maintenance = now
                 jobs.requeue_stale()
-            if "berat" in queues and time.time() - last_sweep > CLEANUP_INTERVAL:
-                last_sweep = time.time()
+            if {"analisis", "render"} & set(queues) and now - last_sweep > CLEANUP_INTERVAL:
+                last_sweep = now
                 lifecycle.sweep()  # hanya satu worker yang benar-benar bekerja (advisory lock)
-            if not run_one(queues, name, standalone):
+            allowed, reason = admitted(queues, waiting_since)
+            if now - last_report >= WORKER_REPORT_INTERVAL:
+                last_report = now
+                _report(name, "menunggu" if not allowed else "idle", reason=reason or None,
+                        usage=meter.sample(), system=True)
+            if not allowed:
+                if waiting_since is None:
+                    waiting_since = now
+                    log.warning("[%s] menunda mengambil job: %s", name, reason)
+                    _report(name, "menunggu", reason=reason)
+                stop.wait(max(poll, 2.0))
+                continue
+            waiting_since = None
+            if not run_one(allowed, name, standalone, meter):
                 stop.wait(poll)
         except Exception:
             # Database sempat tidak bisa dihubungi, dsb.: tunggu lalu coba lagi.
             log.error("Kesalahan worker:\n%s", traceback.format_exc())
             stop.wait(5)
+    _report(name, "berhenti")
 
 
-def start_embedded(heavy_workers: int) -> threading.Event:
-    """Worker sebagai thread di dalam proses web (mode satu komputer)."""
+def start_embedded(render_workers: int) -> threading.Event:
+    """Worker sebagai thread di dalam proses web (mode satu komputer): satu set per antrean, sehingga
+    analisis panjang tidak menahan render."""
     # Sisa pekerjaan saat aplikasi lokal ditutup. Hanya milik worker lokal: job worker server lain aman.
+    jobs.migrate_legacy_queues()
     jobs.requeue_stale(all_running=True, worker_prefix=LOCAL_PREFIX)
     stop = threading.Event()
-    specs = [("berat", f"{LOCAL_PREFIX}berat-{i + 1}") for i in range(max(1, heavy_workers))] + \
-        [("unduh", f"{LOCAL_PREFIX}unduh")]
+    specs = [("analisis", f"{LOCAL_PREFIX}analisis-{i + 1}") for i in range(max(1, ANALYSIS_WORKERS))] + \
+        [("render", f"{LOCAL_PREFIX}render-{i + 1}") for i in range(max(1, render_workers))] + \
+        [("io", f"{LOCAL_PREFIX}io")]
     for queue, name in specs:
         threading.Thread(target=loop, args=((queue,), name, stop, 0.5), daemon=True, name=name).start()
     return stop
@@ -211,10 +282,11 @@ def start_embedded(heavy_workers: int) -> threading.Event:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Worker antrean Video Editing AI")
-    parser.add_argument("--queues", default="berat,unduh", help="berat, unduh, atau keduanya (dipisah koma)")
+    parser.add_argument("--queues", default="analisis,render,io",
+                        help="analisis, render, io (dipisah koma; urutan = prioritas). Nama lama: berat, unduh")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    queues = tuple(q.strip() for q in args.queues.split(",") if q.strip())
+    queues = jobs.expand_queues(q.strip() for q in args.queues.split(",") if q.strip())
     stop = threading.Event()
 
     def on_sigterm(_signum, _frame):
@@ -224,13 +296,14 @@ def main() -> None:
         jobcontrol.cancel_all("shutdown")
 
     signal.signal(signal.SIGTERM, on_sigterm)
-    if hasattr(os, "nice"):
-        # Prioritas CPU lebih rendah dari web (diwarisi FFmpeg/Whisper): halaman tetap responsif
-        # walau semua core sedang dipakai render.
-        os.nice(int(os.environ.get("WORKER_NICE", "10")))
+    if os.environ.get("WORKER_NICE") and hasattr(os, "nice"):
+        # Prioritas CPU lebih rendah dari web (diwarisi FFmpeg/Whisper). Tanpa WORKER_NICE, prioritas
+        # diatur per antrean di loop() (render 5, io 10, analisis 15).
+        os.nice(int(os.environ["WORKER_NICE"]))
     unknown = set(queues) - set(jobs.QUEUES)
     if unknown:
         parser.error(f"Antrean tidak dikenal: {', '.join(unknown)}")
+    jobs.migrate_legacy_queues()
     try:
         loop(queues, stop=stop, standalone=True)
     except KeyboardInterrupt:

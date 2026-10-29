@@ -1,4 +1,5 @@
 """Server FastAPI: API + UI web statis. Jalankan: uvicorn app.main:app --port 8000"""
+import hmac
 import json
 import logging
 import os
@@ -17,10 +18,10 @@ from starlette.concurrency import run_in_threadpool
 from sqlalchemy import delete, func, insert, select, true, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from . import ai, auth, clipper, db, jobs, lifecycle, plan, storage
+from . import ai, auth, clipper, db, jobs, lifecycle, monitor, plan, storage
 from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
                      MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
-                     UPLOAD_TMP_DIR,
+                     METRICS_TOKEN, UPLOAD_TMP_DIR,
                      WEB_DIR, WHISPER_MODEL)
 from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
                       RenderRequest, Settings, SuggestRequest, UnitIn, UrlImport, UserCreate, UserUpdate)
@@ -54,6 +55,7 @@ def bootstrap() -> None:
             pass  # proses web lain sudah membuatnya
     try:
         migrate_legacy()
+        jobs.migrate_legacy_queues()  # job aktif dari antrean lama (berat/unduh) -> analisis/render/io
     except Exception:
         log.exception("Migrasi data lama gagal (aplikasi tetap berjalan)")
 
@@ -122,6 +124,12 @@ app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)
 @app.exception_handler(lifecycle.MediaGone)
 async def media_gone(_request: Request, _exc: lifecycle.MediaGone):
     return JSONResponse({"detail": MEDIA_GONE, "media_gone": True}, status_code=410)
+
+
+@app.exception_handler(jobs.QueueFull)
+async def queue_full(_request: Request, exc: jobs.QueueFull):
+    headers = {"Retry-After": "60"} if exc.status == 503 else {}
+    return JSONResponse({"detail": str(exc), "queue_full": True}, status_code=exc.status, headers=headers)
 
 
 @app.exception_handler(storage.NotFound)
@@ -295,8 +303,10 @@ def _check_quota(user: dict, kind: str) -> None:
                                  "Hubungi admin untuk menambah kuota.")
 
 
-def _queue_job(task: str, kind: str, meta: dict, user: dict, payload: dict, label: str, queue: str = "berat") -> dict:
+def _queue_job(task: str, kind: str, meta: dict, user: dict, payload: dict, label: str,
+               queue: Optional[str] = None) -> dict:
     """Ajukan job atas media proyek: dikunci terhadap pembersihan (lease) dan dihitung sebagai aktivitas."""
+    jobs.check_capacity(task, meta.get("unit_id"), queue)  # backpressure: antrean unit/server penuh
     lifecycle.ensure_disk()
     with lifecycle.reserve(meta["id"]) as conn:
         job = jobs.submit(task, kind, meta["id"], payload, label, queue=queue,
@@ -411,6 +421,7 @@ def upload_project(request: Request, file: UploadFile = File(...), language: Opt
         raise HTTPException(400, f"Format {ext or '(tanpa ekstensi)'} tidak didukung.")
     _check_pending(user)
     unit_id = _target_unit(user)
+    jobs.check_capacity("analyze", unit_id)  # tolak sebelum file disalin bila antrean penuh
     size = _upload_size(file)
     lifecycle.ensure_disk(size)
     meta = storage.create_project(Path(file.filename).stem, unit_id, user["id"])
@@ -440,12 +451,13 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
         raise HTTPException(400, "Link harus diawali http:// atau https://")
     _check_pending(user)
     unit_id = _target_unit(user)
+    jobs.check_capacity("download", unit_id)
     lifecycle.ensure_disk()
     lifecycle.ensure_quota(_unit(unit_id))
     meta = storage.create_project("Mengunduh...", unit_id, user["id"])
     meta = storage.update_project(meta["id"], status="antre", url=body.url)
     job = _queue_job("download", "analisis", meta, user, {"url": body.url, "language": body.language},
-                     "Unduh video", queue="unduh")
+                     "Unduh video")
     return {"project": meta, "job": job}
 
 
@@ -476,7 +488,7 @@ def reanalyze(pid: str, language: Optional[str] = None, user: dict = CurrentUser
     if not meta.get("source"):
         raise HTTPException(409, "Video sumber tidak ada. Unggah ulang videonya.")
     _check_pending(user)
-    return _queue_job("analyze", "analisis", meta, user, {"language": language}, "Analisis ulang")
+    return _queue_job("analyze", "analisis", meta, user, {"language": language, "reanalyze": True}, "Analisis ulang")
 
 
 @app.get("/api/projects/{pid}/transcript")
@@ -887,6 +899,24 @@ def admin_update_user(user_id: str, body: UserUpdate, user: dict = CurrentUser):
     if body.password or body.active is False:
         auth.end_user_sessions(user_id)  # paksa login ulang
     return auth.public_user(auth.get_user(user_id))
+
+
+@app.get("/api/admin/metrics")
+def admin_metrics(user: dict = CurrentUser):
+    """Monitoring lengkap (admin pusat): sistem, disk, worker, antrean, waktu tunggu & durasi."""
+    if user["role"] != "admin":
+        raise HTTPException(403, "Hanya admin.")
+    return monitor.snapshot()
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics(request: Request):
+    """Untuk Prometheus/Grafana. Aktif bila METRICS_TOKEN diisi; kirim header Authorization: Bearer <token>."""
+    if not METRICS_TOKEN:
+        raise HTTPException(404)
+    if not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {METRICS_TOKEN}"):
+        raise HTTPException(401)
+    return Response(monitor.prometheus(monitor.snapshot()), media_type="text/plain; version=0.0.4")
 
 
 @app.get("/api/admin/stats")

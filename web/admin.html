@@ -29,12 +29,23 @@
   <section class="card" id="sec-status" hidden>
     <h3>Antrean pekerjaan</h3>
     <div class="stat-row" id="queueStats"></div>
+    <div id="metricsBox" hidden>
+      <h3 style="margin-top:16px">Server</h3>
+      <div class="stat-row" id="systemStats"></div>
+      <h3 style="margin-top:16px">Antrean (1 jam terakhir)</h3>
+      <div class="table-wrap"><table class="grid" id="queueTable"></table></div>
+      <h3 style="margin-top:16px">Worker</h3>
+      <div class="table-wrap"><table class="grid" id="workerTable"></table></div>
+      <p class="hint">CPU worker 100% = satu core penuh (termasuk FFmpeg yang dijalankannya). Status "menunggu resource"
+        berarti RAM/CPU server sedang tidak cukup sehingga job ditahan di antrean, bukan dijalankan lalu gagal.
+        Untuk Prometheus/Grafana: isi <code>METRICS_TOKEN</code> lalu ambil <code>/metrics</code>.</p>
+    </div>
     <h3 style="margin-top:16px">Penyimpanan media sementara</h3>
     <div class="stat-row" id="storageStats"></div>
     <p class="hint" id="legacyHint" hidden></p>
     <h3 style="margin-top:16px">Pemakaian 30 hari terakhir</h3>
     <div class="table-wrap"><table class="grid" id="usageTable"></table></div>
-    <p class="hint">Bila antrean "berat" sering panjang, tambah jumlah worker di server (lihat README, bagian deploy).</p>
+    <p class="hint">Bila antrean analisis atau render sering panjang, tambah worker untuk antrean itu (lihat DEPLOY.md, "Mengatur kapasitas").</p>
   </section>
 
   <!-- Unit -->

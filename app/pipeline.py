@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clipper, faces, jobcontrol, media, overlays, storage, transcribe
+from . import clipper, faces, jobcontrol, media, overlays, resources, storage, transcribe
 from .config import ANALYZE_TIMEOUT_BASE, ANALYZE_TIMEOUT_PER_MIN, JOB_TIMEOUT_MAX
 from .jobs import Job
 from .render import build_command, output_size
@@ -177,6 +177,9 @@ def safe_analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
 
 
 def render(job: Job, pid: str, req: RenderRequest) -> dict:
+    if req.encoder == "nvidia" and not resources.gpu_with_free_vram(512):
+        # Tidak ada GPU NVIDIA (atau VRAM penuh): langsung CPU, tanpa percobaan yang pasti gagal.
+        req = req.model_copy(update={"encoder": "cpu"})
     meta = storage.load_project(pid)
     src = source_path(pid)
     folder = storage.project_dir(pid)

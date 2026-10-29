@@ -17,14 +17,29 @@ _lock = threading.Lock()
 def _load(device: str):
     from faster_whisper import WhisperModel
 
+    from . import resources
+
     compute_type = "int8" if device == "cpu" else "default"
-    log.info("Memuat model Whisper '%s' di %s", WHISPER_MODEL, device)
-    return WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type, cpu_threads=WHISPER_THREADS)
+    # Model dimuat sekali per proses, jadi jumlah thread tidak bisa elastis per job: pakai core yang tersedia
+    # untuk proses ini (termasuk batas `cpus` container). Prioritas rendah (nice) membuat render tetap didahulukan.
+    threads = WHISPER_THREADS or resources.effective_cpus()
+    log.info("Memuat model Whisper '%s' di %s (%d thread)", WHISPER_MODEL, device, threads)
+    return WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type, cpu_threads=threads)
+
+
+def pick_device() -> str:
+    """auto: GPU hanya bila benar-benar terdeteksi dengan VRAM bebas cukup; selain itu CPU.
+    Tidak mencoba CUDA secara membabi buta (lambat & boros RAM saat gagal di server tanpa GPU)."""
+    if WHISPER_DEVICE != "auto":
+        return WHISPER_DEVICE
+    from . import resources
+
+    return "cuda" if resources.gpu_with_free_vram() else "cpu"
 
 
 def _get_model(force_cpu: bool = False):
     global _model, _model_device
-    want = "cpu" if force_cpu else WHISPER_DEVICE
+    want = "cpu" if force_cpu else pick_device()
     if _model is None or (force_cpu and _model_device != "cpu"):
         try:
             _model, _model_device = _load(want), want

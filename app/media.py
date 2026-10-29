@@ -65,6 +65,17 @@ def probe(path: Path) -> dict:
     }
 
 
+def limit_threads(args: list[str]) -> list[str]:
+    """Batasi thread FFmpeg (filter & encoder) ke anggaran worker, kecuali pemanggil sudah mengatur sendiri.
+    Tanpa ini x264 memakai ±1,5x jumlah core per proses, sehingga dua render bersamaan saling berebut CPU."""
+    if "-threads" in args or not args:
+        return list(args)
+    from . import resources
+
+    n = str(resources.cpu_threads())
+    return ["-filter_threads", n, *args[:-1], "-threads", n, args[-1]]
+
+
 def run_ffmpeg(args: list[str], duration: float = 0, progress: ProgressFn = None, cwd: Optional[Path] = None,
                stall_timeout: Optional[float] = None) -> None:
     """Menjalankan FFmpeg dan melaporkan progress 0..1 berdasarkan out_time.
@@ -75,7 +86,7 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: ProgressFn = None
     """
     stall_timeout = FFMPEG_STALL_TIMEOUT if stall_timeout is None else stall_timeout
     jobcontrol.check()
-    cmd = [FFMPEG, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *args]
+    cmd = [FFMPEG, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *limit_threads(args)]
     with tempfile.TemporaryFile(mode="w+") as err:
         proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True, cwd=cwd)
         assert proc.stdout is not None
