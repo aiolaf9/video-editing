@@ -29,12 +29,14 @@ class JobCancelled(BaseException):
 
     def __init__(self, reason: str):
         super().__init__(reason)
-        self.reason = reason            # "dibatalkan" | "timeout"
+        self.reason = reason            # "dibatalkan" | "timeout" | "shutdown"
 
     @property
     def message(self) -> str:
         if self.reason == "timeout":
             return "Pekerjaan dihentikan karena melewati batas waktu."
+        if self.reason == "shutdown":
+            return "Dihentikan karena server dimatikan; akan diulang otomatis."
         return "Dibatalkan oleh pengguna."
 
 
@@ -51,7 +53,8 @@ class JobControl:
         self.cancelled_at: Optional[float] = None
         self._event = threading.Event()
         self._procs: set[subprocess.Popen] = set()
-        self._lock = threading.Lock()
+        # RLock: cancel() bisa dipanggil dari signal handler di thread yang sedang memegang lock ini.
+        self._lock = threading.RLock()
 
     # ---- status
     @property
@@ -112,8 +115,10 @@ def activate(control: JobControl) -> Iterator[JobControl]:
         _local.control = previous
 
 
-def cancel_all(reason: str = "dibatalkan") -> int:
+def cancel_all(reason: str = "shutdown") -> int:
     """Hentikan semua job di proses ini (dipanggil saat aplikasi/worker dimatikan).
+
+    Dengan reason "shutdown" job tidak dianggap batal: worker mengembalikannya ke antrean.
 
     Subprocess berjalan di grup prosesnya sendiri, jadi Ctrl+C tidak otomatis sampai ke FFmpeg;
     tanpa ini FFmpeg bisa tertinggal berjalan setelah aplikasi ditutup.

@@ -100,7 +100,9 @@ async def lifespan(_app: FastAPI):
     if stop:
         stop.set()
         from . import jobcontrol
-        jobcontrol.cancel_all()  # jangan tinggalkan FFmpeg berjalan saat aplikasi ditutup
+        # Jangan tinggalkan FFmpeg berjalan saat aplikasi ditutup; job dikembalikan ke antrean
+        # (bukan dianggap batal) dan dilanjutkan saat aplikasi dinyalakan lagi.
+        jobcontrol.cancel_all("shutdown")
 
 
 app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)

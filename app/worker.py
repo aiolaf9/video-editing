@@ -7,6 +7,7 @@ Lokal   : otomatis dijalankan sebagai thread di dalam proses web (EMBEDDED_WORKE
 import argparse
 import logging
 import os
+import signal
 import socket
 import threading
 import time
@@ -21,6 +22,7 @@ from .config import (CANCEL_GRACE, DOWNLOAD_TIMEOUT, JOB_TIMEOUT_MAX, RENDER_TIM
 from .schemas import RenderRequest
 
 log = logging.getLogger("video-editing.worker")
+LOCAL_PREFIX = "lokal-"   # nama worker bawaan (thread di dalam proses web)
 
 
 def _run_task(job: jobs.Job):
@@ -103,8 +105,10 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False) -> boo
             jobs.finish(job.id, result=result)
             log.info("[%s] selesai %s", name, job.id)
     except jobcontrol.JobCancelled as exc:
-        log.info("[%s] %s %s", name, "dibatalkan" if exc.reason == "dibatalkan" else "timeout", job.id)
-        if not abandoned.is_set():
+        log.info("[%s] %s %s", name, exc.reason, job.id)
+        if exc.reason == "shutdown":
+            jobs.requeue(job.id)  # server dimatikan: bukan kesalahan pengguna, lanjutkan nanti
+        elif not abandoned.is_set():
             jobs.finish(job.id, error=exc.message, cancelled=exc.reason == "dibatalkan")
     except storage.NotFound:
         jobs.finish(job.id, error="Proyek sudah dihapus.")
@@ -154,9 +158,11 @@ def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[thr
 
 def start_embedded(heavy_workers: int) -> threading.Event:
     """Worker sebagai thread di dalam proses web (mode satu komputer)."""
-    jobs.requeue_stale(all_running=True)  # sisa pekerjaan saat aplikasi ditutup
+    # Sisa pekerjaan saat aplikasi lokal ditutup. Hanya milik worker lokal: job worker server lain aman.
+    jobs.requeue_stale(all_running=True, worker_prefix=LOCAL_PREFIX)
     stop = threading.Event()
-    specs = [("berat", f"lokal-berat-{i + 1}") for i in range(max(1, heavy_workers))] + [("unduh", "lokal-unduh")]
+    specs = [("berat", f"{LOCAL_PREFIX}berat-{i + 1}") for i in range(max(1, heavy_workers))] + \
+        [("unduh", f"{LOCAL_PREFIX}unduh")]
     for queue, name in specs:
         threading.Thread(target=loop, args=((queue,), name, stop, 0.5), daemon=True, name=name).start()
     return stop
@@ -168,6 +174,15 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     queues = tuple(q.strip() for q in args.queues.split(",") if q.strip())
+    stop = threading.Event()
+
+    def on_sigterm(_signum, _frame):
+        # `docker stop` / systemd: hentikan FFmpeg, kembalikan job ke antrean, lalu keluar dengan rapi.
+        log.info("SIGTERM diterima, worker berhenti setelah job dikembalikan ke antrean.")
+        stop.set()
+        jobcontrol.cancel_all("shutdown")
+
+    signal.signal(signal.SIGTERM, on_sigterm)
     if hasattr(os, "nice"):
         # Prioritas CPU lebih rendah dari web (diwarisi FFmpeg/Whisper): halaman tetap responsif
         # walau semua core sedang dipakai render.
@@ -176,10 +191,10 @@ def main() -> None:
     if unknown:
         parser.error(f"Antrean tidak dikenal: {', '.join(unknown)}")
     try:
-        loop(queues, standalone=True)
+        loop(queues, stop=stop, standalone=True)
     except KeyboardInterrupt:
-        jobcontrol.cancel_all()
-        log.info("Worker dihentikan.")
+        jobcontrol.cancel_all("shutdown")
+    log.info("Worker dihentikan.")
 
 
 if __name__ == "__main__":

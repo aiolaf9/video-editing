@@ -73,14 +73,20 @@ def download(job: Job, pid: str, url: str) -> str:
         "progress_hooks": [hook],
     }
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except jobcontrol.JobCancelled:
-        # Unduhan dihentikan: buang file setengah jadi (*.part, *.ytdl, potongan format).
+        return _download(job, pid, url, folder, opts, yt_dlp)
+    except jobcontrol.JobCancelled as exc:
+        # Unduhan dihentikan (kapan pun, termasuk setelah yt-dlp selesai): buang file setengah jadi.
         for leftover in folder.glob("source.*"):
             leftover.unlink(missing_ok=True)
-        storage.update_project(pid, status="batal", name="Unduhan dibatalkan")
+        if exc.reason != "shutdown":
+            storage.update_project(pid, status="batal", name="Unduhan dibatalkan")
         raise
+
+
+def _download(job: Job, pid: str, url: str, folder: Path, opts: dict, yt_dlp) -> str:
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
     except Exception as exc:
         storage.update_project(pid, status="gagal", name="Unduhan gagal")
         msg = str(exc).replace("ERROR: ", "")
@@ -155,10 +161,13 @@ def safe_analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     previous = storage.load_project(pid).get("status")
     try:
         return analyze(job, pid, language)
-    except jobcontrol.JobCancelled:
-        # Analisis ulang yang dibatalkan: hasil lama (transkrip, preview) masih utuh, kembalikan ke "siap".
+    except jobcontrol.JobCancelled as exc:
+        # Analisis ulang yang dihentikan: hasil lama (transkrip, preview) masih utuh, kembalikan ke "siap".
         had_result = previous == "siap" and storage.read_data(pid, "transcript") is not None
-        storage.update_project(pid, status="siap" if had_result else "batal")
+        if had_result:
+            storage.update_project(pid, status="siap")
+        else:  # server dimatikan = akan diulang otomatis, bukan dibatalkan pengguna
+            storage.update_project(pid, status="antre" if exc.reason == "shutdown" else "batal")
         raise
     except Exception:
         storage.update_project(pid, status="gagal")

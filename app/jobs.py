@@ -179,13 +179,31 @@ def touch(job_id: str) -> None:
         c.execute(update(db.jobs).where(db.jobs.c.id == job_id).values(heartbeat=time.time()))
 
 
-def requeue_stale(all_running: bool = False) -> int:
-    """Kembalikan pekerjaan 'jalan' yang worker-nya mati. all_running=True dipakai saat start mode lokal."""
+def requeue(job_id: str) -> bool:
+    """Kembalikan job yang dihentikan karena server dimatikan ke antrean (percobaan tidak dihitung).
+
+    Hanya untuk job berstatus 'jalan': job yang sedang dibatalkan pengguna tidak boleh hidup lagi.
+    """
+    with db.engine().begin() as c:
+        return bool(c.execute(update(db.jobs).where(db.jobs.c.id == job_id, db.jobs.c.status == "jalan").values(
+            status="antre", worker=None, message="Diulang karena server dimulai ulang...",
+            attempts=func.max(db.jobs.c.attempts - 1, 0) if not db.is_postgres()
+            else func.greatest(db.jobs.c.attempts - 1, 0))).rowcount)
+
+
+def requeue_stale(all_running: bool = False, worker_prefix: Optional[str] = None) -> int:
+    """Kembalikan pekerjaan 'jalan' yang worker-nya mati.
+
+    all_running=True (saat start mode lokal) menganggap semua job milik worker berawalan `worker_prefix`
+    sudah mati, tanpa menunggu heartbeat basi. Job milik worker lain (mis. worker server) tidak disentuh.
+    Job 'batal' tidak pernah diulang; job 'berhenti' yang worker-nya mati menjadi 'batal'.
+    """
     cutoff = time.time() + 1 if all_running else time.time() - STALE_AFTER
-    stale = and_(db.jobs.c.status == "jalan", db.jobs.c.heartbeat < cutoff)
+    owner = db.jobs.c.worker.like(f"{worker_prefix}%") if worker_prefix else db.jobs.c.id.isnot(None)
+    stale = and_(db.jobs.c.status == "jalan", db.jobs.c.heartbeat < cutoff, owner)
     with db.engine().begin() as c:
         # Dibatalkan saat worker-nya mati: cukup tandai batal, jangan diulang.
-        c.execute(update(db.jobs).where(db.jobs.c.status == "berhenti", db.jobs.c.heartbeat < cutoff).values(
+        c.execute(update(db.jobs).where(db.jobs.c.status == "berhenti", db.jobs.c.heartbeat < cutoff, owner).values(
             status="batal", message="Dibatalkan", finished=time.time()))
         failed = c.execute(update(db.jobs).where(stale, db.jobs.c.attempts >= MAX_ATTEMPTS).values(
             status="gagal", error="Pekerjaan terhenti berulang kali (server restart atau kehabisan memori).",
