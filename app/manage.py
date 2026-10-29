@@ -4,10 +4,13 @@
     python -m app.manage ensure-admin            (buat admin hanya bila belum ada pengguna; dipakai start.bat)
     python -m app.manage reset-password EMAIL
     python -m app.manage list-users
+    python -m app.manage media-migrate [--apply] [--grace-hours 72]   (proyek lama -> media sementara)
+    python -m app.manage media-cleanup                                  (jalankan pembersihan sekali)
 """
 import argparse
 import getpass
 import sys
+from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
@@ -39,7 +42,7 @@ def create_admin(email: str = "", name: str = "", password: str = "") -> None:
     print(f"Admin dibuat: {user['email']}. Silakan login di browser.")
 
 
-def main() -> None:
+def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.manage")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("create-admin")
@@ -50,7 +53,12 @@ def main() -> None:
     p = sub.add_parser("reset-password")
     p.add_argument("email")
     sub.add_parser("list-users")
-    args = parser.parse_args()
+    p = sub.add_parser("media-migrate", help="Masukkan proyek lama ke siklus media sementara (default: dry-run)")
+    p.add_argument("--apply", action="store_true", help="Benar-benar terapkan (tanpa ini hanya laporan)")
+    p.add_argument("--grace-hours", type=float, default=72.0,
+                   help="Masa tenggang sebelum media proyek lama boleh dihapus (jam sejak sekarang)")
+    sub.add_parser("media-cleanup", help="Jalankan satu putaran pembersihan media sekarang")
+    args = parser.parse_args(argv)
     db.engine()
 
     if args.cmd == "create-admin":
@@ -69,6 +77,20 @@ def main() -> None:
                 password_hash=auth.hash_password(pw), active=True))
         auth.end_user_sessions(user["id"])
         print("Password diganti.")
+    elif args.cmd == "media-migrate":
+        from . import lifecycle
+        report = lifecycle.migrate_legacy(apply=args.apply, grace_hours=args.grace_hours)
+        for item in report["projects"]:
+            print(f"  {item['id']}  {item['bytes'] / 1e6:9.1f} MB  {item['name']}")
+        print(f"Proyek lama: {report['count']} ({report['bytes'] / 1e6:.1f} MB).")
+        if report["applied"]:
+            print(f"Diterapkan. Media proyek lama aman sampai paling cepat {args.grace_hours:.0f} jam lagi, "
+                  "setelah itu mengikuti masa simpan sementara.")
+        elif report["count"]:
+            print("Dry-run: belum ada yang diubah. Jalankan ulang dengan --apply untuk menerapkan.")
+    elif args.cmd == "media-cleanup":
+        from . import lifecycle
+        print(lifecycle.sweep())
     elif args.cmd == "list-users":
         with db.engine().connect() as c:
             for r in c.execute(select(db.users.c.email, db.users.c.name, db.users.c.role, db.users.c.active)):

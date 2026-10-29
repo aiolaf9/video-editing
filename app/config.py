@@ -66,7 +66,7 @@ RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "0"))
 # ---- Media sementara (P2) ----
 # Video, preview, hasil render & musik dihapus otomatis: RETENTION jam sejak aktivitas terakhir
 # pengguna, paling lama MAX jam sejak upload. Metadata (akun, proyek, guidebook) tetap disimpan.
-MEDIA_LIFECYCLE = os.environ.get("MEDIA_LIFECYCLE", "on") == "on"
+MEDIA_LIFECYCLE = os.environ.get("MEDIA_LIFECYCLE", "on").strip().lower() not in ("0", "off", "false", "no")
 MEDIA_RETENTION_HOURS = float(os.environ.get("MEDIA_RETENTION_HOURS", "24"))
 MEDIA_MAX_HOURS = float(os.environ.get("MEDIA_MAX_HOURS", "72"))
 MEDIA_WARN_HOURS = float(os.environ.get("MEDIA_WARN_HOURS", "3"))       # tampilkan peringatan di UI

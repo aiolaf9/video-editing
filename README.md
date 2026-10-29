@@ -81,6 +81,10 @@ Proyek dari versi sebelumnya (tanpa login) otomatis dipindahkan ke unit **"Umum"
 4. Atur gaya di panel kanan: format, filter, subtitle, dan musik. Subtitle bisa dilihat langsung di preview.
 5. Klik **Render yang dicentang** atau **Render klip ini**. Hasilnya muncul di tab **Hasil render** dan bisa diunduh.
 
+**Media tidak disimpan permanen.** Video dan hasil render dihapus otomatis 24 jam setelah aktivitas terakhir
+(paling lama 72 jam sejak upload). Unduh hasil render yang ingin disimpan. Atur lewat `MEDIA_RETENTION_HOURS`,
+`MEDIA_MAX_HOURS`, atau matikan untuk pemakaian pribadi dengan `MEDIA_LIFECYCLE=0`.
+
 ## Jika ada masalah
 
 - **Proyek tertahan di "Menunggu giliran"**: pekerjaan sebelumnya masih berjalan. Klik proyek lain di daftar untuk melihat progresnya, dan lihat jendela terminal untuk pesan error.

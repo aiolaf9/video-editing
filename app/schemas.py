@@ -106,6 +106,8 @@ class UnitIn(BaseModel):
     daily_render_quota: int = Field(0, ge=0, le=100_000)
     daily_ai_quota: int = Field(0, ge=0, le=100_000)
     guidebook: str = Field("", max_length=4000)
+    # Kuota media sementara (MB). Tidak dikirim = tidak diubah; null = bawaan server; 0 = tanpa batas.
+    storage_quota_mb: Optional[int] = Field(None, ge=0, le=100_000_000)
 
 
 class UserCreate(BaseModel):

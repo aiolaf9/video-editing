@@ -13,12 +13,13 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, insert, select, true, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from . import ai, auth, clipper, db, jobs, lifecycle, plan, storage
 from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
-                     MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS, UPLOAD_TMP_DIR,
+                     MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
+                     UPLOAD_TMP_DIR,
                      WEB_DIR, WHISPER_MODEL)
 from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
                       RenderRequest, Settings, SuggestRequest, UnitIn, UrlImport, UserCreate, UserUpdate)
@@ -119,6 +120,16 @@ app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)
 
 @app.exception_handler(lifecycle.MediaGone)
 async def media_gone(_request: Request, _exc: lifecycle.MediaGone):
+    return JSONResponse({"detail": MEDIA_GONE, "media_gone": True}, status_code=410)
+
+
+@app.exception_handler(storage.NotFound)
+async def project_folder_missing(_request: Request, exc: storage.NotFound):
+    # Folder proyek sudah tidak ada (media dihapus) tetapi metadatanya masih ada: 410, bukan error 500.
+    try:
+        storage.load_project(str(exc))
+    except storage.NotFound:
+        return JSONResponse({"detail": "Proyek tidak ditemukan."}, status_code=404)
     return JSONResponse({"detail": MEDIA_GONE, "media_gone": True}, status_code=410)
 
 
@@ -267,6 +278,8 @@ def me(user: dict = CurrentUser):
     cfg = _provider_cfg(ai_cfg, ai_cfg["provider"])
     data["ai"] = {"name": provider["name"], "ready": bool(cfg.get("api_key")) or not provider["needs_key"]}
     data["url_import"] = ALLOW_URL_IMPORT == "all" or (ALLOW_URL_IMPORT == "admins" and user["role"] != "editor")
+    data["media_policy"] = {"lifecycle": MEDIA_LIFECYCLE, "retention_hours": MEDIA_RETENTION_HOURS,
+                            "max_hours": MEDIA_MAX_HOURS}
     return data
 
 
@@ -307,7 +320,8 @@ def my_unit(user: dict = CurrentUser):
     today = db.start_of_today()
     return {**unit, "can_edit": user["role"] in ("admin", "unit_admin"),
             "renders_today": db.usage_count("render", unit["id"], today),
-            "ai_today": db.usage_count("ai", unit["id"], today)}
+            "ai_today": db.usage_count("ai", unit["id"], today),
+            "storage_used": lifecycle.unit_usage(unit["id"]), "storage_quota": lifecycle.unit_quota_bytes(unit)}
 
 
 @app.put("/api/unit/guidebook")
@@ -700,6 +714,8 @@ def admin_units(user: dict = CurrentUser):
         u["members"] = members.get(u["id"], 0)
         u["renders_today"] = db.usage_count("render", u["id"], today)
         u["ai_today"] = db.usage_count("ai", u["id"], today)
+        u["storage_used"] = lifecycle.unit_usage(u["id"])
+        u["storage_quota"] = lifecycle.unit_quota_bytes(u)  # 0 = tanpa batas
     return units
 
 
@@ -712,7 +728,8 @@ def create_unit(body: UnitIn, user: dict = CurrentUser):
         uid = storage.new_id()
         c.execute(insert(db.units).values(id=uid, name=body.name.strip(), guidebook=body.guidebook,
                                           daily_render_quota=body.daily_render_quota,
-                                          daily_ai_quota=body.daily_ai_quota, created=time.time()))
+                                          daily_ai_quota=body.daily_ai_quota, created=time.time(),
+                                          storage_quota_mb=body.storage_quota_mb))
     return _unit(uid)
 
 
@@ -725,6 +742,8 @@ def edit_unit(unit_id: str, body: UnitIn, user: dict = CurrentUser):
     if user["role"] == "admin":  # nama & kuota hanya diatur admin pusat
         values.update(name=body.name.strip(), daily_render_quota=body.daily_render_quota,
                       daily_ai_quota=body.daily_ai_quota)
+        if "storage_quota_mb" in body.model_fields_set:
+            values["storage_quota_mb"] = body.storage_quota_mb
     elif unit_id != user["unit_id"]:
         raise HTTPException(403, "Anda hanya bisa mengatur unit Anda sendiri.")
     with db.engine().begin() as c:
@@ -818,7 +837,20 @@ def admin_stats(user: dict = CurrentUser):
     per_unit: dict = {}
     for unit_id, kind, n in rows:
         per_unit.setdefault(unit_id or "-", {})[kind] = n
-    return {"queues": jobs.queue_stats(), "last_30_days": per_unit}
+    pm, pr = db.project_media.c, db.projects.c
+    scope = db.project_media.join(db.projects, pr.id == pm.project_id)
+    unit_filter = pr.unit_id == user["unit_id"] if user["role"] != "admin" else true()  # Admin Unit: unitnya saja
+    with db.engine().connect() as c:
+        by_state = dict(c.execute(select(pm.state, func.count()).select_from(scope).where(unit_filter)
+                                  .group_by(pm.state)).all())
+        media_bytes = c.execute(select(func.coalesce(func.sum(pm.bytes), 0)).select_from(scope).where(
+            unit_filter, pm.state.in_(("tersedia", "menghapus")))).scalar() or 0
+    storage_info = {"media_bytes": int(media_bytes), "projects_by_state": by_state,
+                    "retention_hours": MEDIA_RETENTION_HOURS, "max_hours": MEDIA_MAX_HOURS}
+    if user["role"] == "admin":  # info disk & proyek lama hanya untuk admin pusat
+        storage_info["disk"] = lifecycle.disk_status()
+        storage_info["legacy_projects"] = lifecycle.legacy_count()
+    return {"queues": jobs.queue_stats(), "last_30_days": per_unit, "storage": storage_info}
 
 
 app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")

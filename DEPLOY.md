@@ -23,7 +23,7 @@ Untuk ratusan pengguna (puluhan aktif bersamaan), mulai dari:
 | Kebutuhan | Rekomendasi awal |
 |---|---|
 | CPU / RAM | **8 vCPU, 16 GB RAM** |
-| Disk | 200 GB SSD (video besar; atur `RETENTION_DAYS` agar file lama terhapus) |
+| Disk | 200 GB SSD (media dihapus otomatis 24–72 jam; lihat "Penyimpanan media sementara") |
 | OS | Ubuntu 22.04 / 24.04 |
 
 Bisa dari penyedia mana pun (lokal maupun global). Bisa naik kelas kapan saja tanpa mengubah aplikasi.
@@ -92,7 +92,7 @@ Ubah di `.env`, lalu jalankan ulang `docker compose up -d`:
 |---|---|
 | Antrean analisis/render sering panjang (lihat **Admin → Status**) | Naikkan `HEAVY_WORKERS` (±1 per 2–3 vCPU) |
 | Transkrip terasa lama | `WHISPER_MODEL=base` (lebih cepat, sedikit kurang akurat), atau server dengan vCPU lebih banyak |
-| Disk cepat penuh | Turunkan `RETENTION_DAYS`, turunkan `MAX_UPLOAD_MB` |
+| Disk cepat penuh | Turunkan `MEDIA_RETENTION_HOURS`/`MEDIA_MAX_HOURS`, turunkan `MAX_UPLOAD_MB`, atur kuota media per unit |
 | Satu unit memakai terlalu banyak | Atur kuota render/AI per unit di **Admin → Unit** |
 
 Aturan praktis: `HEAVY_WORKERS × WHISPER_THREADS ≈ jumlah vCPU`.
@@ -100,6 +100,38 @@ Aturan praktis: `HEAVY_WORKERS × WHISPER_THREADS ≈ jumlah vCPU`.
 Uji beban di lingkungan pengembangan (4 vCPU, 4 proses web, 2 worker, PostgreSQL):
 200 pengguna aktif + 40 render diajukan bersamaan → 40/40 render selesai, 0 error,
 waktu respons halaman median 28 ms (p95 90 ms).
+
+## Penyimpanan media sementara
+
+Video sumber, preview, dan hasil render bersifat **sementara**:
+
+- dihapus otomatis `MEDIA_RETENTION_HOURS` (bawaan 24 jam) setelah aktivitas terakhir pengguna,
+  dan paling lama `MEDIA_MAX_HOURS` (bawaan 72 jam) sejak upload;
+- membuka atau memantau proyek tidak memperpanjang masa simpan; mengedit, merender, atau mengunduh memperpanjangnya;
+- media yang sedang dipakai pekerjaan (antre/berjalan) tidak pernah dihapus;
+- akun, unit, tema, Guidebook, dan riwayat proyek tetap tersimpan.
+
+Upload baru ditolak dengan pesan jelas bila sisa disk di bawah `DISK_MIN_FREE_MB` / `DISK_MIN_FREE_PCT`
+atau kuota media unit terlampaui. Pemakaian per unit terlihat di **Admin → Unit** dan **Admin → Status**.
+
+**Proyek dari versi sebelumnya** tidak dihapus otomatis. Periksa dulu (tidak mengubah apa pun):
+
+```bash
+docker compose exec web python -m app.manage media-migrate
+```
+
+Bila daftar sudah sesuai, masukkan ke siklus sementara dengan masa tenggang 72 jam
+(pengguna sempat mengunduh hasil render yang masih dibutuhkan):
+
+```bash
+docker compose exec web python -m app.manage media-migrate --apply --grace-hours 72
+```
+
+Menjalankan pembersihan sekarang (biasanya otomatis oleh worker setiap `CLEANUP_INTERVAL` detik):
+
+```bash
+docker compose exec web python -m app.manage media-cleanup
+```
 
 ## Update aplikasi
 
@@ -123,8 +155,8 @@ Tambahkan baris:
 0 2 * * * cd /opt/video-editing && ./deploy/backup.sh >> backups/backup.log 2>&1
 ```
 
-Simpan juga salinan folder `backups/` di luar server (mis. object storage). File video ada di volume
-`video-editing_appdata`; sertakan dalam snapshot disk dari penyedia cloud bila hasil render perlu diamankan.
+Simpan juga salinan folder `backups/` di luar server (mis. object storage). Backup **tidak** mencakup
+file video: media bersifat sementara dan dihapus otomatis, jadi pengguna perlu mengunduh hasil render sendiri.
 
 ## Perintah berguna
 

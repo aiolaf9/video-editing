@@ -35,6 +35,9 @@ log = logging.getLogger("video-editing.lifecycle")
 HOUR = 3600.0
 TOUCH_MIN_INTERVAL = 60.0          # tulis last_activity paling sering 1x per menit
 DELETING_STUCK_AFTER = 600.0       # `menghapus` lebih dari ini = proses hapus sempat terputus
+# tempfile.tempdir = UPLOAD_TMP_DIR, jadi semua file sementara proses (bukan hanya upload) ada di sana.
+# Hanya sisa yang jauh lebih tua dari job terpanjang (JOB_TIMEOUT_MAX) yang dianggap tertinggal.
+TMP_ORPHAN_HOURS = 24.0
 ACTIVE_JOB = ("antre", "jalan", "berhenti")
 _SWEEP_LOCK_KEY = 727275
 
@@ -283,9 +286,10 @@ def _stuck_deleting(now: float) -> list[str]:
 
 
 def _incomplete_uploads(now: float) -> list[str]:
-    pr = db.projects.c
-    with db.engine().connect() as c:
-        stale = [r[0] for r in c.execute(select(pr.id).where(
+    pr, pm = db.projects.c, db.project_media.c
+    with db.engine().connect() as c:  # hanya proyek terkelola: proyek lama tidak pernah dihapus otomatis
+        stale = [r[0] for r in c.execute(select(pr.id).select_from(
+            db.projects.join(db.project_media, pm.project_id == pr.id)).where(
             pr.status == "baru", pr.created < now - INCOMPLETE_UPLOAD_HOURS * HOUR))]
         busy = _active_job_projects(c, stale) if stale else set()
     return [pid for pid in stale if pid not in busy]
@@ -354,10 +358,10 @@ def clean_orphans(now: Optional[float] = None) -> dict:
                 stats["bytes"] += _remove(f)
                 stats["files"] += 1
 
-    # File upload sementara (multipart) yang tertinggal karena koneksi/proses terputus.
+    # File sementara (upload multipart, dll.) yang tertinggal karena koneksi/proses terputus.
     if UPLOAD_TMP_DIR.exists():
         for f in UPLOAD_TMP_DIR.iterdir():
-            if _old_enough(f, now - 5 * HOUR):  # minimal 6 jam: upload besar & lambat masih mungkin berjalan
+            if _old_enough(f, now - TMP_ORPHAN_HOURS * HOUR + TEMP_FILE_GRACE_MINUTES * 60):
                 stats["bytes"] += _remove(f)
                 stats["files"] += 1
     return stats
@@ -401,6 +405,13 @@ def sweep(now: Optional[float] = None) -> dict:
 
 
 # ------------------------------------------------------------------ migrasi proyek lama
+
+def legacy_count() -> int:
+    pr, pm = db.projects.c, db.project_media.c
+    with db.engine().connect() as c:
+        return int(c.execute(select(func.count()).select_from(
+            db.projects.outerjoin(db.project_media, pm.project_id == pr.id)).where(pm.project_id.is_(None))).scalar())
+
 
 def legacy_projects() -> list[dict]:
     pr, pm = db.projects.c, db.project_media.c
