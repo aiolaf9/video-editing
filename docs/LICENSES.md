@@ -11,10 +11,10 @@ ada di `docs/licenses-python.md` (dibuat ulang otomatis).
 
 | Status | Paket | Lisensi | Catatan untuk SaaS |
 |---|---|---|---|
-| TERVERIFIKASI | 54 paket (FastAPI, SQLAlchemy, Alembic, faster-whisper, ctranslate2, numpy, OpenCV, Pillow, anthropic, yt-dlp, ...) | permisif (MIT/BSD/Apache-2.0/ISC/PSF/Unlicense) | bebas dipakai komersial |
+| TERVERIFIKASI | 54 paket (dari 58) (FastAPI, SQLAlchemy, Alembic, faster-whisper, ctranslate2, numpy, OpenCV, Pillow, anthropic, yt-dlp, ...) | permisif (MIT/BSD/Apache-2.0/ISC/PSF/Unlicense) | bebas dipakai komersial |
 | TERVERIFIKASI | psycopg, psycopg-binary | LGPL-3.0-only | dipakai tanpa modifikasi; bila image didistribusikan sertakan teks lisensi |
 | TERVERIFIKASI | certifi, tqdm | MPL-2.0 (tqdm: MPL-2.0 AND MIT) | copyleft per-file; tidak dimodifikasi |
-| **BUTUH KEPUTUSAN** | mutagen | GPL-2.0-or-later | ikut lewat `yt-dlp[default]`, hanya untuk menanam thumbnail audio (tidak dipakai). Tidak bermasalah selama tidak didistribusikan; untuk image yang dibagikan: ganti ke `yt-dlp` + extra tanpa mutagen |
+| DIHAPUS (P5.3) | mutagen | GPL-2.0-or-later | dulu ikut lewat `yt-dlp[default]`. Kini `requirements.txt` memasang `yt-dlp` + dependensi opsionalnya secara eksplisit tanpa mutagen (hanya dipakai postprocessor thumbnail yang tidak dipakai aplikasi). Bila mutagen/GPL lain masuk lagi, CI lisensi **gagal**. Bukti fungsi: `tests/test_ytdlp_local.py` (unduhan nyata file tunggal & DASH video+audio, versi yt-dlp-ejs cocok) |
 
 ## 2. Model AI
 
@@ -45,3 +45,21 @@ Bawaan aplikasi: `WHISPER_MODEL=small`. CI tidak mengunduh model apa pun (`HF_HU
 | **MANUAL** | yt-dlp (fitur "ambil dari link") | Unlicense | kode bebas; **syarat layanan platform sumber** (YouTube, Instagram, dll.) dan hak cipta konten perlu tinjauan hukum sebelum dibuka untuk pelanggan |
 | TERVERIFIKASI (metadata) | OpenCV/PyAV wheel | Apache-2.0 / BSD; wheel menyertakan pustaka FFmpeg LGPL | tidak dimodifikasi |
 | MANUAL (risiko rendah) | PostgreSQL, Caddy, image `python:3.12-slim` | PostgreSQL License, Apache-2.0, Debian (beragam) | standar untuk SaaS |
+
+## 5. Daftar validasi komersial (wajib sebelum SaaS berbayar dibuka)
+
+Centang hanya dengan bukti tertulis (tautan kartu model/teks lisensi/opini hukum) yang disimpan bersama catatan rilis.
+
+| # | Item | Status | Yang harus dibuktikan |
+|---|---|---|---|
+| 1 | Paket Python produksi | TERVERIFIKASI otomatis (CI) | `scripts/check_licenses.py` lolos: 58 paket, 54 permisif, 4 copyleft lemah (psycopg, psycopg-binary LGPL; certifi, tqdm MPL), 0 GPL |
+| 2 | Whisper per ukuran yang dipakai (bawaan `small`) | MANUAL | kartu model `Systran/faster-whisper-<ukuran>` menyatakan lisensi yang membolehkan penggunaan komersial; ulangi untuk setiap ukuran yang diaktifkan |
+| 3 | Whisper `turbo` | MANUAL | kartu model `mobiuslabsgmbh/faster-whisper-large-v3-turbo` (penerbit berbeda) |
+| 4 | `distil-large-v3` | MANUAL | lisensi model turunan & model asal |
+| 5 | YuNet | TERVERIFIKASI | `models/LICENSE-YuNet.txt` (MIT) |
+| 6 | Model AI lewat API / Ollama | MANUAL | ToS setiap penyedia untuk penggunaan komersial & data pelanggan; lisensi setiap model Ollama yang dipasang admin (cek per model & versi, bukan per keluarga) |
+| 7 | FFmpeg di image | MANUAL | build Debian `--enable-gpl`: kewajiban GPL hanya bila image didistribusikan; bila image diberikan ke pihak lain sertakan sumber/penawaran sumber |
+| 8 | Codec H.264 (libx264) & AAC | MANUAL (hukum) | kebutuhan lisensi paten (mis. pool paten AVC/AAC) untuk encoding komersial di yurisdiksi operasi |
+| 9 | Font Poppins, Anton, Bebas Neue | TERVERIFIKASI | `fonts/OFL-*.txt` (OFL 1.1: boleh dipakai komersial; tidak boleh dijual terpisah) |
+| 10 | Musik/aset yang diunggah pengguna | MANUAL (ToS) | syarat layanan mewajibkan pengguna memiliki hak atas konten yang diunggah |
+| 11 | Fitur "ambil dari link" (yt-dlp) | MANUAL (hukum) | syarat layanan platform sumber & hak cipta konten; pertimbangkan membatasi ke konten milik pengguna |

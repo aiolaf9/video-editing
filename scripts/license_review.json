@@ -1,8 +1,1 @@
-{
-  "mutagen": {
-    "license": "GPL-2.0-or-later",
-    "category": "keputusan",
-    "evidence": "metadata paket (License-Expression); ikut terpasang lewat extra yt-dlp[default]",
-    "note": "BUTUH KEPUTUSAN PEMILIK. Hanya dipakai postprocessor yt-dlp untuk menanam thumbnail/metadata audio (embedthumbnail), fitur yang tidak dipakai aplikasi. Untuk SaaS tanpa distribusi tidak memicu kewajiban GPL, tetapi image Docker yang dibagikan ke pihak lain = distribusi. Rekomendasi: ganti 'yt-dlp[default]' dengan 'yt-dlp' + extra tanpa mutagen."
-  }
-}
+{}

@@ -88,7 +88,7 @@ Proyek dari versi sebelumnya (tanpa login) otomatis dipindahkan ke unit **"Umum"
 ## Jika ada masalah
 
 - **Proyek tertahan di "Menunggu giliran"**: pekerjaan sebelumnya masih berjalan. Klik proyek lain di daftar untuk melihat progresnya, dan lihat jendela terminal untuk pesan error.
-- **Link YouTube gagal**: pastikan Deno terpasang, lalu perbarui yt-dlp: `.venv\Scripts\pip install -U "yt-dlp[default]"`.
+- **Link YouTube gagal**: pastikan Deno terpasang, lalu perbarui yt-dlp: `.venv\Scripts\pip install -U yt-dlp yt-dlp-ejs` (keduanya bersamaan agar versinya cocok).
 - **Link Instagram gagal**: Instagram sering meminta login. Unduh videonya manual, lalu unggah filenya.
 
 ## Animasi dengan AI pilihan Anda: hemat token

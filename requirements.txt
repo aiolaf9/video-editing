@@ -4,7 +4,17 @@ python-multipart>=0.0.9
 pydantic>=2.6
 numpy>=1.26
 faster-whisper>=1.1
-yt-dlp[default]>=2025.11.12
+# yt-dlp tanpa extra [default]: extra itu memasang mutagen (GPL-2.0+), yang hanya dipakai untuk menanam
+# thumbnail (tidak dipakai aplikasi). Dependensi lain dari [default] dipasang eksplisit di bawah.
+# Lihat docs/LICENSES.md; tests/test_ytdlp_local.py memastikan unduhan & versi yt-dlp-ejs tetap cocok.
+yt-dlp>=2025.11.12
+brotli; implementation_name == "cpython"
+certifi
+pycryptodomex
+requests>=2.32.2,<3
+urllib3>=2.0.2,<3
+websockets>=13.0
+yt-dlp-ejs
 pillow>=10.1
 opencv-python-headless>=4.8
 anthropic>=0.70

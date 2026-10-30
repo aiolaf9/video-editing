@@ -1,5 +1,5 @@
 <!-- dibuat oleh scripts/check_licenses.py -->
-59 paket: izin 54, catatan 4, keputusan 1, manual 0, tolak 0
+58 paket: izin 54, catatan 4, keputusan 0, manual 0, tolak 0
 
 | Paket | Versi | Lisensi | Kategori | Sumber | Catatan SaaS |
 |---|---|---|---|---|---|
@@ -21,7 +21,7 @@
 | flatbuffers | 25.12.19 | Apache Software License | izin | metadata |  |
 | fsspec | 2026.9.0 | BSD-3-Clause | izin | metadata |  |
 | h11 | 0.16.0 | MIT License | izin | metadata |  |
-| hf-xet | 1.7.1 | Apache-2.0 | izin | metadata |  |
+| hf-xet | 1.8.0 | Apache-2.0 | izin | metadata |  |
 | httpcore2 | 2.16.0 | BSD-3-Clause | izin | metadata |  |
 | httptools | 0.9.0 | MIT | izin | metadata |  |
 | httpx2 | 2.16.0 | BSD-3-Clause | izin | metadata |  |
@@ -30,7 +30,6 @@
 | jiter | 0.18.0 | MIT | izin | metadata |  |
 | Mako | 1.4.3 | MIT | izin | metadata |  |
 | MarkupSafe | 3.0.4 | BSD-3-Clause | izin | metadata |  |
-| mutagen | 1.48.1 | GPL-2.0-or-later | keputusan | tinjauan manual: metadata paket (License-Expression); ikut terpasang lewat extra yt-dlp[default] | BUTUH KEPUTUSAN PEMILIK. Hanya dipakai postprocessor yt-dlp untuk menanam thumbnail/metadata audio (embedthumbnail), fitur yang tidak dipakai aplikasi. Untuk SaaS tanpa distribusi tidak memicu kewajiban GPL, tetapi image Docker yang dibagikan ke pihak lain = distribusi. Rekomendasi: ganti 'yt-dlp[default]' dengan 'yt-dlp' + extra tanpa mutagen. |
 | numpy | 2.5.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | izin | metadata |  |
 | onnxruntime | 1.31.1 | MIT License | izin | metadata |  |
 | opencv-python-headless | 5.0.0.93 | Apache Software License | izin | metadata |  |

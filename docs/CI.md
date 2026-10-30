@@ -87,18 +87,28 @@ Memperbarui baseline hanya setelah setiap temuan diaudit manual:
 `detect-secrets scan --baseline .secrets.baseline` lalu `detect-secrets audit .secrets.baseline`.
 Baseline bandit hanya untuk temuan yang sudah dicatat dan dijadwalkan perbaikannya (lihat bagian 5).
 
-## 4. Durasi (simulasi lokal, 1 mesin, perintah identik dengan workflow)
+## 4. Durasi
 
-| Job | Durasi lokal |
-|---|---|
-| lint | ±3 dtk (+ instalasi alat) |
-| security | ±23 dtk (+ instalasi venv produksi) |
-| migrations | ±5 dtk + tes migrasi |
-| test-sqlite | ±254 dtk (187 lolos, 1 dilewati, 2 heavy tidak dipilih) |
-| test-postgres | ±270 dtk (203 lolos, 2 heavy tidak dipilih) |
+GitHub Actions, run #1 (`9d7bf6a`, ubuntu-24.04, Python 3.12.15), job paralel:
 
-Job berjalan paralel; perkiraan total di GitHub Actions ±6–9 menit (instalasi dependensi & FFmpeg ±1–2 menit per
-job). Angka di GitHub **belum terukur** sampai workflow dijalankan di remote.
+| Job | Durasi | Hasil |
+|---|---|---|
+| lint | 14 dtk | lolos |
+| security | 47 dtk | lolos (0 secret baru, 0 kerentanan, lisensi lolos) |
+| migrations | 1 mnt 16 dtk | lolos |
+| test-sqlite | 5 mnt 13 dtk (pytest 4 mnt 5 dtk) | 187 lolos, 1 dilewati, 2 heavy tidak dipilih |
+| test-postgres | 5 mnt 35 dtk (pytest 4 mnt 26 dtk) | lolos |
+| **total (wall clock)** | **±5 mnt 38 dtk** | |
+
+Tes terlama: `test_p4_preview.py::test_long_video_preview` (±68 dtk).
+
+## 4a. Action pihak ketiga
+
+Hanya action resmi `actions/*`, dipin ke **SHA commit** (bukan tag yang bisa dipindah) dan dipilih versi yang sudah
+dirilis minimal 2 minggu; versi tertulis di komentar. Semua memakai runtime Node 24. `persist-credentials: false`:
+token GitHub tidak tertinggal di konfigurasi git setelah checkout. Memperbarui pin: ambil SHA dari
+`git ls-remote https://github.com/actions/<nama> refs/tags/<versi>` (pastikan tag yang dipeel, `^{}`, bila ada),
+periksa catatan rilis, lalu ganti SHA & komentar versi.
 
 ## 5. Temuan yang diterima sementara (baseline)
 
@@ -106,4 +116,4 @@ job). Angka di GitHub **belum terukur** sampai workflow dijalankan di remote.
 |---|---|---|
 | bandit B310 | `app/ai.py`: `urlopen` tanpa pembatasan skema URL (`base_url` hanya diatur admin) | dijadwalkan P5.4 (validasi skema http/https) |
 | detect-secrets | 14 temuan: contoh URL di dokumentasi & kredensial tiruan di tes | diaudit, bukan secret |
-| lisensi | `mutagen` GPL-2.0+ lewat `yt-dlp[default]` | butuh keputusan pemilik (lihat `docs/LICENSES.md`) |
+| lisensi | `mutagen` GPL-2.0+ (dulu lewat `yt-dlp[default]`) | selesai: dihapus dari dependensi; `scripts/license_review.json` kosong sehingga GPL yang masuk lagi menggagalkan CI |

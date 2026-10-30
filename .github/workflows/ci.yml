@@ -32,8 +32,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Pasang alat lint (versi terkunci di requirements-dev.txt)
@@ -56,10 +58,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0              # pindai seluruh riwayat git
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Pasang alat
@@ -75,7 +78,7 @@ jobs:
           python -m venv /tmp/prod
           /tmp/prod/bin/pip install -q -r requirements.txt
           /tmp/prod/bin/python scripts/check_licenses.py --markdown licenses-python.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: laporan-lisensi
@@ -88,10 +91,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: FFmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -99,7 +104,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Pytest (tanpa tes heavy)
         run: pytest -q -p no:cacheprovider --junitxml=junit-sqlite.xml --durations=15
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: junit-sqlite
@@ -123,10 +128,12 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci  # pragma: allowlist secret
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: FFmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -134,7 +141,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Pytest (tanpa tes heavy)
         run: pytest -q -p no:cacheprovider --junitxml=junit-postgres.xml --durations=15
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: junit-postgres
@@ -158,8 +165,10 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci  # pragma: allowlist secret
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -191,10 +200,12 @@ jobs:
     env:
       HF_HUB_OFFLINE: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: FFmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
