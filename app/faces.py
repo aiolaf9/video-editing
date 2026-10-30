@@ -11,7 +11,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from . import jobcontrol
+from . import jobcontrol, media
 from .config import BASE_DIR, FFMPEG
 
 log = logging.getLogger("video-editing.faces")
@@ -38,7 +38,7 @@ def track(video: Path, width: int, height: int, duration: float,
     w, h = _frame_size(width, height)
     detector = cv2.FaceDetectorYN.create(str(MODEL_PATH), "", (w, h), 0.6, 0.3, 20)
     detector.setInputSize((w, h))
-    cmd = [FFMPEG, "-v", "error", "-threads", str(threads), "-i", str(video), "-an", "-vf", f"fps={SAMPLE_FPS},scale={w}:{h}",
+    cmd = [FFMPEG, "-v", "error", "-threads", str(threads), *media.INPUT_PROTOCOLS, "-i", str(video), "-an", "-vf", f"fps={SAMPLE_FPS},scale={w}:{h}",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
     proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert proc.stdout is not None

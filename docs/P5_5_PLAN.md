@@ -33,6 +33,19 @@ Prinsip:
 | 11 | Keamanan jaringan & isolasi tenant | terapkan rancangan `docs/EGRESS_DESIGN.md` **di staging**; jalankan tabel uji bagian 3; uji isolasi unit: editor unit A mencoba mengakses proyek/job/upload/media unit B lewat API (ID ditebak) | semua uji egress sesuai tabel; 0 akses lintas unit (404/403 untuk semua endpoint); SSRF ke metadata/privat ditolak dari UI; API key tidak muncul di log/respons (grep log staging); header keamanan & cookie `Secure` di HTTPS |
 | 12 | Lisensi untuk distribusi komersial | lengkapi daftar `docs/LICENSES.md` bagian 5: kartu model Whisper yang dipakai, lisensi FFmpeg di image (`ffmpeg -L`), paten codec, ToS penyedia AI & platform sumber; SBOM image (`pip-licenses`/`syft` bila diizinkan) | 0 butir "MANUAL" tanpa bukti tertulis; keputusan tertulis untuk FFmpeg/H.264 dan yt-dlp; daftar atribusi siap dimasukkan ke halaman "Tentang"/dokumen distribusi |
 
+## 1a. Item staging tambahan dari penerimaan P5.4 (wajib, area 4 & 11)
+
+Uji SSRF di Python **bukan pengganti** isolasi jaringan; item ini diuji pada container nyata.
+
+| # | Item | Bukti yang diminta | Alat |
+|---|---|---|---|
+| B1 | FFmpeg/FFprobe memproses media tidak tepercaya tanpa koneksi jaringan tidak sah | 0 permintaan ke server penjebak, di image produksi | `deploy/checks/media_trap.py` (workflow *Production image*) |
+| B2 | PyAV/faster-whisper tidak membuka URL dari berkas pengguna | audio di-decode FFmpeg (dibatasi) lalu diberikan sebagai array | `tests/test_p55_untrusted_media.py` + uji Whisper asli P5.5.2 |
+| B3 | Protokol input FFmpeg dibatasi eksplisit | `-protocol_whitelist file,pipe` pada setiap `-i` & ffprobe | `app/media.py` (`local_inputs`), tes unit |
+| B4 | worker-io tidak dapat menjangkau layanan internal yang tidak diizinkan | koneksi langsung ke web/caddy/worker lain/internet/metadata gagal; hanya db & proxy | `deploy/checks/net_isolation.py` di container worker-io |
+| B5 | Egress proxy menolak IP privat, metadata cloud, port lain, dan tujuan redirect berbahaya (setiap hop lewat proxy) | 403 untuk 169.254.169.254, 10/8, 127/8, ::1, IPv4 desimal, port 22; 200 untuk internet publik | `deploy/checks/net_isolation.py` |
+| B6 | PostgreSQL & layanan internal tepercaya tetap berfungsi | migrasi exit 0, `db-check` OK, worker io/analisis/render terdaftar di tabel `workers`, impor admin dari jaringan tepercaya (P5.5.3) | workflow *Production image* |
+
 ## 2. Urutan & keluaran
 
 1. Area 1–2 (build & deploy), lalu 11 (egress) sebelum data uji apa pun masuk.

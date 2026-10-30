@@ -1,0 +1,58 @@
+# Overlay STAGING (P5.5): hardening container + isolasi jaringan worker unduhan (docs/EGRESS_DESIGN.md).
+# Belum dipakai produksi; dipromosikan ke docker-compose.yml hanya setelah lolos validasi staging.
+#   docker compose -f docker-compose.yml -f deploy/compose.staging.yml up -d
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+services:
+  db:
+    networks: [default, dl-db]
+
+  migrate:
+    <<: *hardening
+
+  web:
+    <<: *hardening
+
+  worker-analisis:
+    <<: *hardening
+
+  worker-render:
+    <<: *hardening
+
+  # Unduhan dari link = konten tidak tepercaya. Tanpa rute langsung ke internet: hanya ke database (antrean) dan
+  # ke proxy keluar yang menolak IP privat/metadata. Tidak dapat menjangkau web, worker lain, maupun Caddy.
+  worker-io:
+    <<: *hardening
+    networks: [dl-db, dl-egress]
+    depends_on:
+      egress-proxy:
+        condition: service_started
+    environment:
+      DOWNLOAD_PROXY: http://egress-proxy:3128
+      # Kunci yang tidak dibutuhkan untuk mengunduh tidak ikut masuk ke container yang memproses konten luar.
+      ANTHROPIC_API_KEY: ""
+      OPENAI_API_KEY: ""
+      GEMINI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      GROQ_API_KEY: ""
+      DEEPSEEK_API_KEY: ""
+      ADMIN_PASSWORD: ""
+      METRICS_TOKEN: ""
+
+  egress-proxy:
+    build: ./deploy/egress-proxy
+    image: video-editing-egress-proxy:latest
+    restart: unless-stopped
+    <<: *hardening
+    networks: [dl-egress, egress-out]
+    mem_limit: 256m
+    cpus: 0.5
+
+networks:
+  dl-db:
+    internal: true
+  dl-egress:
+    internal: true
+  egress-out: {}

@@ -26,8 +26,23 @@ class MediaError(RuntimeError):
     pass
 
 
+# Media dari pengguna tidak tepercaya: FFmpeg hanya boleh membuka berkas lokal (dan pipe), tidak pernah http/rtmp/...
+# meskipun berkasnya ternyata playlist HLS/concat yang menyamar. Tidak bergantung pada bawaan versi FFmpeg.
+INPUT_PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
+
+
+def local_inputs(args: list[str]) -> list[str]:
+    """Sisipkan INPUT_PROTOCOLS sebelum setiap -i."""
+    out: list[str] = []
+    for i, arg in enumerate(args):
+        if arg == "-i" and args[i - 2:i] != INPUT_PROTOCOLS:
+            out += INPUT_PROTOCOLS
+        out.append(arg)
+    return out
+
+
 def _probe_raw(path: Path) -> dict:
-    cmd = [FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)]
+    cmd = [FFPROBE, "-v", "error", *INPUT_PROTOCOLS, "-print_format", "json", "-show_format", "-show_streams", str(path)]
     proc = jobcontrol.run_capture(cmd, text=True, timeout=PROBE_TIMEOUT)
     if proc.returncode != 0:
         raise MediaError(f"File tidak bisa dibaca sebagai video: {proc.stderr.strip()[-400:]}")
@@ -95,7 +110,7 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: ProgressFn = None
     """
     stall_timeout = FFMPEG_STALL_TIMEOUT if stall_timeout is None else stall_timeout
     jobcontrol.check()
-    cmd = [FFMPEG, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *limit_threads(args)]
+    cmd = [FFMPEG, "-y", "-hide_banner", "-nostats", "-progress", "pipe:1", *limit_threads(local_inputs(args))]
     with tempfile.TemporaryFile(mode="w+") as err:
         proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True, cwd=cwd)
         assert proc.stdout is not None
@@ -238,7 +253,7 @@ def make_thumbnail(preview: Path, dst: Path, duration: float) -> None:
     if dst.exists() and dst.stat().st_mtime >= preview.stat().st_mtime:
         return
     tmp = dst.with_name(f".{dst.stem}.part.jpg")
-    cmd = [FFMPEG, "-v", "error", "-y", "-ss", f"{max(0.0, duration * 0.1):.2f}", "-i", str(preview),
+    cmd = [FFMPEG, "-v", "error", "-y", "-ss", f"{max(0.0, duration * 0.1):.2f}", *INPUT_PROTOCOLS, "-i", str(preview),
            "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", str(tmp)]
     if jobcontrol.run_capture(cmd, timeout=60).returncode == 0 and tmp.exists():
         os.replace(tmp, dst)
@@ -248,7 +263,7 @@ def make_thumbnail(preview: Path, dst: Path, duration: float) -> None:
 def audio_energy(src: Path) -> list[float]:
     """Kenyaringan audio (dBFS) per ENERGY_STEP detik. Dipakai untuk menilai momen 'ramai'."""
     rate = 8000
-    cmd = [FFMPEG, "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
+    cmd = [FFMPEG, "-v", "error", *INPUT_PROTOCOLS, "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
     proc = jobcontrol.run_capture(cmd)
     if proc.returncode != 0 or not proc.stdout:
         return []
@@ -265,7 +280,7 @@ def audio_energy(src: Path) -> list[float]:
 
 def decode_audio(src: Path, rate: int = 16000) -> np.ndarray:
     """Decode audio ke mono float32 dengan FFmpeg (format masukan yang dipakai Whisper)."""
-    cmd = [FFMPEG, "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "f32le", "-"]
+    cmd = [FFMPEG, "-v", "error", *INPUT_PROTOCOLS, "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "f32le", "-"]
     proc = jobcontrol.run_capture(cmd)
     if proc.returncode != 0:
         raise MediaError(f"Gagal membaca audio: {proc.stderr.decode(errors='replace').strip()[-400:]}")

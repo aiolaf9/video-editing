@@ -405,3 +405,22 @@ def test_download_options_pin_sandboxed_js_runtime_and_no_env_proxy(client, monk
     assert captured["js_runtimes"] == {"deno": {}}
     assert captured["proxy"] == "" and captured["concurrent_fragment_downloads"] == 1
     assert captured["external_downloader"] == {"default": "native"}
+
+
+def test_proxy_mode_delegates_name_checks_to_proxy(client, servers, public_127_0_0_2, proxy_server, monkeypatch):
+    """Worker di jaringan terisolasi tidak dapat me-resolve nama internet: nama host diteruskan ke proxy (yang
+    menyaring), IP literal internal tetap ditolak aplikasi tanpa menghubungi proxy."""
+    def no_dns(host, port, *a, **k):
+        if host in ("127.0.0.3",):                 # alamat proxy sendiri (exempt)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, port))]
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(netpolicy, "_resolve", no_dns)
+    monkeypatch.setattr(pipeline, "DOWNLOAD_PROXY", proxy_server)
+    pid, source, err = _download("http://video.publik-tanpa-dns.test/v.mp4")
+    assert source is None and _Proxy.hits == ["http://video.publik-tanpa-dns.test/v.mp4"]
+    _Proxy.hits = []
+    for url in ("http://127.0.0.1/v.mp4", "http://[::1]/v.mp4", "http://169.254.169.254/", "http://metadata.google.internal/"):
+        pid, source, err = _download(url)
+        assert source is None and "internal" in str(err)
+    assert _Proxy.hits == [] and _Internal.hits == []

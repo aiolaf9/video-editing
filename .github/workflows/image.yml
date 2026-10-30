@@ -1,0 +1,126 @@
+# P5.5.1: build image PRODUKSI dari Dockerfile (image dasar resmi Docker Hub) lalu uji kesiapan staging:
+# versi, user non-root, lisensi & secret di dalam image, FFmpeg dengan media tidak tepercaya, compose produksi +
+# overlay staging (migrasi, health, worker, isolasi jaringan worker-io). Tanpa data produksi, tanpa API berbayar.
+name: Production image
+
+on:
+  push:
+    branches: ["v2/**", "main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COMPOSE: docker compose -f docker-compose.yml -f deploy/compose.staging.yml
+
+jobs:
+  image:
+    name: Build image produksi & kesiapan staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image produksi (python:3.12-slim resmi) & proxy keluar (debian:stable-slim resmi)
+        run: |
+          docker build --pull -t video-editing:latest .
+          docker build --pull -t video-editing-egress-proxy:latest deploy/egress-proxy
+          {
+            echo "base python: $(docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}')"
+            echo "base proxy:  $(docker image inspect debian:stable-slim --format '{{index .RepoDigests 0}}')"
+            echo "ukuran image: $(docker image inspect video-editing:latest --format '{{.Size}}') byte"
+          } | tee image-facts.txt
+
+      - name: Versi & user di dalam image
+        run: |
+          docker run --rm --entrypoint sh video-editing:latest -c '
+            set -e
+            echo "uid=$(id -u) user=$(id -un)"; test "$(id -u)" = 1000
+            python -V; ffmpeg -version | head -1; ffprobe -version | head -1
+            ffmpeg -hide_banner -buildconf | grep -o -- "--enable-gpl\|--enable-libx264\|--enable-nonfree" | sort -u
+            pip --version; pip check
+            touch /app/tulis 2>/dev/null && { echo "GAGAL: /app dapat ditulis user aplikasi"; exit 1; } || echo "/app read-only untuk user aplikasi"
+            pip freeze' | tee -a image-facts.txt
+
+      - name: Lisensi paket di dalam image
+        run: docker run --rm -v "$PWD/scripts:/s:ro" --entrypoint python video-editing:latest /s/check_licenses.py
+
+      - name: Tidak ada secret, .env, data, atau media di dalam image
+        run: |  # pragma: allowlist secret (pola grep pemeriksa, bukan secret)
+          pip install -q detect-secrets==1.5.0
+          docker history --no-trunc --format '{{.CreatedBy}}' video-editing:latest > history.txt
+          if grep -iE '(api_key|secret|password|token)[^ ]*=[^ $]' history.txt; then echo "secret di layer image"; exit 1; fi
+          cid=$(docker create video-editing:latest)
+          docker export "$cid" | tar -t > files.txt
+          if grep -E '(^|/)(\.env|\.git|tests|data/projects)(/|$)|\.(mp4|mov|mkv|db|sqlite|dump)$' files.txt | grep -v '^usr/\|^etc/\|^var/'; then
+            echo "berkas terlarang di image"; exit 1; fi
+          mkdir image-root && docker cp "$cid:/app/." image-root/ && docker rm "$cid"
+          cd image-root
+          detect-secrets-hook --baseline ../.secrets.baseline $(find app web -type f \( -name '*.py' -o -name '*.js' -o -name '*.html' -o -name '*.json' \))
+
+      - name: FFmpeg image ini tidak membuka jaringan dari media tidak tepercaya
+        run: docker run --rm -v "$PWD/deploy/checks:/c:ro" --entrypoint python video-editing:latest /c/media_trap.py | tee -a image-facts.txt
+
+      - name: Compose produksi + overlay staging
+        run: |
+          cp .env.example .env
+          pg=$(openssl rand -hex 16); adm=$(openssl rand -hex 12)
+          echo "::add-mask::$pg"; echo "::add-mask::$adm"
+          sed -i '/^POSTGRES_PASSWORD=/d; /^DOMAIN=/d; /^ADMIN_EMAIL=/d; /^ADMIN_PASSWORD=/d; /^COOKIE_SECURE=/d' .env
+          printf 'POSTGRES_PASSWORD=%s\nDOMAIN=localhost\nADMIN_EMAIL=admin@staging.local\nADMIN_PASSWORD=%s\nCOOKIE_SECURE=0\n' "$pg" "$adm" >> .env
+          $COMPOSE up -d --no-build
+          for i in $(seq 1 90); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' "$($COMPOSE ps -q web)" 2>/dev/null || true)
+            [ "$state" = healthy ] && break; sleep 2
+          done
+          $COMPOSE ps -a
+          test "$state" = healthy
+
+      - name: Migrasi, health, database, worker, user container
+        run: |
+          set -e
+          test "$($COMPOSE ps -a migrate --format '{{.ExitCode}}')" = 0
+          $COMPOSE exec -T web python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read().decode())"
+          curl -fsSk --resolve localhost:443:127.0.0.1 https://localhost/api/health; echo
+          $COMPOSE exec -T web python -m app.manage db-status
+          $COMPOSE exec -T web python -m app.manage db-check
+          for svc in web worker-analisis worker-render worker-io; do
+            echo "$svc uid=$($COMPOSE exec -T $svc id -u)"; test "$($COMPOSE exec -T $svc id -u)" = 1000
+          done
+          for i in $(seq 1 30); do
+            queues=$($COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "select string_agg(queues, ';' order by queues) from workers where state <> 'berhenti'")
+            case "$queues" in *io*) break;; esac; sleep 2
+          done
+          echo "worker terdaftar: $queues"
+          for q in analisis render io; do echo "$queues" | grep -q "$q"; done
+          $COMPOSE exec -T web sh -c 'touch /data/.uji && rm /data/.uji && df -h /data | tail -1'
+
+      - name: Isolasi jaringan worker-io (lapisan jaringan, bukan guard Python)
+        run: $COMPOSE exec -T worker-io python - < deploy/checks/net_isolation.py | tee net-isolation.txt
+
+      - name: Log & ringkasan
+        if: always()
+        run: |
+          $COMPOSE ps -a > compose-ps.txt 2>&1 || true
+          $COMPOSE logs --no-color --tail 200 > compose-logs.txt 2>&1 || true
+          rm -f .env
+          $COMPOSE down -v --remove-orphans > /dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: kesiapan-staging
+          path: |
+            image-facts.txt
+            net-isolation.txt
+            compose-ps.txt
+            compose-logs.txt
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,8 +1,27 @@
+# Konteks build image produksi: hanya kode yang dibutuhkan. Secret, data, dan media tidak pernah masuk konteks.
 .git
+.github
 .venv
 venv
 data
+backups
+*.db
+*.sqlite*
+*.dump
+*.sql.gz
+.env
+.env.*
 __pycache__
 *.pyc
 .pytest_cache
 tests
+bench
+docs
+deploy
+scripts
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.mp3

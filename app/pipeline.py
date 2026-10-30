@@ -152,7 +152,8 @@ def download(job: Job, pid: str, url: str, trusted: bool = False) -> str:
         "js_runtimes": {"deno": {}},
     }
     try:
-        netpolicy.check_import_url(url, trusted)   # juga untuk job yang antre sebelum P5.4
+        # Juga untuk job yang antre sebelum P5.4. Dengan proxy keluar, nama host diperiksa oleh proxy.
+        netpolicy.check_import_url(url, trusted, resolve_host=not DOWNLOAD_PROXY)
         with netpolicy.import_guard(trusted, [h for h in [netpolicy.proxy_host(DOWNLOAD_PROXY)] if h]) as guard:
             return _download(job, pid, url, folder, opts, _safe_ydl(yt_dlp), guard, too_large)
     except netpolicy.BlockedURL as exc:

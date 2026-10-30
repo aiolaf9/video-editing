@@ -90,12 +90,22 @@ def import_networks(trusted: bool) -> list:
     return parse_networks(URL_IMPORT_TRUSTED_NETWORKS) if trusted else []
 
 
-def check_import_url(url: str, trusted: bool = False) -> None:
+def check_import_url(url: str, trusted: bool = False, resolve_host: bool = True) -> None:
     """Pemeriksaan awal di API agar pengguna langsung mendapat pesan jelas. BUKAN satu-satunya pertahanan:
-    setiap koneksi saat mengunduh diperiksa lagi oleh import_guard()."""
+    setiap koneksi saat mengunduh diperiksa lagi oleh import_guard().
+    resolve_host=False (mode proxy keluar): worker di jaringan terisolasi tidak dapat me-resolve nama internet;
+    IP literal tetap diperiksa di sini, nama host diperiksa oleh proxy saat koneksi."""
     _, host, port = _split(url)
     networks = import_networks(trusted)
-    ips = resolve(host, port)
+    try:
+        ips = [_ip(host)]
+    except ValueError:
+        if host.lower() == "localhost" or host.lower().endswith((".localhost", ".internal", ".local")):
+            if not resolve_host:
+                raise BlockedURL("Link mengarah ke alamat jaringan internal/privat dan tidak diizinkan.") from None
+        if not resolve_host:
+            return
+        ips = resolve(host, port)
     if not ips or not all(_allowed(ip, networks) for ip in ips):
         raise BlockedURL("Link mengarah ke alamat jaringan internal/privat dan tidak diizinkan.")
 

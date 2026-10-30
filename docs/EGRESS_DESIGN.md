@@ -25,7 +25,7 @@ Itu kuat untuk kode Python yang dipakai yt-dlp, tetapi **bukan satu-satunya perl
              internet
                 │
         ┌───────┴────────┐
-        │  egress-proxy  │  (smokescreen/squid: tolak IP privat, link-local, metadata, CGNAT, port selain 80/443)
+        │  egress-proxy  │  (squid, deploy/egress-proxy: tolak IP privat, link-local, metadata, CGNAT, port selain 80/443)
         └───────┬────────┘
    net: dl-egress (internal)        net: backend (internal)          net: edge
         │                               │        │                      │
@@ -39,7 +39,7 @@ Itu kuat untuk kode Python yang dipakai yt-dlp, tetapi **bukan satu-satunya perl
   - `dl-db`: berisi `worker-io` + `db`.
   Tanpa rute default ke internet, FFmpeg, runtime JS, atau library native **tidak bisa** keluar kecuali lewat proxy,
   dan tidak bisa menjangkau `web`, worker lain, Caddy, atau metadata cloud.
-- `worker-io` memakai `DOWNLOAD_PROXY=http://egress-proxy:4750`. Proxy me-resolve dan memeriksa IP tujuan sendiri
+- `worker-io` memakai `DOWNLOAD_PROXY=http://egress-proxy:3128` (overlay `deploy/compose.staging.yml`). Proxy me-resolve dan memeriksa IP tujuan sendiri
   (aman terhadap DNS rebinding di sisi proxy) serta mencatat setiap koneksi (audit).
 - Kebijakan proxy (contoh): izinkan TCP 80/443 ke IP publik; tolak 0.0.0.0/8, 10/8, 100.64/10, 127/8, 169.254/16,
   172.16/12, 192.168/16, 198.18/15, 224/4, 240/4, ::1, fc00::/7, fe80::/10, ff00::/8, 64:ff9b::/96 (embedded
