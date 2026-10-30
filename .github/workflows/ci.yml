@@ -1,0 +1,203 @@
+# CI (P5.3). Tanpa API AI berbayar, tanpa GPU, tanpa unduhan model (HF_HUB_OFFLINE=1). Tes berat (Whisper asli)
+# hanya lewat "Run workflow" dengan input heavy=true. Tidak ada secret yang dipakai; artifact hanya laporan teks.
+name: CI
+
+on:
+  push:
+    branches: ["v2/**", "main", "master"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      heavy:
+        description: "Jalankan juga tes khusus Whisper asli (mengunduh model tiny ±75 MB)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"          # sama dengan image Docker (python:3.12-slim)
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  HF_HUB_OFFLINE: "1"             # regresi tidak pernah mengunduh model
+
+jobs:
+  lint:
+    name: Lint & static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Pasang alat lint (versi terkunci di requirements-dev.txt)
+        run: grep -E '^(ruff|bandit|check-jsonschema)==' requirements-dev.txt | pip install -r /dev/stdin
+      - name: Ruff (pyflakes + kesalahan sintaks)
+        run: ruff check app tests bench scripts
+      - name: Bandit (analisis keamanan statis; gagal hanya untuk temuan BARU di luar baseline)
+        run: bandit -r app -ll -q -b .bandit-baseline.json
+      - name: Kompilasi semua modul Python
+        run: python -m compileall -q app scripts bench tests
+      - name: Sintaks JavaScript
+        run: for f in web/*.js; do node --check "$f"; done
+      - name: Validasi workflow GitHub Actions
+        run: check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml
+      - name: Validasi Docker Compose
+        run: cp .env.example .env && docker compose config --quiet && rm .env
+
+  security:
+    name: Keamanan & lisensi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0              # pindai seluruh riwayat git
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Pasang alat
+        run: grep -E '^(pip-audit|detect-secrets)==' requirements-dev.txt | pip install -r /dev/stdin
+      - name: Secret di file saat ini (di luar baseline yang sudah diaudit)
+        run: git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --exclude-files '(^|/)(tests/schema_snapshots|fonts|models)/'
+      - name: Secret di seluruh riwayat git
+        run: python scripts/scan_secrets_history.py
+      - name: Kerentanan dependensi (pip-audit, OSV/PyPI advisory)
+        run: pip-audit -r requirements.txt --progress-spinner off
+      - name: Lisensi dependensi produksi (venv berisi requirements.txt saja)
+        run: |
+          python -m venv /tmp/prod
+          /tmp/prod/bin/pip install -q -r requirements.txt
+          /tmp/prod/bin/python scripts/check_licenses.py --markdown licenses-python.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: laporan-lisensi
+          path: licenses-python.md
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test-sqlite:
+    name: Tes SQLite (unit, integrasi, API, migrasi)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Pytest (tanpa tes heavy)
+        run: pytest -q -p no:cacheprovider --junitxml=junit-sqlite.xml --durations=15
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-sqlite
+          path: junit-sqlite.xml
+          retention-days: 14
+
+  test-postgres:
+    name: Tes PostgreSQL (seluruh regresi + migrasi PG)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci  # pragma: allowlist secret (database sementara milik job ini)
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci  # pragma: allowlist secret
+    steps:
+      - uses: actions/checkout@v4
+      - name: FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Pytest (tanpa tes heavy)
+        run: pytest -q -p no:cacheprovider --junitxml=junit-postgres.xml --durations=15
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-postgres
+          path: junit-postgres.xml
+          retention-days: 14
+
+  migrations:
+    name: Validasi migrasi database
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci  # pragma: allowlist secret (database sementara milik job ini)
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci  # pragma: allowlist secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Satu head Alembic (tidak ada cabang revisi)
+        run: test "$(alembic heads | wc -l)" -eq 1 && alembic heads
+      - name: SQL migrasi offline dapat dibuat (untuk ditinjau DBA)
+        run: alembic upgrade head --sql > migration.sql && grep -q "CREATE TABLE uploads" migration.sql
+      - name: Startup DITOLAK pada PostgreSQL kosong tanpa db-upgrade
+        run: |
+          if python -c "from app import db; db.engine()" 2> refusal.log; then
+            echo "Aplikasi seharusnya menolak start"; exit 1; fi
+          grep -q "db-upgrade" refusal.log
+      - name: Upgrade database kosong, status & drift
+        run: |
+          python -m app.manage db-upgrade
+          python -m app.manage db-status
+          python -m app.manage db-check
+          python -c "from app import db; db.engine(); print('start OK')"
+      - name: Tes migrasi (database lama P0-P4 berisi data, gagal = rollback, downgrade terlindungi)
+        run: pytest -q -p no:cacheprovider tests/test_p5_migrations.py
+
+  heavy:
+    name: Tes khusus Whisper asli (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.heavy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      HF_HUB_OFFLINE: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q -p no:cacheprovider -m heavy

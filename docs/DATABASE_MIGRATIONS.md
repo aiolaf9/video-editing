@@ -73,9 +73,8 @@ python -m app.manage db-status                       # versi database vs versi a
 
 1. PostgreSQL: transaksi otomatis dibatalkan; `db-status` menunjukkan versi lama. Perbaiki penyebab (lihat log),
    ulangi `db-upgrade`. Aplikasi versi lama tetap bisa dijalankan pada database itu.
-2. Bila database rusak karena hal lain: hentikan aplikasi, pulihkan dari backup
-   (`gunzip -c backups/<file>.sql.gz | docker compose exec -T db psql -U videoapp videoapp` ke database kosong),
-   jalankan aplikasi versi yang sesuai dengan backup tersebut.
+2. Bila database rusak karena hal lain: hentikan aplikasi dan pulihkan dari backup `pg_restore` (langkah teruji di
+   `docs/BACKUP_RESTORE.md`), lalu jalankan aplikasi versi yang sesuai dengan backup tersebut.
 3. SQLite: hentikan aplikasi, salin `data/backups/app-<versi>-<waktu>.db` menjadi `data/app.db`.
 
 ### Kembali ke versi aplikasi sebelumnya (rollback)
@@ -83,3 +82,21 @@ python -m app.manage db-status                       # versi database vs versi a
 Aplikasi lama menolak start pada database yang lebih baru. Pilihan: pulihkan backup sebelum upgrade (aman), atau
 `python -m app.manage db-downgrade <revisi> --allow-data-loss` (menghapus tabel/kolom yang ditambahkan setelah
 revisi itu beserta datanya).
+
+## 4. Migrasi data (bukan skema)
+
+Perubahan **isi** data tidak dicampur dengan revisi Alembic. Aturannya:
+
+- Revisi Alembic hanya mengubah struktur (tabel, kolom, indeks) dan tidak membaca/mengubah baris data.
+- Migrasi data ditulis di kode aplikasi sebagai fungsi yang **idempoten**, hanya menyentuh data yang perlu
+  (mis. `jobs.migrate_legacy_queues`: job AKTIF di antrean lama `berat`/`unduh` dipindah ke `analisis`/`render`/`io`;
+  riwayat job tidak diubah), dipanggil saat start setelah skema terbaru, dan memiliki tes sendiri
+  (`tests/test_p5_migrations.py::test_queue_data_migration_is_separate_and_idempotent`).
+- Bila kelak migrasi data besar diperlukan (jutaan baris, tidak boleh saat start), buat perintah `app.manage`
+  terpisah dengan mode dry-run (contoh: `media-migrate`), dokumentasikan, dan jalankan setelah backup.
+
+## 5. Syarat sebelum deployment publik
+
+Migrasi **wajib** diuji pada **salinan database produksi** (restore backup ke server staging, `db-status`,
+`db-upgrade`, `db-check`, uji aplikasi) sebelum deployment publik. Tercatat sebagai butir 9 di
+`PRODUCTION_VALIDATION.md`.

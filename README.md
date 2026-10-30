@@ -165,6 +165,9 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+CI (GitHub Actions), pemeriksaan keamanan/lisensi, dan rekomendasi branch protection: lihat `docs/CI.md`,
+`docs/LICENSES.md`, `docs/BACKUP_RESTORE.md`.
+
 ## Rencana berikutnya
 
 - Penilaian klip viral dengan Claude (membaca transkrip penuh)

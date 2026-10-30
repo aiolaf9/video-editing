@@ -27,7 +27,7 @@ def _whisper_threads() -> int:
 
 def fake_transcribe(path, duration, language=None, progress=None):
     frames = max(10, int(duration * BURN_FRAMES_PER_SEC))
-    args = ["-f", "lavfi", "-i", f"testsrc2=size=1280x720:rate=25", "-frames:v", str(frames),
+    args = ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=25", "-frames:v", str(frames),
             "-c:v", "libx264", "-preset", "medium", "-threads", str(_whisper_threads()), "-f", "null", "-"]
     media.run_ffmpeg(args, frames / 25.0, (lambda f: progress(f)) if progress else None)
     return {"language": language or "id", "segments": [

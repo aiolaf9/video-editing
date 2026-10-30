@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, inspect, insert, select, text
+from sqlalchemy import create_engine, inspect, insert, text
 from sqlalchemy.pool import NullPool
 
 from app import migrate
@@ -304,3 +304,37 @@ def test_manage_cli_commands(fresh_url, tmp_path):
     assert ok.returncode == 0 and "OK" in ok.stdout
     down = run("db-downgrade", "0005_metrics_index")
     assert down.returncode == 1 and "allow-data-loss" in down.stderr
+
+
+def test_default_policy_postgres_refuses_sqlite_upgrades(fresh_url, monkeypatch):
+    """Tanpa AUTO_MIGRATE: PostgreSQL menolak start (tidak ada upgrade otomatis dari banyak web/worker);
+    SQLite (satu komputer) naik otomatis dengan backup."""
+    monkeypatch.setattr(migrate, "AUTO_MIGRATE", None)
+    build_legacy(fresh_url, load_snapshot("v3b_0b39237"))
+    if fresh_url.startswith("postgresql"):
+        with pytest.raises(migrate.SchemaError, match="db-upgrade"):
+            migrate.ensure_schema(fresh_url)
+        assert version(fresh_url) is None  # tidak disentuh sama sekali
+    else:
+        assert migrate.ensure_schema(fresh_url)["state"] == "terbaru"
+
+
+def test_queue_data_migration_is_separate_and_idempotent(fresh_url, monkeypatch):
+    """Perpindahan antrean berat/unduh -> analisis/render/io adalah migrasi DATA di kode aplikasi
+    (jobs.migrate_legacy_queues), bukan revisi Alembic: hanya job aktif, idempoten, riwayat tidak diubah."""
+    build_legacy(fresh_url, load_snapshot("v2b_a19e135"))  # job antre di antrean "berat"
+    migrate.upgrade(fresh_url)
+    eng = engine_for(fresh_url)
+    with eng.begin() as c:
+        c.execute(text("INSERT INTO jobs (id, task, kind, queue, project_id, label, payload, status, progress, "
+                       "message, attempts, created) VALUES ('job000000002', 'download', 'x', 'unduh', "
+                       "'proj00000001', '', '{}', 'selesai', 100, '', 1, 0)"))
+    from app import db, jobs
+    monkeypatch.setattr(db, "_engine", eng)
+    assert jobs.migrate_legacy_queues() == 1
+    assert jobs.migrate_legacy_queues() == 0  # idempoten
+    with eng.connect() as c:
+        rows = dict(c.execute(text("SELECT id, queue FROM jobs")).all())
+    assert rows == {"job000000001": "render", "job000000002": "unduh"}  # riwayat (selesai) tidak diubah
+    assert version(fresh_url) == [migrate.head()]  # migrasi data tidak menyentuh versi skema
+    eng.dispose()

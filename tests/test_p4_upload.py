@@ -2,8 +2,6 @@
 import base64
 import hashlib
 import os
-import resource
-import shutil
 import socket
 import subprocess
 import sys
@@ -373,7 +371,7 @@ def test_cross_workspace_isolation(unit_users, video_bytes):
 
 def test_concurrent_uploads_quota_per_workspace(unit_users, video_bytes, fake_ai):
     """Unit A: kuota hanya cukup untuk 1 dari 2 upload bersamaan. Unit B tidak terpengaruh."""
-    (ca, ua), (cb, ub) = unit_users["a"], unit_users["b"]
+    (ca, ua), (cb, _ub) = unit_users["a"], unit_users["b"]
     size = 6 * MB
     with db.engine().begin() as c:
         c.execute(update(db.units).where(db.units.c.id == ua["id"]).values(storage_quota_mb=10))

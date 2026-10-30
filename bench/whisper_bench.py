@@ -23,7 +23,6 @@ import resource
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 

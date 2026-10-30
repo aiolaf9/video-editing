@@ -29,7 +29,7 @@ def _run_in_thread(fn):
     def target():
         try:
             box["result"] = fn()
-        except BaseException as exc:  # noqa: B036 - termasuk JobCancelled
+        except BaseException as exc:  # termasuk JobCancelled (BaseException)
             box["error"] = exc
 
     t = threading.Thread(target=target)

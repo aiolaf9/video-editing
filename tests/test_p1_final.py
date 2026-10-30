@@ -8,7 +8,6 @@ import time
 import uuid
 from pathlib import Path
 
-import pytest
 from sqlalchemy import update
 
 from app import db, jobcontrol, jobs, main, media, pipeline, storage, worker
@@ -143,7 +142,7 @@ def test_cancel_kills_whole_process_tree():
         try:
             with jobcontrol.activate(control):
                 jobcontrol.run_capture(["sh", "-c", f"sleep {a}.25 & sleep {b}.25 & wait"])
-        except BaseException as exc:  # noqa: B036
+        except BaseException as exc:  # termasuk JobCancelled (BaseException)
             box["error"] = exc
 
     t = threading.Thread(target=work)

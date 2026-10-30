@@ -1,0 +1,13 @@
+# Lint dasar untuk CI (P5.3): kesalahan nyata (pyflakes F, sintaks/IO E9, E4/E7), bukan gaya.
+target-version = "py312"
+line-length = 120
+extend-exclude = ["data", "backups"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+# E741 (nama variabel "l") = gaya; dibiarkan agar tidak perlu refactor hanya demi linter.
+ignore = ["E741"]
+
+[lint.per-file-ignores]
+"tests/schema_snapshots/*.py" = ["F401"]  # salinan skema historis apa adanya
+"app/migrations/versions/*.py" = ["F401"]  # templat revisi Alembic selalu mengimpor sa & op

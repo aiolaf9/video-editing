@@ -10,7 +10,7 @@ import pytest
 from conftest import login_client
 from sqlalchemy import delete, select, update
 
-from app import db, jobs, lifecycle, main, storage, transcribe
+from app import db, jobs, lifecycle, storage, transcribe
 from app.config import DATA_DIR, PROJECTS_DIR, UPLOAD_TMP_DIR
 
 H = 3600.0

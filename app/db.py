@@ -8,7 +8,7 @@ import time
 from typing import Any, Optional
 
 from sqlalchemy import (BigInteger, Boolean, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text,
-                        create_engine, event, func, select, text)
+                        create_engine, event, func, select)
 from sqlalchemy.engine import Engine
 
 from .config import DATABASE_URL, DB_MAX_OVERFLOW, DB_POOL_SIZE
