@@ -44,6 +44,11 @@ class DownloadTooLarge(RuntimeError):
     pass
 
 
+# Handler HTTP yt-dlp yang koneksinya melewati socket.getaddrinfo Python (diperiksa netpolicy). Handler lain,
+# mis. CurlCFFI (resolver libcurl sendiri) bila kelak terpasang, dibuang: gagal tertutup, bukan diam-diam lolos.
+GUARDED_HANDLERS = {"Urllib", "Requests", "Websockets"}
+
+
 def _safe_ydl(yt_dlp):
     """YoutubeDL dengan batas jumlah redirect dan tanpa pengunduh berbasis proses eksternal."""
     _forbid_process_downloaders(yt_dlp)
@@ -51,6 +56,8 @@ def _safe_ydl(yt_dlp):
     class SafeYoutubeDL(yt_dlp.YoutubeDL):
         def build_request_director(self, handlers, preferences=None):
             director = super().build_request_director(handlers, preferences)
+            for key in [k for k in director.handlers if k not in GUARDED_HANDLERS]:
+                director.handlers.pop(key).close()
             for rh in director.handlers.values():
                 if hasattr(rh, "_create_instance"):   # Requests & Urllib (websocket tidak mengikuti redirect)
                     rh._create_instance = _limit_redirects(rh._create_instance)
@@ -141,6 +148,8 @@ def download(job: Job, pid: str, url: str, trusted: bool = False) -> str:
         "external_downloader": {"default": "native"},
         "hls_prefer_native": True,
         "concurrent_fragment_downloads": 1,      # satu thread: pemeriksaan alamat berlaku per thread
+        # Hanya Deno (sandbox: tanpa akses jaringan/berkas kecuali diizinkan). Node/Bun tanpa sandbox: jangan diaktifkan.
+        "js_runtimes": {"deno": {}},
     }
     try:
         netpolicy.check_import_url(url, trusted)   # juga untuk job yang antre sebelum P5.4

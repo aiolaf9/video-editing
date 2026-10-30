@@ -165,6 +165,8 @@ def servers(tmp_path_factory, sample_video):
     _ffmpeg("-i", str(sample_video), "-t", "3", "-c", "copy", str(root / "single.mp4"))
     _ffmpeg("-i", str(root / "single.mp4"), "-map", "0:v", "-map", "0:a", "-c", "copy", "-f", "dash",
             "-seg_duration", "1", "-adaptation_sets", "id=0,streams=v id=1,streams=a", str(root / "manifest.mpd"))
+    _ffmpeg("-i", str(root / "single.mp4"), "-c", "copy", "-f", "hls", "-hls_time", "1", "-hls_playlist_type", "vod",
+            str(root / "index.m3u8"))
     internal = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Internal, directory=str(root)))
     public = http.server.ThreadingHTTPServer(("127.0.0.2", 0), functools.partial(_Public, directory=str(root)))
     for srv in (internal, public):
@@ -174,6 +176,8 @@ def servers(tmp_path_factory, sample_video):
     # Manifest DASH di server publik yang segmennya menunjuk ke server internal (URL turunan).
     mpd = (root / "manifest.mpd").read_text()
     (root / "evil.mpd").write_text(mpd.replace("<Period", f"<BaseURL>{internal_url}/</BaseURL>\n\t<Period", 1))
+    m3u8 = (root / "index.m3u8").read_text()
+    (root / "evil.m3u8").write_text(re.sub(r"^(index\d+\.ts)$", rf"{internal_url}/\1", m3u8, flags=re.M))
     try:
         yield {"public": f"http://127.0.0.2:{public.server_address[1]}", "internal": internal_url,
                "public_port": public.server_address[1]}
@@ -273,3 +277,131 @@ def test_admin_trusted_network_import(client, servers, trust_loopback, fake_tran
         assert time.time() < deadline
         time.sleep(0.3)
     assert job["status"] == "selesai", job
+
+
+# ------------------------------------------------------------------ ketahanan kebijakan (tinjauan akhir P5.4)
+
+def test_hls_public_ok_and_derived_segments_blocked(client, servers, public_127_0_0_2):
+    pid, source, err = _download(f"{servers['public']}/index.m3u8")
+    assert err is None and source
+    pid, source, err = _download(f"{servers['public']}/evil.m3u8")      # segmen HLS di server internal
+    assert source is None and "internal" in str(err)
+    assert _Internal.hits == []
+
+
+def test_every_lookup_during_download_is_guarded(client, servers, public_127_0_0_2, monkeypatch):
+    """Tidak ada resolusi DNS dari thread lain (fail-open) selama unduhan DASH/HLS: semua lewat guard aktif."""
+    import sys as _sys
+
+    calls = []
+    real = netpolicy._resolve
+
+    def recording(host, port, *a, **k):
+        calls.append((_sys._getframe(1).f_code.co_name, netpolicy.guard_active(), threading.current_thread().name))
+        return real(host, port, *a, **k)
+
+    monkeypatch.setattr(netpolicy, "_resolve", recording)
+    for name in ("manifest.mpd", "index.m3u8"):
+        pid, source, err = _download(f"{servers['public']}/{name}")
+        assert err is None and source
+    connects = [c for c in calls if c[0] == "guarded_getaddrinfo"]
+    assert connects and all(active for _, active, _ in connects), calls
+    assert {c[0] for c in calls} <= {"guarded_getaddrinfo", "resolve"}   # resolve = pemeriksaan awal URL
+
+
+def test_concurrent_trusted_and_untrusted_jobs_do_not_share_policy(client, servers, public_127_0_0_2,
+                                                                   trust_loopback):
+    _download(f"{servers['internal']}/single.mp4", trusted=True)          # jumlah permintaan satu impor admin
+    solo = len(_Internal.hits)
+    _Internal.hits = []
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def run(name, trusted):
+        barrier.wait()
+        results[name] = _download(f"{servers['internal']}/single.mp4", trusted=trusted)
+
+    threads = [threading.Thread(target=run, args=(n, t)) for n, t in (("admin", True), ("editor", False))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert results["admin"][2] is None and results["admin"][1]          # impor admin dari jaringan tepercaya
+    assert results["editor"][1] is None and "internal" in str(results["editor"][2])
+    assert solo and len(_Internal.hits) == solo                          # hanya permintaan milik admin
+
+
+class _Proxy(http.server.BaseHTTPRequestHandler):
+    hits: list = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        _Proxy.hits.append(self.path)
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_CONNECT = do_GET
+
+
+@pytest.fixture
+def proxy_server():
+    _Proxy.hits = []
+    srv = http.server.ThreadingHTTPServer(("127.0.0.3", 0), _Proxy)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.3:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_environment_proxy_is_ignored(client, servers, public_127_0_0_2, proxy_server, monkeypatch):
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(var, proxy_server)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    pid, source, err = _download(f"{servers['public']}/single.mp4")
+    assert err is None and source and _Proxy.hits == []
+
+
+def test_download_proxy_is_explicit(client, servers, public_127_0_0_2, proxy_server, monkeypatch):
+    monkeypatch.setattr(pipeline, "DOWNLOAD_PROXY", proxy_server)
+    pid, source, err = _download(f"{servers['public']}/single.mp4")
+    assert source is None and err is not None
+    assert _Proxy.hits and _Proxy.hits[0].startswith(servers["public"])   # lalu lintas lewat proxy yang ditentukan
+    assert _Internal.hits == []
+    with pytest.raises(netpolicy.BlockedURL):                             # alamat proxy sendiri bukan tujuan sah
+        netpolicy.check_import_url(f"{proxy_server}/")
+
+
+def test_unguarded_request_handlers_are_dropped():
+    import yt_dlp
+    from yt_dlp.networking.common import _REQUEST_HANDLERS, RequestHandler
+
+    class FakeCurlRH(RequestHandler):
+        _SUPPORTED_URL_SCHEMES = ("http", "https")
+
+        def _send(self, request):
+            raise AssertionError("tidak boleh dipakai")
+
+    ydl = pipeline._safe_ydl(yt_dlp)({"quiet": True})
+    director = ydl.build_request_director([*_REQUEST_HANDLERS.values(), FakeCurlRH])
+    assert set(director.handlers) <= pipeline.GUARDED_HANDLERS and "FakeCurl" not in director.handlers
+
+
+def test_download_options_pin_sandboxed_js_runtime_and_no_env_proxy(client, monkeypatch):
+    captured = {}
+
+    def fake(job, pid, url, folder, opts, ydl_class, guard, too_large):
+        captured.update(opts)
+        return "source.mp4"
+
+    monkeypatch.setattr(pipeline, "_download", fake)
+    pid = storage.create_project("opsi")["id"]
+    pipeline.download(_Job(), pid, "https://example.com/v.mp4")
+    assert captured["js_runtimes"] == {"deno": {}}
+    assert captured["proxy"] == "" and captured["concurrent_fragment_downloads"] == 1
+    assert captured["external_downloader"] == {"default": "native"}

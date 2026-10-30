@@ -76,3 +76,18 @@ sebagai catatan keputusan.
    database, layanan internal, dan 169.254.169.254 — lihat DEPLOY.md. Pengaturan produksi tidak diubah oleh P5.4.
 5. U7: pengaturan AI masih global (satu key untuk semua unit). Untuk SaaS multi-tenant, key per workspace perlu
    dirancang di tahap berikutnya.
+
+## 6. Tinjauan akhir P5.4 (setelah CI run #3)
+
+| Pemeriksaan | Hasil | Bukti |
+|---|---|---|
+| Jalur koneksi yang tidak melewati `getaddrinfo` Python | CurlCFFI (resolver libcurl) kini dibuang dari request director bila terpasang (gagal tertutup); runtime JS dipin ke Deno (sandbox, tanpa `--allow-net`); pengunduh proses eksternal ditahan | `test_unguarded_request_handlers_are_dropped`, `test_download_options_pin_sandboxed_js_runtime_and_no_env_proxy`, `test_external_downloaders_are_refused` |
+| FFmpeg pada file pengguna (playlist/concat yang menyamar) | FFmpeg 6.1 tidak menghubungi URL dari playlist lokal (whitelist bawaan `file,crypto,data`) dan menolak concat dengan path absolut | uji manual dengan server penjebak: 0 permintaan; versi FFmpeg image produksi diverifikasi di P5.5 |
+| Fail-open di thread lain | semua resolusi saat unduhan DASH/HLS terjadi dengan guard aktif | `test_every_lookup_during_download_is_guarded` |
+| HLS turunan | segmen HLS di server internal diblokir; HLS publik berhasil | `test_hls_public_ok_and_derived_segments_blocked` |
+| Job paralel & monkeypatch global | impor admin (jaringan tepercaya) dan editor berjalan bersamaan tanpa saling memengaruhi; di luar guard `getaddrinfo` tidak berubah | `test_concurrent_trusted_and_untrusted_jobs_do_not_share_policy`, `test_guard_is_scoped_to_download_thread_and_lets_database_resolve` |
+| Pengecualian psycopg | hanya bila pemanggil langsung `getaddrinfo` adalah modul `psycopg.*`; yt-dlp/urllib3 tetap diperiksa | tes guard (pemanggil `urllib3.util.connection` diblokir) |
+| Proxy | `HTTP(S)_PROXY` lingkungan diabaikan; `DOWNLOAD_PROXY` dipakai secara eksplisit; alamat proxy sendiri bukan tujuan impor yang sah | `test_environment_proxy_is_ignored`, `test_download_proxy_is_explicit` |
+| Kredensial end-to-end | editor memicu error penyedia yang memantulkan key & host internal: respons dan log tidak memuatnya; editor tidak bisa mengubah pengaturan; model tidak disimpan dari permintaan editor | `test_editor_error_and_logs_never_contain_key` |
+
+Lapisan jaringan (egress filtering) dirancang di `docs/EGRESS_DESIGN.md` dan diuji di staging pada P5.5.

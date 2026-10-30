@@ -205,3 +205,59 @@ def test_env_key_never_sent_to_custom_base_url(monkeypatch):
     assert main._provider_cfg({"providers": {}}, "openai")["api_key"] == KEY
     cfg = main._provider_cfg({"providers": {"openai": {"base_url": "https://lain.test/v1"}}}, "openai")
     assert not cfg.get("api_key")
+
+
+def test_editor_error_and_logs_never_contain_key(client, sample_video, fake_transcript, monkeypatch, caplog):
+    """End-to-end: editor memicu error penyedia yang memantulkan key & detail internal."""
+    import logging
+    import time
+
+    from conftest import login_client
+
+    from app import transcribe
+
+    class Echo(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _any(self):
+            if self.headers.get("Content-Length"):
+                self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps({"error": {"message": f"Bad key {self.headers.get('Authorization')} di host-internal-7"}}).encode()
+            self.send_response(401)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_POST = _any
+
+    srv = _serve("127.0.0.1", Echo)
+    monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
+    unit = client.post("/api/admin/units", json={"name": f"AI {time.time()}"}).json()
+    email = f"ai{str(time.time()).replace('.', '')}@org.id"
+    assert client.post("/api/admin/users", json={"email": email, "name": "e", "password": "password-123",  # pragma: allowlist secret
+                                                 "role": "editor", "unit_id": unit["id"]}).status_code == 200
+    editor = login_client(email, "password-123")
+    try:
+        with sample_video.open("rb") as fh:
+            res = editor.post("/api/projects", files={"file": ("ai.mp4", fh, "video/mp4")}).json()
+        deadline = time.time() + 90
+        while editor.get(f"/api/jobs/{res['job']['id']}").json()["status"] != "selesai":
+            assert time.time() < deadline
+            time.sleep(0.3)
+        base = f"http://127.0.0.1:{srv.server_port}/v1"
+        assert client.put("/api/settings", json={"provider": "custom", "base_url": base, "api_key": KEY,
+                                                 "model": ""}).status_code == 200
+        assert editor.put("/api/settings", json={"provider": "custom", "base_url": "https://lain.test/v1"}).status_code == 403
+        with caplog.at_level(logging.DEBUG):
+            r = editor.post(f"/api/projects/{res['project']['id']}/plan/ai", json={"start": 0, "end": 5})
+        assert r.status_code == 502
+        assert KEY not in r.text and "host-internal-7" not in r.text and "127.0.0.1" not in r.text
+        assert all(KEY not in rec.getMessage() for rec in caplog.records)
+        s = client.get("/api/settings").json()["providers"]["custom"]
+        assert s["model"] == "" and s["base_url"] == base     # permintaan editor tidak mengubah pengaturan global
+    finally:
+        client.put("/api/settings", json={"provider": "custom", "base_url": "", "model": "", "clear_key": True})
+        client.put("/api/settings", json={"provider": "claude"})
+        srv.shutdown()
+        srv.server_close()
