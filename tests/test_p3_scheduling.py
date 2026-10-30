@@ -414,3 +414,35 @@ def test_dead_worker_shown_as_down():
         c.execute(update(db.workers).where(db.workers.c.name == name).values(heartbeat=time.time() - 600))
     w = {r["name"]: r for r in monitor.list_workers()}[name]
     assert not w["alive"] and w["heartbeat_age"] >= 600
+
+
+def test_container_limit_uses_headroom_not_host_reserve(monkeypatch):
+    """Bug P5.5.1: worker-io (mem_limit 512 MB) tidak pernah mengambil job karena cadangan HOST (512 MB) juga
+    dipotong dari batas container. Cadangan host hanya untuk RAM host; di dalam container cukup ruang aman kecil."""
+    mb = 2**20
+    host_free = {"total": 16 * 2**30, "available": 412 * mb, "used": 100 * mb,
+                 "host_available": 12 * 2**30, "container_available": 412 * mb}   # 512 MB - 100 MB terpakai
+    monkeypatch.setattr(resources, "memory", lambda: host_free)
+    assert resources.admit("io") == (True, "")                     # 300 + 64 <= 412
+    ok, why = resources.admit("render")                            # 700 + 64 > 412
+    assert not ok and "container" in why
+    # Batas compose produksi lain tetap muat: render 1500 MB, analisis (small) 3 GB, masing-masing ±150 MB terpakai.
+    for queue, limit in (("render", 1500), ("analisis", 3072)):
+        free = (limit - 150) * mb
+        monkeypatch.setattr(resources, "memory", lambda free=free: {**host_free, "available": free,
+                                                                     "container_available": free})
+        assert resources.admit(queue)[0], queue
+    # RAM host yang menipis tetap menahan job, termasuk cadangan host.
+    monkeypatch.setattr(resources, "memory", lambda: {**host_free, "host_available": 600 * mb})
+    ok, why = resources.admit("io")                                # 300 + 512 > 600
+    assert not ok and "RAM tersedia" in why
+
+
+def test_memory_reports_host_and_container_separately(monkeypatch):
+    monkeypatch.setattr(resources, "_meminfo", lambda: {"MemTotal": 16 * 2**30, "MemAvailable": 10 * 2**30})
+    monkeypatch.setattr(resources, "_cgroup_memory", lambda: (512 * 2**20, 100 * 2**20))
+    m = resources.memory()
+    assert m["host_available"] == 10 * 2**30 and m["container_available"] == 412 * 2**20
+    assert m["available"] == 412 * 2**20 and m["total"] == 512 * 2**20
+    monkeypatch.setattr(resources, "_cgroup_memory", lambda: None)
+    assert "container_available" not in resources.memory()

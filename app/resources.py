@@ -23,7 +23,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .config import (CPU_MAX_LOAD_PER_CORE, GPU_MIN_FREE_MB, HOST_HEAVY_WORKERS, MEM_RESERVE_MB, TASK_MEM_MB,
+from .config import (CONTAINER_MEM_HEADROOM_MB, CPU_MAX_LOAD_PER_CORE, GPU_MIN_FREE_MB, HOST_HEAVY_WORKERS,
+                     MEM_RESERVE_MB, TASK_MEM_MB,
                      WORKER_THREADS)
 
 log = logging.getLogger("video-editing.resources")
@@ -168,11 +169,13 @@ def memory() -> Optional[dict]:
     if info is None:
         return None
     total, avail = info.get("MemTotal", 0), info.get("MemAvailable", info.get("MemFree", 0))
+    out = {"host_available": avail}
     cg = _cgroup_memory()
     if cg:
         limit, used = cg
+        out["container_available"] = max(0, limit - used)
         total, avail = min(total, limit), min(avail, max(0, limit - used))
-    return {"total": total, "available": avail, "used": max(0, total - avail)}
+    return {"total": total, "available": avail, "used": max(0, total - avail), **out}
 
 
 def required_mb(queue: str) -> int:
@@ -238,10 +241,19 @@ def admit(queue: str) -> tuple[bool, str]:
     """Boleh mengambil job baru dari antrean ini sekarang? (ok, alasan bila tidak)."""
     mem = memory()
     if mem is not None:
-        need = (required_mb(queue) + MEM_RESERVE_MB) * 1024 * 1024
-        if mem["available"] < need:
-            return False, (f"RAM tersedia {mem['available'] / 2**20:.0f} MB < kebutuhan "
-                           f"{need / 2**20:.0f} MB (job menunggu)")
+        task = required_mb(queue) * 1024 * 1024
+        # Cadangan host hanya untuk RAM host; batas container cukup diberi ruang aman kecil. Tanpa pemisahan ini
+        # worker di container kecil (worker-io, mem_limit 512 MB) tidak pernah mengambil job (bug P5.5.1).
+        host = mem.get("host_available", mem["available"])
+        need_host = task + MEM_RESERVE_MB * 1024 * 1024
+        if host < need_host:
+            return False, (f"RAM tersedia {host / 2**20:.0f} MB < kebutuhan "
+                           f"{need_host / 2**20:.0f} MB (job menunggu)")
+        cont = mem.get("container_available")
+        need_cont = task + CONTAINER_MEM_HEADROOM_MB * 1024 * 1024
+        if cont is not None and cont < need_cont:
+            return False, (f"RAM container tersedia {cont / 2**20:.0f} MB < kebutuhan "
+                           f"{need_cont / 2**20:.0f} MB (job menunggu)")
     load = load_per_core()
     if queue != "io" and load is not None and CPU_MAX_LOAD_PER_CORE > 0 and load > CPU_MAX_LOAD_PER_CORE:
         return False, f"CPU jenuh (load {load:.2f}/core > {CPU_MAX_LOAD_PER_CORE})"

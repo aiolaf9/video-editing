@@ -109,6 +109,9 @@ CPU_WAIT_MAX = float(os.environ.get("CPU_WAIT_MAX", "60"))
 # Penjaga RAM: job hanya diambil bila RAM tersedia >= kebutuhan job + cadangan. Kebutuhan analisis
 # mengikuti ukuran model Whisper (dimuat sekali per proses worker).
 MEM_RESERVE_MB = int(os.environ.get("MEM_RESERVE_MB", "512"))
+# Cadangan di atas berlaku untuk RAM HOST (sistem operasi & proses lain). Di dalam batas container (`mem_limit`)
+# hanya dibutuhkan ruang aman kecil: batas itu sudah memisahkan container dari host.
+CONTAINER_MEM_HEADROOM_MB = int(os.environ.get("CONTAINER_MEM_HEADROOM_MB", "64"))
 _WHISPER_MEM = {"tiny": 700, "base": 900, "small": 1600, "medium": 3200, "large-v3": 5500, "large-v2": 5500}
 TASK_MEM_MB = {
     "analisis": int(os.environ.get("ANALYSIS_MEM_MB", str(_WHISPER_MEM.get(WHISPER_MODEL, 2500)))),

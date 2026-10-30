@@ -134,6 +134,10 @@ jobs:
           queues=$($COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "select string_agg(queues, ';' order by queues) from workers where state <> 'berhenti'")
           echo "worker terdaftar: $queues"
           for q in analisis render io; do echo "$queues" | grep -q "$q"; done
+          sleep 15   # beberapa putaran laporan worker (WORKER_REPORT_INTERVAL=10 dtk)
+          waiting=$($COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "select string_agg(name || ' ' || coalesce(reason, ''), '; ') from workers where state = 'menunggu'")
+          if [ -n "$waiting" ]; then echo "worker tertahan admission (menunggu): $waiting"; exit 1; fi
+          echo "tidak ada worker yang tertahan admission RAM/CPU saat idle"
           for svc in worker-analisis worker-render worker-io; do
             echo "$svc: $(docker inspect -f '{{.State.Health.Status}}' $($COMPOSE ps -q $svc | head -1))"
           done
@@ -151,11 +155,14 @@ jobs:
         run: $COMPOSE exec -T -e FIXTURES=1 worker-io python - < deploy/checks/net_isolation.py | tee net-isolation.txt
 
       - name: Impor lewat proxy & upaya bypass dengan fixture terkendali (bukti utama, end-to-end lewat Caddy)
+        timeout-minutes: 15
         env:
           ADMIN_EMAIL: admin@staging.local
         run: |
           $COMPOSE stop worker-analisis    # analisis (Whisper) bukan bagian P5.5.1; job analisis tetap "antre"
-          python3 deploy/checks/e2e_staging.py fixtures | tee e2e.txt
+          python3 deploy/checks/e2e_staging.py fixtures | tee e2e.txt || {
+            $COMPOSE exec -T db psql -U videoapp -d videoapp -c "select name, queues, state, reason from workers"
+            $COMPOSE logs --no-color --tail 60 worker-io egress-proxy; exit 1; }
           $COMPOSE logs --no-color egress-proxy > squid.log
           check() { n=$(grep -cE "$2" squid.log || true); echo "squid $1: $n"; test "$n" -gt 0; }
           check "unduhan fixture lewat proxy (TCP_MISS/200)" 'TCP_MISS/200 [0-9]+ GET http://fixture/media/ok\.mp4'
@@ -167,14 +174,20 @@ jobs:
 
       - name: Impor dari situs internet pihak ketiga (pelengkap, tidak menentukan kelulusan)
         continue-on-error: true
+        timeout-minutes: 10
         env:
           ADMIN_EMAIL: admin@staging.local
         run: python3 deploy/checks/e2e_staging.py thirdparty | tee e2e-thirdparty.txt
 
       - name: Pemulihan job yang sedang berjalan (restart SIGTERM & crash SIGKILL worker-io, cleanup di tengah)
+        timeout-minutes: 20
         env:
           ADMIN_EMAIL: admin@staging.local
-        run: python3 deploy/checks/recovery_staging.py | tee recovery.txt
+        run: |
+          python3 deploy/checks/recovery_staging.py | tee recovery.txt || {
+            $COMPOSE exec -T db psql -U videoapp -d videoapp -c "select name, queues, state, reason from workers"
+            $COMPOSE exec -T db psql -U videoapp -d videoapp -c "select id, task, status, attempts, progress, error from jobs order by created"
+            $COMPOSE logs --no-color --tail 80 worker-io; exit 1; }
 
       - name: Restart container tanpa merusak status job
         run: |

@@ -87,6 +87,35 @@ hidup (True) dan mati (False) sehingga asersi "proses sudah mati" tidak lolos se
   tidak ada job `jalan` tertinggal.
 - Workflow: `! cmd` diganti `if ...; then exit 1; fi` (negasi `!` tidak memicu `errexit`).
 
+### Run #3 — commit `228b3c4`
+
+- **CI #7:** https://github.com/aiolaf9/video-editing/actions/runs/41068238269 — success.
+- **Production image #3:** https://github.com/aiolaf9/video-editing/actions/runs/41068238268 — **failure**
+  (langkah e2e fixture).
+
+| Pemeriksaan | Hasil terukur |
+|---|---|
+| Build dari digest, versi, lisensi, secret, media di image | sama dengan run #2 (image `sha256:813b3c5b8ac0…8268`, 1.360.108.634 byte) |
+| Regresi di dalam image produksi (read-only, tanpa capability) | **292 lolos**, 1 dilewati (skip bawaan), 0 gagal |
+| Compose staging: db healthy, migrate exit 0, health langsung & via Caddy, worker healthy, uid 1000, root fs read-only, `/data` & `/tmp` dapat ditulis | lolos |
+| X-Forwarded-For palsu (dari worker & lewat Caddy) | tidak dipercaya |
+| Isolasi worker-io (lapisan jaringan, termasuk fixture) | **42/42 sesuai** |
+| E2E: 7 alamat/nama internal ditolak API (termasuk `internal-target` → 10.250.0.0/24, `[::ffff:10.250.0.2]`) | lolos; `internal-target` menerima 0 permintaan |
+| E2E: impor `fixture/media/ok.mp4` & 3 redirect | **gagal**: semua job tetap `antre`, fixture tidak pernah menerima permintaan unduhan |
+
+Analisis akar masalah (bug produksi, bukan bug uji): admission RAM (`resources.admit`, P3) mewajibkan RAM
+tersedia ≥ kebutuhan job + `MEM_RESERVE_MB` (512). Di dalam container, RAM tersedia dihitung dari batas cgroup; untuk
+`worker-io` (`mem_limit` 512 MB di `docker-compose.yml` produksi) hasilnya ±412 MB < 300 + 512 = 812 MB, sehingga
+**unduhan dari link tidak pernah diproses pada deployment Docker**. Dibuktikan dengan menjalankan `admit()` versi
+`228b3c4` terhadap angka container: `(False, 'RAM tersedia 412 MB < kebutuhan 812 MB (job menunggu)')`. Worker render
+(1500 MB) dan analisis model `small` (3 GB) masih lolos dengan aturan lama.
+
+Perbaikan (commit lokal): cadangan `MEM_RESERVE_MB` hanya diterapkan pada RAM host; di dalam batas container dipakai
+ruang aman `CONTAINER_MEM_HEADROOM_MB` (bawaan 64 MB). Kedua syarat tetap wajib. Tes: io diterima di container 512 MB,
+render ditolak bila tidak muat, batas compose render/analisis tetap muat, RAM host menipis tetap menahan job.
+Workflow kini juga gagal bila ada worker berstatus `menunggu` saat idle, mencetak tabel `workers` & log worker-io bila
+e2e/pemulihan gagal, dan punya `timeout-minutes` per langkah.
+
 ### Tinjauan konfigurasi produksi (F)
 
 | Item | Status di `docker-compose.yml` produksi | Di overlay staging | Rekomendasi |
