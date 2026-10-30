@@ -21,7 +21,7 @@ from typing import Optional
 from . import db, jobcontrol, jobs, lifecycle, monitor, pipeline, resources, storage
 from .config import (ANALYSIS_WORKERS, CANCEL_GRACE, CLEANUP_INTERVAL, CPU_WAIT_MAX, DOWNLOAD_TIMEOUT,
                      JOB_TIMEOUT_MAX, RENDER_TIMEOUT_BASE, RENDER_TIMEOUT_PER_SEC, RETENTION_DAYS,
-                     WORKER_REPORT_INTERVAL)
+                     UNSERVABLE_GRACE_SECONDS, WORKER_REPORT_INTERVAL)
 from .schemas import RenderRequest
 
 log = logging.getLogger("video-editing.worker")
@@ -140,6 +140,16 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
     data = jobs.claim(queues, name)
     if data is None:
         return False
+    # Cek RAM sekali lagi untuk job yang benar-benar diklaim, lalu cadangkan kebutuhannya: thread lain di proses ini
+    # (mode tanam) tidak boleh ikut lolos sebelum job ini sempat memakai RAM-nya.
+    with resources.ADMISSION_LOCK:
+        ok, why = resources.admit_memory(data["queue"])
+        if ok:
+            resources.reserve(data["id"], data["queue"])
+    if not ok:
+        jobs.requeue(data["id"], message=f"Menunggu RAM server tersedia ({why})")
+        log.info("[%s] %s dikembalikan ke antrean: %s", name, data["id"], why)
+        return False
     job = jobs.Job(data)
     control = jobcontrol.JobControl(job.id, initial_timeout(job))
     try:
@@ -181,6 +191,7 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
         _refresh_size(job.project_id)
     finally:
         done.set()
+        resources.release(job.id)
         resources.clear_job_threads()
         _collect(job.project_id)
         _report(name, "idle", usage=meter.sample() if meter else None,
@@ -188,11 +199,16 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
     return True
 
 
-def admitted(queues: tuple[str, ...], waiting_since: Optional[float]) -> tuple[tuple[str, ...], str]:
+def admitted(queues: tuple[str, ...], waiting_since: Optional[float],
+             incapable: Optional[dict] = None) -> tuple[tuple[str, ...], str]:
     """Antrean yang boleh diambil sekarang menurut resource mesin (lihat resources.admit).
-    RAM: tegas (job menunggu). CPU jenuh: ditunda paling lama CPU_WAIT_MAX detik lalu tetap jalan."""
+    RAM: tegas (job menunggu). CPU jenuh: ditunda paling lama CPU_WAIT_MAX detik lalu tetap jalan.
+    `incapable`: antrean yang tidak akan pernah muat di worker ini; tidak diambil (worker lain mungkin mampu)."""
     allowed, reasons = [], []
     for q in queues:
+        if incapable and q in incapable:
+            reasons.append(f"{q}: tidak akan pernah muat ({incapable[q]})")
+            continue
         ok, why = resources.admit(q)
         if ok or (why.startswith("CPU") and waiting_since is not None and time.time() - waiting_since > CPU_WAIT_MAX):
             allowed.append(q)
@@ -216,6 +232,30 @@ def _collect(pid: str) -> None:
         log.warning("Pembersihan media %s setelah job gagal:\n%s", pid, traceback.format_exc(limit=2))
 
 
+def incapable_queues(queues: tuple[str, ...], known: Optional[dict] = None) -> dict:
+    """Antrean yang tidak akan pernah muat di worker ini (lihat resources.capacity_shortfall); dicatat sekali."""
+    found = {q: why for q in queues if (why := resources.capacity_shortfall(q))}
+    for q, why in found.items():
+        if known and known.get(q) == why:
+            continue
+        log.error("Antrean %s tidak akan pernah muat di worker ini: %s. Naikkan mem_limit container/RAM, atau "
+                  "turunkan kebutuhan (mis. WHISPER_MODEL lebih kecil).", q, why)
+    return found
+
+
+def fail_unservable(now: Optional[float] = None) -> int:
+    """Gagalkan job yang tidak akan pernah diproses worker hidup mana pun, dengan pesan yang jelas."""
+    now = now or time.time()
+    failed = 0
+    for q, why in monitor.unservable_queues(now).items():
+        n = jobs.fail_queued(q, f"Tidak ada worker dengan RAM cukup untuk pekerjaan ini ({why}). "
+                                "Hubungi admin server.", older_than=now - UNSERVABLE_GRACE_SECONDS)
+        if n:
+            log.error("%d job antrean %s digagalkan: tidak ada worker yang mampu (%s)", n, q, why)
+        failed += n
+    return failed
+
+
 def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[threading.Event] = None,
          poll: float = 1.0, standalone: bool = False) -> None:
     queues = jobs.expand_queues(queues)
@@ -224,6 +264,7 @@ def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[thr
     last_maintenance = last_sweep = last_report = 0.0
     waiting_since: Optional[float] = None
     meter = resources.UsageMeter()
+    incapable = incapable_queues(queues)
     nice = resources.lower_priority(queues)
     log.info("Worker %s siap (antrean: %s, jatah minimum %d thread, nice %s)", name, ", ".join(queues),
              resources.fair_share(), nice)
@@ -240,19 +281,23 @@ def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[thr
             if now - last_maintenance > 60:
                 last_maintenance = now
                 jobs.requeue_stale()
+                fail_unservable(now)
             if {"analisis", "render"} & set(queues) and now - last_sweep > CLEANUP_INTERVAL:
                 last_sweep = now
                 lifecycle.sweep()  # hanya satu worker yang benar-benar bekerja (advisory lock)
-            allowed, reason = admitted(queues, waiting_since)
+            allowed, reason = admitted(queues, waiting_since, incapable)
+            if not allowed and waiting_since is None:
+                waiting_since = now
+                log.warning("[%s] menunda mengambil job: %s", name, reason)
+                last_report = 0.0                                   # laporkan "menunggu" segera
             if now - last_report >= WORKER_REPORT_INTERVAL:
                 last_report = now
-                _report(name, "menunggu" if not allowed else "idle", reason=reason or None,
-                        usage=meter.sample(), system=True)
+                if incapable:                                  # batas container bisa dinaikkan (docker update)
+                    incapable = incapable_queues(queues, incapable)
+                _report(name, "menunggu" if not allowed else "idle", reason=reason or None, usage=meter.sample(),
+                        system=True, extra={"blocked_since": waiting_since if not allowed else None,
+                                            "incapable": incapable})
             if not allowed:
-                if waiting_since is None:
-                    waiting_since = now
-                    log.warning("[%s] menunda mengambil job: %s", name, reason)
-                    _report(name, "menunggu", reason=reason)
                 stop.wait(max(poll, 2.0))
                 continue
             waiting_since = None

@@ -80,19 +80,36 @@ def _db_command(args) -> int:
     return 0
 
 
-def worker_health(max_age: float, host: Optional[str] = None) -> int:
-    """0 bila worker di container/host ini terdaftar dan heartbeat-nya tidak lebih tua dari max_age detik.
-    Nama worker diawali hostname (= ID container di Docker), lihat worker.run."""
+def worker_health(max_age: float, host: Optional[str] = None, max_blocked: Optional[float] = None) -> int:
+    """0 bila worker di container/host ini terdaftar, heartbeat-nya tidak lebih tua dari max_age detik, dan tidak
+    tertahan admission (RAM/CPU) lebih dari max_blocked detik: worker yang hidup tetapi tidak pernah mengambil job
+    tidak boleh terlihat sehat. Nama worker diawali hostname (= ID container di Docker), lihat worker.run."""
+    import json
     import socket
     import time
 
+    from .config import WORKER_BLOCKED_UNHEALTHY_SECONDS
+
+    max_blocked = WORKER_BLOCKED_UNHEALTHY_SECONDS if max_blocked is None else max_blocked
     prefix = f"{host or socket.gethostname()}-"
+    now = time.time()
     with db.engine().connect() as c:
-        rows = c.execute(select(db.workers.c.name, db.workers.c.heartbeat, db.workers.c.state)
+        rows = c.execute(select(db.workers.c.name, db.workers.c.heartbeat, db.workers.c.state, db.workers.c.reason,
+                                db.workers.c.system)
                          .where(db.workers.c.name.startswith(prefix, autoescape=True))).all()
-    alive = [r for r in rows if r.state != "berhenti" and time.time() - r.heartbeat <= max_age]
-    print(f"{len(alive)}/{len(rows)} worker aktif di {prefix[:-1]}")
-    return 0 if alive else 1
+    alive = [r for r in rows if r.state != "berhenti" and now - r.heartbeat <= max_age]
+    ready, blocked = [], []
+    for r in alive:
+        since = (json.loads(r.system) if r.system else {}).get("blocked_since")
+        if r.state == "menunggu" and since and now - since > max_blocked:
+            blocked.append(f"{r.name}: tertahan {now - since:.0f} dtk ({r.reason})")
+        else:
+            ready.append(r)
+    print(f"{len(ready)}/{len(rows)} worker aktif di {prefix[:-1]}"
+          + (f"; {len(blocked)} tertahan admission > {max_blocked:.0f} dtk" if blocked else ""))
+    for line in blocked:
+        print(line)
+    return 0 if ready else 1
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -120,6 +137,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     sub.add_parser("db-check", help="Gagal (exit 1) bila skema database berbeda dari model aplikasi")
     p = sub.add_parser("worker-health", help="Healthcheck container worker: heartbeat worker di host ini masih baru")
     p.add_argument("--max-age", type=float, default=60.0, help="Umur heartbeat maksimum (detik)")
+    p.add_argument("--max-blocked", type=float, default=None,
+                   help="Detik maksimum tertahan admission RAM/CPU sebelum dianggap tidak sehat "
+                        "(bawaan WORKER_BLOCKED_UNHEALTHY_SECONDS)")
     args = parser.parse_args(argv)
     if args.cmd.startswith("db-"):
         sys.exit(_db_command(args))
@@ -156,7 +176,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         from . import lifecycle
         print(lifecycle.sweep())
     elif args.cmd == "worker-health":
-        sys.exit(worker_health(args.max_age))
+        sys.exit(worker_health(args.max_age, max_blocked=args.max_blocked))
     elif args.cmd == "list-users":
         with db.engine().connect() as c:
             for r in c.execute(select(db.users.c.email, db.users.c.name, db.users.c.role, db.users.c.active)):

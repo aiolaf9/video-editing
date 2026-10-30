@@ -74,7 +74,12 @@ def verify_file(project, expected_sha=None):
     streams = sh("ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_entries", "stream=codec_type",
                  "-of", "csv=p=0", path).split()
     leftovers = sh("sh", "-c", f"ls /data/projects/{project['id']} | grep -E '\\.part|\\.ytdl|\\.temp' || true").split()
-    ok = sorted(set(streams)) == ["audio", "video"] and not leftovers and (expected_sha is None or sha == expected_sha)
+    kinds = set(streams)
+    if expected_sha is not None:   # fixture terkendali: isi diketahui persis (video + audio), sha256 harus identik
+        streams_ok = kinds == {"audio", "video"}
+    else:                          # situs pihak ketiga: wajib video + audio; trek timecode/teks (data, subtitle) boleh
+        streams_ok = {"audio", "video"} <= kinds <= {"audio", "video", "data", "subtitle"}
+    ok = streams_ok and not leftovers and (expected_sha is None or sha == expected_sha)
     return ok, {"sha256": sha, "sama_dengan_sumber": None if expected_sha is None else sha == expected_sha,
                 "stream": sorted(set(streams)), "sisa_berkas_sementara": leftovers}
 

@@ -116,6 +116,85 @@ render ditolak bila tidak muat, batas compose render/analisis tetap muat, RAM ho
 Workflow kini juga gagal bila ada worker berstatus `menunggu` saat idle, mencetak tabel `workers` & log worker-io bila
 e2e/pemulihan gagal, dan punya `timeout-minutes` per langkah.
 
+### Run #4 — commit `3e8de64`
+
+- **CI #8:** https://github.com/aiolaf9/video-editing/actions/runs/41073736042 — success. Lint, keamanan & lisensi,
+  migrasi: lolos; SQLite **299 lolos, 1 dilewati** (`test_lifecycle` advisory lock, khusus PostgreSQL); PostgreSQL
+  **315 lolos, 0 dilewati** (tes advisory lock benar-benar berjalan di sini). Tes Whisper asli: manual (tidak dijalankan).
+- **Production image #4:** https://github.com/aiolaf9/video-editing/actions/runs/41073735681 — success
+  (artifact `kesiapan-staging`, ID 12987177141).
+
+| Pemeriksaan | Hasil terukur |
+|---|---|
+| Build dari digest | python `sha256:aa943ce4…d159`, proxy `debian@sha256:13e0a2e7…8b04`; image `sha256:d7c27091…1af0`, 1.360.109.690 byte |
+| Versi | Debian 13, Python 3.12.16, FFmpeg/FFprobe 7.1.5-0+deb13u1 (`--enable-gpl --enable-libx264`), uid 1000 |
+| Lisensi / secret di image | 58 paket (54 izin, 4 catatan, 0 tolak); tidak ada secret/.env/data/media |
+| Media tidak tepercaya (tanpa jaringan, read-only) | permintaan ke server penjebak: 0; MP4 normal 640x360 + audio |
+| Regresi di dalam image (read-only, tanpa capability) | **299 lolos, 1 dilewati** (advisory lock PostgreSQL), 0 gagal |
+| Compose staging | db healthy, migrate exit 0, `0006_uploads`, tanpa drift, uid 1000, root fs read-only, ketiga worker healthy |
+| Worker tertahan admission saat idle | **tidak ada** (pemeriksaan baru, lolos) |
+| X-Forwarded-For palsu | tidak dipercaya |
+| Isolasi worker-io | **42/42 sesuai** |
+| E2E fixture lewat Caddy (bukti utama) | **14 sesuai, 0 tidak sesuai, 0 tidak dapat diuji** |
+| — unduhan `fixture/media/ok.mp4` | job `selesai`, sha256 `43510dc3…eff2` **identik dengan sumber**, video+audio, tanpa sisa `.part` |
+| — 7 alamat internal (IPv4, IPv6 `::1`, `::ffff:10.250.0.2`, metadata, loopback, `db`, `web`) | 400 dari API |
+| — redirect ke internal-target / metadata / loopback | job gagal dengan 403 dari proxy, tanpa berkas; internal-target menerima **0** permintaan |
+| — log squid | `TCP_MISS/200` unduhan fixture: 2; `TCP_DENIED/403` internal-target: 2, metadata: 1, loopback: 1; tidak ada MISS/TUNNEL ke alamat internal |
+| Pihak ketiga (pelengkap) | redirect httpbin → metadata ditolak 403 (sesuai); unduhan w3schools `mov_bbb.mp4` **selesai** tetapi pemeriksa menandai *tidak sesuai* karena berkas punya trek `data` (timecode) selain audio/video — pemeriksa terlalu ketat, bukan kegagalan aplikasi (lihat perbaikan) |
+| Pemulihan SIGTERM (restart worker-io di progres 7,6 %) | job kembali `antre/0`, lalu `selesai`; sha256 identik dengan sumber; 1 job unduhan; worker healthy |
+| Pemulihan SIGKILL (kill di progres 10,6 %) | job `jalan/1` → dipulihkan → `selesai`; sha256 identik; 1 job unduhan; worker healthy |
+| Cleanup media di tengah unduhan | tidak menghapus apa pun (0 folder/berkas) |
+| Job lain (selesai/gagal/antre) | tidak berubah; 0 job tertinggal `jalan`; worker terdaftar kembali |
+| Restart seluruh stack | status 12 job identik sebelum/sesudah; migrate exit 0; Caddy health OK |
+| Secret di log staging | 915 baris log, tanpa password database/admin |
+
+Yang **tidak** dibuktikan run #4 (sehingga belum PASS): tidak ada pemeriksaan eksplisit OOM (`OOMKilled`/event OOM) dan
+angka RAM host/container tidak dicatat; ditambahkan untuk run #5.
+
+### Perubahan untuk run #5 (commit lokal, belum di-push)
+
+**B — keamanan admission RAM**
+- `_cgroup_memory`: cgroup v2 (`memory.max/current/stat`) lalu v1 (`memory/memory.limit_in_bytes/usage_in_bytes/stat`);
+  "terpakai" dikurangi page cache tidak aktif (`inactive_file`/`total_inactive_file`), seperti `docker stats` — berkas
+  unduhan besar yang baru ditulis tidak lagi membuat worker menganggap RAM habis. Tanpa batas (`max`/> 2^60) atau tanpa
+  cgroup: aturan host. Diuji dengan berkas cgroup v1 & v2 tiruan.
+- Cadangan host (`MEM_RESERVE_MB`) hanya untuk RAM host; container memakai `CONTAINER_MEM_HEADROOM_MB` (bawaan 64,
+  **minimum 32**). Tidak dijumlahkan berdua (diuji).
+- Job paralel di satu proses (mode tanam): klaim → cek RAM ulang di bawah `ADMISSION_LOCK` → cadangkan kebutuhan job
+  selama `RAM_RAMP_SECONDS` (60 dtk; setelahnya pemakaian terukur yang dihitung, tidak dihitung dua kali). Job yang
+  tidak muat lagi dikembalikan ke antrean dengan pesan "Menunggu RAM server tersedia (…)", percobaan tidak bertambah.
+  Diuji: dua thread bersamaan di container 512 MB → tepat satu job io diterima.
+- Kebutuhan `IO_MEM_MB` 300 diukur, bukan ditebak (FFmpeg lokal 7.1, media 1080p 120 dtk 8 Mbit/s, ±120 MB):
+  gabung video+audio `+faststart` (FFmpegMergerPP, juga jalur DASH) puncak **54,6 MB**; fixup HLS `.ts`→mp4
+  **63,6 MB**; demux m3u8 lokal **61,2 MB**. Proses worker + yt-dlp termuat ±78 MB (sudah terhitung sebagai "terpakai").
+  Anggaran worker-io: 78 + 300 + 64 = 442 MB < 512 MB.
+
+**C — job tidak boleh menggantung diam-diam**
+1. Alasan penolakan: kolom `reason` worker (sudah ada) + pesan job yang dikembalikan; admin kini menampilkan
+   "tertahan N mnt" di samping status.
+2. Worker hidup-tetapi-tertahan dibedakan: `blocked`/`blocked_seconds` di monitoring, metrik `ve_worker_blocked` &
+   `ve_worker_blocked_seconds`; `manage worker-health` gagal bila semua worker di container tertahan admission lebih
+   dari `WORKER_BLOCKED_UNHEALTHY_SECONDS` (bawaan 1800; opsi `--max-blocked`).
+3. Metrik lama tertahan: `ve_worker_blocked_seconds` (per worker), di samping `ve_queue_oldest_wait_seconds`.
+4–5. Kapasitas yang tidak akan pernah cukup (`resources.capacity_shortfall`: kebutuhan + ruang aman > batas container,
+   atau kebutuhan + cadangan > RAM host total) dicatat sekali sebagai ERROR; worker itu tidak mengambil antrean
+   tersebut (worker lain mungkin mampu). Bila **tidak satu pun** worker hidup mampu, job antre yang lebih tua dari
+   `UNSERVABLE_GRACE_SECONDS` (bawaan 300) digagalkan dengan pesan "Tidak ada worker dengan RAM cukup … Hubungi admin
+   server." Antrean tanpa worker hidup tidak digagalkan (worker mungkin sedang dimulai). Contoh nyata yang kini
+   tertangkap: `WHISPER_MODEL=medium` (3200 MB) dengan `ANALYSIS_MEM` bawaan 3 GB — sebelumnya analisis menunggu selamanya.
+   Tanpa perubahan skema (data disimpan di kolom JSON `workers.system`).
+
+**Workflow & pemeriksa**
+- Langkah baru "RAM host & container, admission, dan tidak ada OOM": `memory.max/peak/events` dan `resources.memory()`
+  di worker-io, worker-render, web; gagal bila ada event OOM Docker sejak stack dinyalakan atau container `OOMKilled`;
+  worker-io wajib mendeteksi batas 512 MB dan menerima job io; tidak ada worker `menunggu`.
+- Pemeriksa pihak ketiga: wajib video+audio; trek `data`/`subtitle` tambahan diperbolehkan. Fixture terkendali tetap
+  persis {video, audio} dan sha256 identik.
+
+Regresi lokal (isi commit lokal): SQLite **317 lolos, 1 dilewati** (advisory lock PostgreSQL); PostgreSQL (database
+baru) **333 lolos, 0 dilewati**. Catatan jujur: satu percobaan PostgreSQL sebelumnya memakai database lama yang gagal
+di-reset (perintah reset saya salah role) dan menghasilkan 4 kegagalan akibat data sisa; diulang dengan database baru.
+
 ### Tinjauan konfigurasi produksi (F)
 
 | Item | Status di `docker-compose.yml` produksi | Di overlay staging | Rekomendasi |
@@ -136,18 +215,19 @@ Strategi build yang dapat diulang (rekomendasi, belum diterapkan):
 3. Paket Debian (FFmpeg 7.1.5-0+deb13u1) mengikuti digest image dasar; catat `ffmpeg -version` di setiap rilis.
 4. Simpan image hasil build yang lolos di registry dengan digest; deploy berdasarkan digest, bukan tag.
 
-### Status kriteria penerimaan P5.5.1 (setelah run #1)
+### Status kriteria penerimaan P5.5.1 (setelah run #4, `3e8de64`)
 
 | # | Kriteria | Status |
 |---|---|---|
-| 1 | CI umum berhasil | PASS (CI #5) |
-| 2 | Workflow image berhasil | PASS untuk run #1, tetapi cakupannya belum lengkap |
-| 3 | Image produksi benar-benar terbangun | PASS (identitas digest image dasar: FAIL di run #1) |
-| 4 | Compose staging berjalan | PASS |
-| 5 | Migrasi & health | PASS |
-| 6 | Worker wajib aktif | PASS (registrasi); healthcheck worker: NOT VERIFIED |
-| 7 | Isolasi jaringan uji positif & negatif | sebagian PASS (18/18); e2e unduhan publik, redirect, DNS→privat, IPv6 tambahan: NOT VERIFIED |
-| 8 | FFmpeg tidak membuka jaringan yang tidak diizinkan | PASS (penjebak); media normal & baca berkas lokal di image: NOT VERIFIED |
-| 9 | Tidak ada kebocoran secret | PASS (image); log staging: NOT VERIFIED |
-| 10 | Hasil & batasan dicatat | PASS (dokumen ini) |
-| C10 | Restart tanpa merusak status job | NOT VERIFIED |
+| 1 | CI umum berhasil | PASS (CI #8) |
+| 2 | Workflow image berhasil, tanpa skenario dilewati | PASS (#4); satu-satunya tes dilewati di image = advisory lock PostgreSQL, dijalankan & lolos di job PostgreSQL CI |
+| 3 | Image produksi terbangun dari digest resmi | PASS |
+| 4 | Compose staging berjalan, worker healthy | PASS |
+| 5 | Migrasi & health (langsung & via Caddy) | PASS |
+| 6 | Worker IO: admitted, antre → jalan → selesai, berkas benar | PASS (e2e fixture & pemulihan); **tanpa OOM: NOT VERIFIED** (tidak ada pemeriksaan eksplisit di run #4) |
+| 7 | Egress: unduhan fixture, sha256, redirect/DNS/IPv4/IPv6 internal ditolak, log squid, koneksi langsung diblokir | PASS (42/42, 14/14, bukti squid) |
+| 8 | Pemulihan SIGTERM/SIGKILL, antrean, cleanup, integritas, tanpa duplikat/menggantung | PASS (6/6) |
+| 9 | Media: regresi produksi penuh | PASS (299 di image, read-only) |
+| 10 | Tidak ada kebocoran secret; hasil dicatat | PASS |
+| B | Admission RAM host/container | perbaikan lokal + tes; bukti RAM/OOM staging: NOT VERIFIED sampai run #5 |
+| C | Job tidak menggantung diam-diam | perbaikan lokal + tes; belum diuji di staging |

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import (CONTAINER_MEM_HEADROOM_MB, CPU_MAX_LOAD_PER_CORE, GPU_MIN_FREE_MB, HOST_HEAVY_WORKERS,
-                     MEM_RESERVE_MB, TASK_MEM_MB,
+                     MEM_RESERVE_MB, RAM_RAMP_SECONDS, TASK_MEM_MB,
                      WORKER_THREADS)
 
 log = logging.getLogger("video-editing.resources")
@@ -149,17 +149,34 @@ def _meminfo() -> Optional[dict]:
         return None
 
 
-def _cgroup_memory() -> Optional[tuple[int, int]]:
-    """(batas, terpakai) container dalam byte, bila dibatasi (docker `mem_limit`)."""
-    for limit_f, used_f in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
-                            ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def _cgroup_memory(root: Optional[Path] = None) -> Optional[tuple[int, int]]:
+    """(batas, terpakai) container dalam byte, bila dibatasi (docker `mem_limit`); cgroup v2 lalu v1.
+    "Terpakai" = pemakaian dikurangi page cache tidak aktif (dapat direklamasi kernel), sama seperti `docker stats`:
+    unduhan/render yang menulis berkas besar mengisi page cache, dan tanpa ini worker keliru menganggap RAM habis."""
+    root = root or CGROUP_ROOT
+    for limit_f, used_f, stat_f, inactive_key in (
+            ("memory.max", "memory.current", "memory.stat", "inactive_file"),
+            ("memory/memory.limit_in_bytes", "memory/memory.usage_in_bytes", "memory/memory.stat", "total_inactive_file")):
         try:
-            raw = Path(limit_f).read_text().strip()
+            raw = (root / limit_f).read_text().strip()
             if raw == "max" or int(raw) > 1 << 60:
                 return None
-            return int(raw), int(Path(used_f).read_text().strip())
+            used = int((root / used_f).read_text().strip())
         except (OSError, ValueError):
             continue
+        inactive = 0
+        try:
+            for line in (root / stat_f).read_text().splitlines():
+                key, _, value = line.partition(" ")
+                if key == inactive_key:
+                    inactive = int(value)
+                    break
+        except (OSError, ValueError):
+            pass
+        return int(raw), max(0, used - min(inactive, used))
     return None
 
 
@@ -169,10 +186,11 @@ def memory() -> Optional[dict]:
     if info is None:
         return None
     total, avail = info.get("MemTotal", 0), info.get("MemAvailable", info.get("MemFree", 0))
-    out = {"host_available": avail}
+    out = {"host_total": total, "host_available": avail}
     cg = _cgroup_memory()
     if cg:
         limit, used = cg
+        out["container_limit"] = limit
         out["container_available"] = max(0, limit - used)
         total, avail = min(total, limit), min(avail, max(0, limit - used))
     return {"total": total, "available": avail, "used": max(0, total - avail), **out}
@@ -237,11 +255,57 @@ def gpu_with_free_vram(min_free_mb: Optional[float] = None) -> Optional[dict]:
 
 # ------------------------------------------------------------------ admission control
 
+ADMISSION_LOCK = threading.Lock()
+_inflight: dict = {}          # job_id -> (byte dicadangkan, waktu mulai): job di proses ini yang masih ramp-up
+
+
+def reserve(job_id: str, queue: str) -> None:
+    _inflight[job_id] = (required_mb(queue) * 1024 * 1024, time.time())
+
+
+def release(job_id: str) -> None:
+    _inflight.pop(job_id, None)
+
+
+def reserved_bytes(now: Optional[float] = None) -> int:
+    now = time.time() if now is None else now
+    return sum(size for size, started in list(_inflight.values()) if now - started < RAM_RAMP_SECONDS)
+
+
+def capacity_shortfall(queue: str) -> str:
+    """Alasan job antrean ini TIDAK AKAN PERNAH muat di mesin/container ini walau RAM sedang lengang (kosong bila
+    muat). Berbeda dengan admit_memory, yang menunggu RAM terpakai turun: menunggu di sini tidak ada gunanya."""
+    mem = memory()
+    if mem is None:
+        return ""
+    need = required_mb(queue)
+    host_total = mem.get("host_total") or 0
+    if host_total and (need + MEM_RESERVE_MB) * 2**20 > host_total:
+        return (f"RAM host {host_total / 2**20:.0f} MB < kebutuhan {need} MB + cadangan host {MEM_RESERVE_MB} MB")
+    limit = mem.get("container_limit")
+    if limit and (need + CONTAINER_MEM_HEADROOM_MB) * 2**20 > limit:
+        return (f"batas RAM container {limit / 2**20:.0f} MB < kebutuhan {need} MB + ruang aman "
+                f"{CONTAINER_MEM_HEADROOM_MB} MB")
+    return ""
+
+
 def admit(queue: str) -> tuple[bool, str]:
     """Boleh mengambil job baru dari antrean ini sekarang? (ok, alasan bila tidak)."""
+    ok, why = admit_memory(queue)
+    if not ok:
+        return ok, why
+    load = load_per_core()
+    if queue != "io" and load is not None and CPU_MAX_LOAD_PER_CORE > 0 and load > CPU_MAX_LOAD_PER_CORE:
+        return False, f"CPU jenuh (load {load:.2f}/core > {CPU_MAX_LOAD_PER_CORE})"
+    return True, ""
+
+
+def admit_memory(queue: str) -> tuple[bool, str]:
+    """Pemeriksaan RAM saja (dipakai lagi sesaat setelah klaim job, di bawah ADMISSION_LOCK)."""
     mem = memory()
     if mem is not None:
-        task = required_mb(queue) * 1024 * 1024
+        held = reserved_bytes()
+        task = required_mb(queue) * 1024 * 1024 + held
         # Cadangan host hanya untuk RAM host; batas container cukup diberi ruang aman kecil. Tanpa pemisahan ini
         # worker di container kecil (worker-io, mem_limit 512 MB) tidak pernah mengambil job (bug P5.5.1).
         host = mem.get("host_available", mem["available"])
@@ -254,9 +318,6 @@ def admit(queue: str) -> tuple[bool, str]:
         if cont is not None and cont < need_cont:
             return False, (f"RAM container tersedia {cont / 2**20:.0f} MB < kebutuhan "
                            f"{need_cont / 2**20:.0f} MB (job menunggu)")
-    load = load_per_core()
-    if queue != "io" and load is not None and CPU_MAX_LOAD_PER_CORE > 0 and load > CPU_MAX_LOAD_PER_CORE:
-        return False, f"CPU jenuh (load {load:.2f}/core > {CPU_MAX_LOAD_PER_CORE})"
     return True, ""
 
 
@@ -328,5 +389,7 @@ def system_snapshot() -> dict:
     return {
         "cpus": effective_cpus(), "cpu_pct": cpu_percent(), "load": [round(x, 2) for x in la] if la else None,
         "mem_total": mem and mem["total"], "mem_available": mem and mem["available"],
+        "mem_host_available": mem and mem.get("host_available"), "mem_container_limit": mem and mem.get("container_limit"),
+        "mem_container_available": mem and mem.get("container_available"),
         "gpus": gpus(), "worker_threads": cpu_threads(),
     }

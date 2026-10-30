@@ -296,16 +296,25 @@ def touch(job_id: str) -> None:
         c.execute(update(db.jobs).where(db.jobs.c.id == job_id).values(heartbeat=time.time()))
 
 
-def requeue(job_id: str) -> bool:
+def requeue(job_id: str, message: str = "Diulang karena server dimulai ulang...") -> bool:
     """Kembalikan job yang dihentikan karena server dimatikan ke antrean (percobaan tidak dihitung).
 
     Hanya untuk job berstatus 'jalan': job yang sedang dibatalkan pengguna tidak boleh hidup lagi.
     """
     with db.engine().begin() as c:
         return bool(c.execute(update(db.jobs).where(db.jobs.c.id == job_id, db.jobs.c.status == "jalan").values(
-            status="antre", worker=None, message="Diulang karena server dimulai ulang...",
+            status="antre", worker=None, message=message[:300],
             attempts=func.max(db.jobs.c.attempts - 1, 0) if not db.is_postgres()
             else func.greatest(db.jobs.c.attempts - 1, 0))).rowcount)
+
+
+def fail_queued(queue: str, error: str, older_than: float) -> int:
+    """Gagalkan job 'antre' di antrean ini yang dibuat sebelum `older_than` (job yang tidak akan pernah diproses)."""
+    now = time.time()
+    with db.engine().begin() as c:
+        return c.execute(update(db.jobs).where(db.jobs.c.queue == queue, db.jobs.c.status == "antre",
+                                               db.jobs.c.created < older_than).values(
+            status="gagal", error=error[:4000], message="Gagal", finished=now, heartbeat=now)).rowcount
 
 
 def requeue_stale(all_running: bool = False, worker_prefix: Optional[str] = None) -> int:

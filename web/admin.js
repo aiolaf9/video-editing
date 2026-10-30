@@ -118,7 +118,7 @@ async function loadMetrics() {
     $("workerTable").innerHTML = "<tr><th>Worker</th><th>Antrean</th><th>Status</th><th>CPU</th><th>RAM</th><th>Thread</th><th>Selesai / gagal</th><th>Kabar terakhir</th></tr>" +
       (ws.map((w) => `<tr class="${w.alive ? "" : "muted"}">
         <td>${esc(w.name)}<div class="muted">${esc(w.host)}</div></td><td>${esc(w.queues)}</td>
-        <td>${w.alive ? (WORKER_STATE[w.state] || esc(w.state)) : "<span class='exp-gone'>tidak merespons</span>"}${w.reason ? `<div class="muted">${esc(w.reason)}</div>` : ""}</td>
+        <td>${w.alive ? (WORKER_STATE[w.state] || esc(w.state)) : "<span class='exp-gone'>tidak merespons</span>"}${w.blocked ? ` <span class="exp-gone">tertahan ${secs(w.blocked_seconds)}</span>` : ""}${w.reason ? `<div class="muted">${esc(w.reason)}</div>` : ""}</td>
         <td>${pctTxt(w.cpu_pct)}</td><td>${w.rss_mb ? Math.round(w.rss_mb) + " MB" : "–"}</td><td>${w.threads || "–"}</td>
         <td>${w.jobs_ok} / ${w.jobs_failed}</td><td>${secs(w.heartbeat_age)} lalu</td></tr>`).join("")
         || '<tr><td colspan="8" class="muted">Belum ada worker yang melapor.</td></tr>');

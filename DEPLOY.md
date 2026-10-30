@@ -134,8 +134,14 @@ Total `cpus` boleh melebihi jumlah vCPU (contoh kelas kecil: 3 + 3 pada 4 vCPU):
 memakai semua core (selalu tersisa CPU untuk web & database), sedangkan `cpu_shares` mengatur siapa didahulukan.
 
 Perlindungan yang selalu aktif:
-- **RAM**: worker tidak mengambil job bila RAM tersedia kurang dari kebutuhan job + `MEM_RESERVE_MB`. Job menunggu
-  di antrean (status worker "menunggu resource") daripada proses dibunuh karena kehabisan memori.
+- **RAM**: worker tidak mengambil job bila RAM host tersedia kurang dari kebutuhan job + `MEM_RESERVE_MB`, atau
+  (di container dengan `mem_limit`) RAM container tersedia kurang dari kebutuhan job + `CONTAINER_MEM_HEADROOM_MB`
+  (bawaan 64, minimum 32; page cache tidak aktif tidak dihitung terpakai, cgroup v1 & v2). Job menunggu di antrean
+  (status worker "menunggu resource", admin menampilkan lama tertahan, metrik `ve_worker_blocked_seconds`) daripada
+  proses dibunuh karena kehabisan memori. Worker yang tertahan lebih dari `WORKER_BLOCKED_UNHEALTHY_SECONDS` (1800)
+  dilaporkan tidak sehat oleh healthcheck. Bila kebutuhan job **tidak akan pernah** muat di worker mana pun yang hidup
+  (mis. `WHISPER_MODEL=medium` dengan `ANALYSIS_MEM=3g`), log worker mencatat ERROR dan job tersebut digagalkan
+  dengan pesan jelas setelah `UNSERVABLE_GRACE_SECONDS` (300) — naikkan `mem_limit` atau perkecil kebutuhan.
 - **CPU**: jumlah thread FFmpeg/OpenCV per job dibagi di antara job yang sedang berjalan; render didahulukan dari
   analisis (prioritas proses). Halaman web tetap responsif.
 - **Antrean**: per unit paling banyak `MAX_QUEUED_PER_UNIT` job menunggu (pesan 429) dan per antrean

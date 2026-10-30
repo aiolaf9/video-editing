@@ -109,6 +109,7 @@ jobs:
           sed -i '/^POSTGRES_PASSWORD=/d; /^DOMAIN=/d; /^ADMIN_EMAIL=/d; /^ADMIN_PASSWORD=/d; /^COOKIE_SECURE=/d; /^ALLOW_URL_IMPORT=/d' .env
           printf 'POSTGRES_PASSWORD=%s\nDOMAIN=localhost\nADMIN_EMAIL=admin@staging.local\nADMIN_PASSWORD=%s\nCOOKIE_SECURE=0\nALLOW_URL_IMPORT=admins\n' "$pg" "$adm" >> .env
           echo "ADMIN_PASSWORD=$adm" >> "$GITHUB_ENV"
+          echo "STACK_START=$(date +%s)" >> "$GITHUB_ENV"
           $COMPOSE up -d --no-build
           for i in $(seq 1 120); do
             unhealthy=$($COMPOSE ps --format '{{.Service}} {{.Health}}' | awk '$2 != "" && $2 != "healthy"' || true)
@@ -188,6 +189,42 @@ jobs:
             $COMPOSE exec -T db psql -U videoapp -d videoapp -c "select name, queues, state, reason from workers"
             $COMPOSE exec -T db psql -U videoapp -d videoapp -c "select id, task, status, attempts, progress, error from jobs order by created"
             $COMPOSE logs --no-color --tail 80 worker-io; exit 1; }
+
+      - name: RAM host & container, admission, dan tidak ada OOM (setelah unduhan & pemulihan)
+        run: |
+          for svc in worker-io worker-render web; do
+            echo "== $svc"
+            $COMPOSE exec -T "$svc" python - <<'PY'
+          import json
+          from pathlib import Path
+          from app import resources
+          cg = Path("/sys/fs/cgroup")
+          read = lambda f: (cg / f).read_text().strip() if (cg / f).exists() else "-"
+          mem = resources.memory()
+          print("cgroup memory.max:", read("memory.max"), "| memory.peak:", read("memory.peak"))
+          print("memory.events:", read("memory.events").replace("\n", ", "))
+          print("memory():", json.dumps({k: round(v / 2**20) for k, v in mem.items()}), "MB")
+          for q in ("io", "render", "analisis"):
+              print(f"  {q}: butuh {resources.required_mb(q)} MB, admit={resources.admit(q)}, "
+                    f"tidak-pernah-muat={resources.capacity_shortfall(q) or '-'}")
+          PY
+          done
+          # Bukti tidak ada OOM selama seluruh run: event Docker sejak stack dinyalakan + status tiap container.
+          ooms=$(docker events --since "$STACK_START" --until "$(date +%s)" --filter event=oom --format '{{.Actor.Attributes.name}}')
+          if [ -n "$ooms" ]; then echo "OOM terjadi: $ooms"; exit 1; fi
+          killed=$(docker inspect -f '{{.Name}} {{.State.OOMKilled}}' $($COMPOSE ps -aq) | awk '$2 == "true"')
+          if [ -n "$killed" ]; then echo "container OOMKilled: $killed"; exit 1; fi
+          echo "tidak ada event OOM & tidak ada container OOMKilled sejak stack dinyalakan"
+          # worker-io harus melihat batas container 512 MB dan dapat menerima job io (bukan tertahan seperti run #3).
+          $COMPOSE exec -T worker-io python -c "
+          from app import resources
+          m = resources.memory(); assert m['container_limit'] == 512 * 2**20, m
+          assert resources.admit('io')[0] and not resources.capacity_shortfall('io'), resources.admit('io')
+          print('worker-io: batas container 512 MB terdeteksi, job io diterima')"
+          q="select name || ' ' || state || ' ' || coalesce(reason, '-') from workers where state <> 'berhenti' order by name"
+          $COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "$q"
+          if $COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "$q" | grep ' menunggu '; then
+            echo "worker tertahan admission saat idle"; exit 1; fi
 
       - name: Restart container tanpa merusak status job
         run: |

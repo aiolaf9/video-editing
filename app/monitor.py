@@ -35,14 +35,15 @@ def register(name: str, queues: tuple[str, ...]) -> None:
 
 def report(name: str, state: str, job_id: Optional[str] = None, reason: Optional[str] = None,
            usage: Optional[dict] = None, system: bool = False, ok: int = 0, failed: int = 0,
-           threads: Optional[int] = None) -> None:
+           threads: Optional[int] = None, extra: Optional[dict] = None) -> None:
+    """`extra` (bersama system=True): data worker tambahan di kolom `system`, mis. blocked_since & incapable."""
     values = dict(state=state, job_id=job_id, reason=(reason or None) and reason[:200], heartbeat=time.time())
     if threads is not None:
         values["threads"] = threads
     if usage:
         values.update(cpu_pct=usage.get("cpu_pct"), rss_mb=usage.get("rss_mb"))
     if system:
-        values["system"] = json.dumps(resources.system_snapshot())
+        values["system"] = json.dumps({**resources.system_snapshot(), **(extra or {})})
     w = db.workers.c
     if ok:
         values["jobs_ok"] = w.jobs_ok + ok
@@ -72,7 +73,28 @@ def list_workers(now: Optional[float] = None) -> list[dict]:
         r["alive"] = r["heartbeat"] >= now - alive_after() and r["state"] != "berhenti"
         r["heartbeat_age"] = round(now - r["heartbeat"], 1)
         r["system"] = json.loads(r["system"]) if r.get("system") else None
+        since = (r["system"] or {}).get("blocked_since")
+        # Hidup tetapi tertahan admission: dibedakan dari worker yang siap/idle (monitoring & healthcheck).
+        r["blocked"] = bool(r["alive"] and r["state"] == "menunggu")
+        r["blocked_seconds"] = round(now - since, 1) if r["blocked"] and since else (0.0 if r["blocked"] else None)
+        r["incapable"] = (r["system"] or {}).get("incapable") or {}
     return rows
+
+
+def unservable_queues(now: Optional[float] = None) -> dict:
+    """{antrean: alasan} untuk antrean yang dilayani worker hidup, tetapi TIDAK SATU PUN mampu menampung job-nya
+    (RAM yang dibutuhkan melebihi batas container/host). Antrean tanpa worker hidup tidak dihitung: worker mungkin
+    sedang dimulai. Worker yang belum melaporkan kemampuannya dianggap mampu (tidak menggagalkan job tanpa bukti)."""
+    capable, reasons = set(), {}
+    for w in list_workers(now):
+        if not w["alive"]:
+            continue
+        for q in (w["queues"] or "").split(","):
+            if q in w["incapable"]:
+                reasons.setdefault(q, f"{w['name']}: {w['incapable'][q]}")
+            elif q:
+                capable.add(q)
+    return {q: why for q, why in reasons.items() if q not in capable}
 
 
 def _pct(values: list[float], p: float) -> Optional[float]:
@@ -161,6 +183,10 @@ def prometheus(snap: dict) -> str:
         lab = {"worker": w["name"], "queues": w["queues"]}
         metric("ve_worker_up", int(w["alive"]), "Worker hidup (heartbeat segar).", lab)
         metric("ve_worker_busy", int(w["state"] == "sibuk"), "Worker sedang mengerjakan job.", lab)
+        metric("ve_worker_blocked", int(w.get("blocked", False)),
+               "Worker hidup tetapi tertahan admission RAM/CPU (tidak mengambil job).", lab)
+        metric("ve_worker_blocked_seconds", w.get("blocked_seconds"),
+               "Lama worker tertahan admission sejak terakhir siap (detik).", lab)
         metric("ve_worker_cpu_percent", w.get("cpu_pct"), "CPU worker + FFmpeg (100 = 1 core).", lab)
         metric("ve_worker_rss_mb", w.get("rss_mb"), "RAM worker + FFmpeg (MB).", lab)
     return "\n".join(lines) + "\n"
