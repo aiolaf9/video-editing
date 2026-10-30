@@ -114,6 +114,6 @@ periksa catatan rilis, lalu ganti SHA & komentar versi.
 
 | Sumber | Temuan | Status |
 |---|---|---|
-| bandit B310 | `app/ai.py`: `urlopen` tanpa pembatasan skema URL (`base_url` hanya diatur admin) | dijadwalkan P5.4 (validasi skema http/https) |
+| bandit B310 | `app/ai.py`: `urlopen` tanpa pembatasan skema URL | selesai di P5.4: opener khusus http/https tanpa redirect + validasi URL admin; baseline bandit kini kosong |
 | detect-secrets | 14 temuan: contoh URL di dokumentasi & kredensial tiruan di tes | diaudit, bukan secret |
 | lisensi | `mutagen` GPL-2.0+ (dulu lewat `yt-dlp[default]`) | selesai: dihapus dari dependensi; `scripts/license_review.json` kosong sehingga GPL yang masuk lagi menggagalkan CI |

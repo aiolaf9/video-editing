@@ -19,7 +19,7 @@ from starlette.requests import ClientDisconnect
 from sqlalchemy import delete, func, insert, select, true, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from . import ai, auth, clipper, db, jobs, lifecycle, monitor, plan, storage, uploads
+from . import ai, auth, clipper, db, jobs, lifecycle, monitor, netpolicy, plan, storage, uploads
 from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
                      MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
                      METRICS_TOKEN, UPLOAD_CHUNK_MB, UPLOAD_RESUME_HOURS, UPLOAD_TMP_DIR,
@@ -459,8 +459,12 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
     allowed = ALLOW_URL_IMPORT == "all" or (ALLOW_URL_IMPORT == "admins" and user["role"] != "editor")
     if not allowed:
         raise HTTPException(403, "Ambil video dari link dinonaktifkan. Unggah file video Anda.")
-    if not body.url.startswith(("http://", "https://")):
-        raise HTTPException(400, "Link harus diawali http:// atau https://")
+    # Jaringan internal tepercaya (URL_IMPORT_TRUSTED_NETWORKS) hanya untuk admin global; pengguna lain: IP publik.
+    trusted = user["role"] == "admin"
+    try:
+        netpolicy.check_import_url(body.url, trusted)
+    except netpolicy.BlockedURL as exc:
+        raise HTTPException(400, str(exc))
     _check_pending(user)
     unit_id = _target_unit(user)
     jobs.check_capacity("download", unit_id)
@@ -468,8 +472,8 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
     lifecycle.ensure_quota(_unit(unit_id))
     meta = storage.create_project("Mengunduh...", unit_id, user["id"])
     meta = storage.update_project(meta["id"], status="antre", url=body.url)
-    job = _queue_job("download", "analisis", meta, user, {"url": body.url, "language": body.language},
-                     "Unduh video")
+    job = _queue_job("download", "analisis", meta, user,
+                     {"url": body.url, "language": body.language, "trusted": trusted}, "Unduh video")
     return {"project": meta, "job": job}
 
 
@@ -774,7 +778,8 @@ def _ai_settings() -> dict:
 
 def _provider_cfg(settings: dict, provider: str) -> dict:
     cfg = dict(settings["providers"].get(provider) or {})
-    if not cfg.get("api_key") and provider in ENV_KEYS:
+    # Key dari environment server hanya untuk alamat resmi penyedia, tidak pernah ke Base URL buatan sendiri.
+    if not cfg.get("api_key") and provider in ENV_KEYS and not cfg.get("base_url"):
         cfg["api_key"] = os.environ.get(ENV_KEYS[provider])
     return cfg
 
@@ -832,12 +837,19 @@ def put_settings(body: Settings, user: dict = CurrentUser):
     data = _ai_settings()
     data["provider"] = body.provider
     cfg = data["providers"].setdefault(body.provider, {})
+    new_base = (body.base_url or "").strip()
+    if new_base:
+        try:
+            netpolicy.check_admin_url(new_base)
+        except netpolicy.BlockedURL as exc:
+            raise HTTPException(400, f"Base URL ditolak: {exc}")
     if body.api_key:
         cfg["api_key"] = body.api_key.strip()
-    elif body.clear_key:
+    elif body.clear_key or new_base != (cfg.get("base_url") or ""):
+        # Base URL berganti tanpa key baru: key lama tidak ikut dikirim ke alamat baru.
         cfg.pop("api_key", None)
     cfg["model"] = (body.model or "").strip()
-    cfg["base_url"] = (body.base_url or "").strip()
+    cfg["base_url"] = new_base
     db.set_setting("ai", data)
     return get_settings(user)
 
@@ -914,11 +926,15 @@ def plan_ai(pid: str, body: RangeRequest, user: dict = CurrentUser):
                                         _guidebook(ctx, body))
     except ImportError:
         raise HTTPException(500, "Library belum lengkap. Jalankan: pip install -r requirements.txt")
-    except Exception as exc:  # error API (kunci salah, kuota, jaringan) ditampilkan apa adanya
-        log.exception("%s API gagal", label)
-        raise HTTPException(502, f"{label} API gagal: {exc}")
+    except Exception as exc:  # error API (kunci salah, kuota, jaringan); pesan sudah bebas API key (ai._scrub)
+        log.error("%s API gagal: %s", label, exc)
+        public = getattr(exc, "public", None)
+        detail = str(exc) if user["role"] == "admin" or not public else public
+        raise HTTPException(502, f"{label} API gagal: {detail}")
     db.record_usage("ai", user["unit_id"], user["id"])
-    if not cfg.get("model"):  # simpan model yang dipilih otomatis agar terlihat di halaman admin
+    # Model yang dipilih otomatis disimpan agar terlihat di halaman admin, tetapi pengaturan global hanya
+    # berubah lewat tindakan admin global, bukan permintaan pengguna biasa.
+    if not cfg.get("model") and user["role"] == "admin":
         settings["providers"].setdefault(provider, {})["model"] = model
         db.set_setting("ai", settings)
     return _save_range(pid, items, ctx["start"], ctx["end"])

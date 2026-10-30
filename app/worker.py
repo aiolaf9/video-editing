@@ -57,7 +57,7 @@ def _run_task(job: jobs.Job):
         db.record_usage("analyze", job.unit_id, job.user_id)
         return result
     if job.task == "download":
-        pipeline.download(job, pid, p["url"])
+        pipeline.download(job, pid, p["url"], trusted=bool(p.get("trusted")))
         try:  # ukuran video dari link baru diketahui sekarang: tegakkan kuota unit secara atomik
             lifecycle.commit_size(pid, lifecycle.unit_row(job.unit_id))
         except lifecycle.StorageFull:

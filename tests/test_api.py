@@ -63,7 +63,7 @@ def test_url_import_downloads_then_analyzes(sample_video, fake_transcript, monke
 
     from app import pipeline, storage
 
-    def fake_download(job, pid, url):
+    def fake_download(job, pid, url, trusted=False):
         shutil.copy(sample_video, storage.project_dir(pid) / "source.mp4")
         storage.update_project(pid, source="source.mp4", status="antre", name="Video dari link")
         job.update(100, "Unduhan selesai!")

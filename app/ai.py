@@ -5,11 +5,12 @@
               Gemini, ChatGPT/OpenAI, OpenRouter, Groq, DeepSeek, Ollama (lokal), atau URL sendiri.
 """
 import json
+import ssl
 import urllib.error
 import urllib.request
 from typing import Optional
 
-from . import plan
+from . import netpolicy, plan
 
 PROVIDERS = {
     "claude": {"name": "Claude", "base_url": "", "needs_key": True,
@@ -35,7 +36,36 @@ _SKIP = ("embed", "image", "imagen", "tts", "audio", "vision", "whisper", "dall"
 
 
 class AIError(RuntimeError):
-    pass
+    """public: versi pesan untuk editor (tanpa isi respons penyedia/alamat internal); None = pesan lengkap aman."""
+
+    def __init__(self, message: str, public: Optional[str] = None):
+        super().__init__(message)
+        self.public = public
+
+
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Permintaan ke penyedia AI membawa API key: redirect tidak pernah diikuti (urllib bawaan meneruskan header
+    Authorization ke host tujuan redirect, termasuk host lain)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise AIError(f"Penyedia AI mengalihkan permintaan (HTTP {code}). Pengalihan tidak diikuti agar API key tidak "
+                      "terkirim ke alamat lain; periksa Base URL.", public="Penyedia AI mengalihkan permintaan; "
+                      "hubungi admin untuk memeriksa Base URL.")
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    # Hanya http/https (tanpa file:, ftp:, data:), proxy dari lingkungan tetap dihormati, redirect ditolak.
+    op = urllib.request.OpenerDirector()
+    for handler in (urllib.request.ProxyHandler(), urllib.request.HTTPHandler(),
+                    urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+                    urllib.request.HTTPDefaultErrorHandler(), urllib.request.HTTPErrorProcessor(), _RefuseRedirect()):
+        op.add_handler(handler)
+    return op
+
+
+def _scrub(text: str, key: Optional[str]) -> str:
+    """Penyedia kadang menyalin API key ke pesan error: jangan pernah meneruskannya ke log atau pengguna."""
+    return text.replace(key, "***") if key and len(key) >= 4 else text
 
 
 def base_url(provider: str, cfg: dict) -> str:
@@ -46,22 +76,29 @@ def base_url(provider: str, cfg: dict) -> str:
 
 
 def _http(method: str, url: str, key: Optional[str], body: Optional[dict] = None, timeout: int = 180) -> dict:
+    try:
+        netpolicy.check_admin_url(url)
+    except netpolicy.BlockedURL as exc:
+        raise AIError(f"Base URL ditolak: {exc}", public="Pengaturan Base URL penyedia AI tidak valid; hubungi admin.") from exc
     headers = {"Content-Type": "application/json", "User-Agent": "video-editing-ai/1.0"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # Skema dibatasi http/https oleh check_admin_url dan oleh _opener (tanpa handler file:/ftp:).
+        with _opener().open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
-        raise AIError(_friendly(exc.code, raw)) from exc
+        raw = _scrub(exc.read().decode("utf-8", "replace"), key)
+        hint, full = _friendly(exc.code, raw)
+        raise AIError(full, public=hint) from None
     except urllib.error.URLError as exc:
-        raise AIError(f"Tidak bisa terhubung ke {url}: {exc.reason}") from exc
+        raise AIError(_scrub(f"Tidak bisa terhubung ke {url}: {exc.reason}", key),
+                      public="Tidak bisa terhubung ke penyedia AI; hubungi admin.") from None
 
 
-def _friendly(code: int, raw: str) -> str:
+def _friendly(code: int, raw: str) -> tuple[str, str]:
     """Ubah error HTTP penyedia AI menjadi pesan yang mudah dipahami (detail asli tetap disertakan)."""
     try:
         err = json.loads(raw)
@@ -80,7 +117,7 @@ def _friendly(code: int, raw: str) -> str:
         hint = "Model tidak ditemukan. Klik 'Muat daftar model' lalu pilih salah satu."
     else:
         hint = f"Error {code}."
-    return f"{hint} (Pesan penyedia: {msg})"
+    return hint, f"{hint} (Pesan penyedia: {msg})"
 
 
 def list_models(provider: str, cfg: dict) -> list[str]:
@@ -120,7 +157,8 @@ def _openai_compatible(provider: str, cfg: dict, model: str, system: str, user: 
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
-        raise AIError(f"Format jawaban tidak dikenal: {str(data)[:300]}") from exc
+        raise AIError(_scrub(f"Format jawaban tidak dikenal: {str(data)[:300]}", key),
+                      public="Format jawaban penyedia AI tidak dikenal.") from exc
 
 
 def generate_plan(provider: str, cfg: dict, transcript: dict, start: float, end: float,

@@ -1,6 +1,7 @@
-# Audit akses URL eksternal (pra-P5.4)
+# Audit & perlindungan akses URL eksternal (P5.4)
 
-Status: **audit saja, belum ada perbaikan kode.** Implementasi menunggu persetujuan P5.4.
+Status: audit pra-P5.4 (bagian 1–2) dan **implementasi P5.4** (bagian 5). Rencana awal di bagian 3–4 dipertahankan
+sebagai catatan keputusan.
 
 ## 1. Titik akses keluar
 
@@ -46,15 +47,32 @@ Status: **audit saja, belum ada perbaikan kode.** Implementasi menunggu persetuj
   atau mengonfirmasi (mencegah U4);
 - error ke editor diringkas; detail lengkap hanya di log server & halaman admin.
 
-## 4. Rencana P5.4 (usulan, belum dikerjakan)
+## 4. Rencana P5.4 (sudah dikerjakan, lihat bagian 5)
 
-1. Modul `app/netpolicy.py`: klasifikasi IP, validasi URL pengguna & admin (unit test tabel lengkap, termasuk
-   IPv6 & bentuk IPv4 tidak lazim seperti `http://2130706433/`, `http://0x7f.1/`).
-2. `ai._http`: opener tanpa redirect + validasi skema/host (menutup B310, U3, U5); hapus entri B310 dari
-   `.bandit-baseline.json` setelah lolos.
-3. `put_settings`: aturan base_url admin + pemutusan key saat base_url berganti (U4); ringkas error untuk editor (U6).
-4. `pipeline.download`: request handler yt-dlp yang memvalidasi IP setiap koneksi (U1, U2); `from-url` menolak
-   lebih awal dengan pesan jelas. `tests/test_ytdlp_local.py` diberi pengaturan uji eksplisit untuk host lokal.
-5. Tes: SSRF langsung, redirect ke privat, DNS rebinding (resolver tiruan), Ollama localhost tetap jalan,
-   key tidak terkirim ke host redirect.
-6. Dokumentasi deployment: isolasi jaringan worker (egress) — sebagai rekomendasi, tanpa mengubah produksi.
+## 5. Implementasi P5.4
+
+| Temuan | Perbaikan | Bukti uji |
+|---|---|---|
+| U3 key bocor lewat redirect | `ai._http` memakai opener sendiri: **redirect selalu ditolak** (301/302/303/307/308), hanya handler http/https (tanpa `file:`/`ftp:`/`data:`) | `tests/test_p54_ai_security.py`: dua server berbeda (127.0.0.1 → 127.0.0.2), host kedua menerima **0 permintaan** untuk 5 kode redirect, termasuk POST chat |
+| U5 skema/transport, B310 | `netpolicy.check_admin_url` di `PUT /api/settings` **dan** di setiap permintaan: host publik wajib `https`; `http` hanya untuk localhost/IP privat (Ollama, server internal); tanpa userinfo. Entri B310 dihapus dari `.bandit-baseline.json` (bandit: 0 temuan) | tes kebijakan URL admin (izinkan/tolak), Ollama lokal tetap jalan tanpa header `Authorization` |
+| U4 key berpindah alamat | key tersimpan dilepas bila Base URL berganti tanpa key baru; key dari environment hanya untuk alamat resmi penyedia | tes API pengaturan & `_provider_cfg` |
+| U6 pantulan respons ke editor | `AIError.public`: editor hanya melihat ringkasan; detail ke admin & log. API key yang disalin penyedia ke pesan error diganti `***` | tes 401 yang memantulkan key |
+| (baru) konfigurasi global dari pengguna biasa | model yang dipilih otomatis hanya disimpan ke pengaturan global bila peminta admin global | – |
+| U1 SSRF impor link | `check_import_url` di API (pesan cepat) + **`import_guard` di worker**: `socket.getaddrinfo` pada thread unduhan hanya mengembalikan alamat yang diizinkan, sehingga koneksi hanya mungkin ke IP yang lolos pemeriksaan (validasi = alamat yang dihubungi) | `tests/test_p54_ssrf.py`: loopback, privat, link-local/metadata, CGNAT, multicast, IPv6 (::1, ULA, link-local, IPv4-mapped, NAT64, 6to4, Teredo), bentuk IPv4 desimal/heksa/oktal |
+| U2 redirect, URL turunan, DNS rebinding | tertangkap oleh guard yang sama (setiap koneksi baru di-resolve ulang & diperiksa); batas redirect `URL_IMPORT_MAX_REDIRECTS` (bawaan 5) pada handler requests & urllib yt-dlp | unduhan yt-dlp nyata: redirect ke server internal, manifest DASH publik dengan segmen di server internal, DNS rebinding (publik saat dicek, internal saat koneksi), nama publik → IP privat; server internal menerima **0 permintaan**; alamat internal tidak muncul di pesan error |
+| Pengunduh eksternal | FFmpeg/aria2c/curl/wget/rtmpdump membuka koneksi di luar Python: ditahan selama unduhan (termasuk delegasi diam-diam HLS→FFmpeg) | tes RTMP & `FFmpegFD.real_download` |
+| U8 ukuran | batas total byte `URL_IMPORT_MAX_MB` lewat progress hook (berlaku juga untuk fragmen DASH/HLS tanpa ukuran di header); timeout socket 30 dtk & `DOWNLOAD_TIMEOUT` job tetap | tes batas ukuran file tunggal & DASH |
+| Kebijakan terpisah | `URL_IMPORT_TRUSTED_NETWORKS` (CIDR) hanya untuk impor oleh admin global; editor/admin unit selalu IP publik | tes API editor (400 walau jaringan tepercaya diset) & admin (berhasil) |
+
+### Batasan yang tersisa (perlu lapisan jaringan)
+
+1. **Proxy keluar** (`DOWNLOAD_PROXY`): aplikasi hanya melihat alamat proxy; proxy itulah yang wajib menyaring
+   alamat internal. Variabel `HTTP(S)_PROXY` lingkungan sengaja tidak dipakai untuk unduhan.
+2. **Proses di luar Python** yang mungkin dijalankan yt-dlp selain pengunduh (runtime JavaScript Deno/Node untuk
+   tantangan YouTube) tidak melewati guard; skrip yang dijalankan berasal dari paket `yt-dlp-ejs`, bukan dari URL.
+3. **Pengecualian psycopg**: resolusi host database dari thread unduhan (pencatatan progres job) tidak diperiksa,
+   karena pemanggilnya hanya psycopg (tidak pernah membawa URL pengguna).
+4. **Egress filtering tetap direkomendasikan** (pertahanan berlapis): worker di jaringan yang tidak dapat menjangkau
+   database, layanan internal, dan 169.254.169.254 — lihat DEPLOY.md. Pengaturan produksi tidak diubah oleh P5.4.
+5. U7: pengaturan AI masih global (satu key untuk semua unit). Untuk SaaS multi-tenant, key per workspace perlu
+   dirancang di tahap berikutnya.

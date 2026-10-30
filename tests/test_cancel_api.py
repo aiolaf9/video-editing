@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from conftest import login_client
 
-from app import jobs, media, pipeline, storage, transcribe, worker
+from app import jobs, media, netpolicy, pipeline, storage, transcribe, worker
 
 
 def _wait_status(c, job_id, statuses, timeout=60):
@@ -211,8 +211,7 @@ def test_cancel_download_cleans_partial_files(client, sample_video, monkeypatch)
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
-    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    monkeypatch.setattr(netpolicy, "URL_IMPORT_TRUSTED_NETWORKS", "127.0.0.0/8")   # server uji lokal, impor admin
     try:
         res = client.post("/api/projects/from-url", json={"url": f"http://127.0.0.1:{srv.server_port}/video.mp4"})
         assert res.status_code == 200, res.text

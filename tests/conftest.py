@@ -40,6 +40,34 @@ def pytest_unconfigure(config):
         shutil.rmtree(path, ignore_errors=True)
 
 
+# Nama host "publik" untuk tes: tidak bergantung pada DNS sungguhan (CI/lokal bisa tanpa internet).
+PUBLIC_TEST_HOSTS = {"example.com": "93.184.216.34", "youtube.com": "142.250.0.1", "contoh.local": "93.184.216.35"}
+
+
+@pytest.fixture(autouse=True)
+def _test_dns(monkeypatch):
+    import socket
+
+    from app import netpolicy
+
+    real = netpolicy._resolve
+
+    def resolve(host, port, *a, **k):
+        if host in PUBLIC_TEST_HOSTS:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC_TEST_HOSTS[host], port))]
+        return real(host, port, *a, **k)
+
+    monkeypatch.setattr(netpolicy, "_resolve", resolve)
+
+
+@pytest.fixture
+def trust_loopback(monkeypatch):
+    """Server uji lokal (127.x) diperlakukan sebagai jaringan internal tepercaya: hanya berlaku untuk impor admin."""
+    from app import netpolicy
+
+    monkeypatch.setattr(netpolicy, "URL_IMPORT_TRUSTED_NETWORKS", "127.0.0.0/8")
+
+
 def _ffmpeg(*args):
     subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args], check=True)
 

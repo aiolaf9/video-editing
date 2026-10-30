@@ -64,6 +64,14 @@ MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "4096"))
 MAX_PENDING_PER_USER = int(os.environ.get("MAX_PENDING_PER_USER", "5"))
 # Ambil video dari link (YouTube, dll.): all | admins | none
 ALLOW_URL_IMPORT = os.environ.get("ALLOW_URL_IMPORT", "all")
+# Impor dari link hanya ke alamat IP publik (P5.4, anti-SSRF). Jaringan internal tepercaya (CIDR, dipisah koma)
+# hanya berlaku untuk impor yang diminta admin global, mis. "10.20.0.0/16,fd00:abcd::/48".
+URL_IMPORT_TRUSTED_NETWORKS = os.environ.get("URL_IMPORT_TRUSTED_NETWORKS", "")
+URL_IMPORT_MAX_MB = int(os.environ.get("URL_IMPORT_MAX_MB", str(MAX_UPLOAD_MB)))
+URL_IMPORT_MAX_REDIRECTS = int(os.environ.get("URL_IMPORT_MAX_REDIRECTS", "5"))
+# Proxy keluar untuk unduhan (kosong = koneksi langsung; variabel HTTP(S)_PROXY lingkungan diabaikan).
+# Bila diisi, proxy itulah yang wajib menyaring alamat internal (aplikasi hanya melihat alamat proxy).
+DOWNLOAD_PROXY = os.environ.get("DOWNLOAD_PROXY", "")
 # DIGANTI oleh siklus media sementara (P2). Hanya dibaca untuk peringatan bila masih diisi.
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "0"))
 

@@ -5,8 +5,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clipper, faces, jobcontrol, media, overlays, resources, storage, transcribe
-from .config import ANALYZE_TIMEOUT_BASE, ANALYZE_TIMEOUT_PER_MIN, JOB_TIMEOUT_MAX
+from . import clipper, faces, jobcontrol, media, netpolicy, overlays, resources, storage, transcribe
+from .config import (ANALYZE_TIMEOUT_BASE, ANALYZE_TIMEOUT_PER_MIN, DOWNLOAD_PROXY, JOB_TIMEOUT_MAX,
+                     URL_IMPORT_MAX_MB, URL_IMPORT_MAX_REDIRECTS)
 from .jobs import Job
 from .render import build_command, output_size
 from .schemas import RenderRequest
@@ -39,15 +40,80 @@ class _YtdlpLogger:
         log.error("yt-dlp: %s", msg)
 
 
-def download(job: Job, pid: str, url: str) -> str:
-    """Mengunduh video dari link (YouTube, Instagram, TikTok, dll.) dengan yt-dlp."""
+class DownloadTooLarge(RuntimeError):
+    pass
+
+
+def _safe_ydl(yt_dlp):
+    """YoutubeDL dengan batas jumlah redirect dan tanpa pengunduh berbasis proses eksternal."""
+    _forbid_process_downloaders(yt_dlp)
+
+    class SafeYoutubeDL(yt_dlp.YoutubeDL):
+        def build_request_director(self, handlers, preferences=None):
+            director = super().build_request_director(handlers, preferences)
+            for rh in director.handlers.values():
+                if hasattr(rh, "_create_instance"):   # Requests & Urllib (websocket tidak mengikuti redirect)
+                    rh._create_instance = _limit_redirects(rh._create_instance)
+            return director
+
+    return SafeYoutubeDL
+
+
+def _forbid_process_downloaders(yt_dlp) -> None:
+    """FFmpeg/aria2c/curl/wget/rtmpdump membuka koneksi sendiri di luar proses Python sehingga tidak melewati
+    pemeriksaan alamat netpolicy. yt-dlp bisa memilihnya diam-diam (mis. HLS yang tidak didukung pengunduh native
+    didelegasikan ke FFmpeg), jadi ditahan di titik eksekusinya selama unduhan berjalan dalam import_guard."""
+    from yt_dlp.downloader.external import ExternalFD, FFmpegFD
+    from yt_dlp.downloader.rtmp import RtmpFD
+
+    for cls, name in ((ExternalFD, "real_download"), (ExternalFD, "_call_downloader"),
+                      (FFmpegFD, "_call_downloader"), (RtmpFD, "real_download")):
+        original = cls.__dict__[name]
+        if getattr(original, "_netpolicy", False):
+            continue
+
+        def blocked(self, *args, _original=original, **kwargs):
+            if netpolicy.guard_active():
+                raise yt_dlp.utils.DownloadError("Format video ini memerlukan pengunduh eksternal yang tidak diizinkan.")
+            return _original(self, *args, **kwargs)
+
+        blocked._netpolicy = True
+        setattr(cls, name, blocked)
+
+
+def _limit_redirects(create):
+    import urllib.request
+
+    def wrapped(*args, **kwargs):
+        instance = create(*args, **kwargs)
+        if hasattr(instance, "max_redirects"):                 # requests.Session
+            instance.max_redirects = URL_IMPORT_MAX_REDIRECTS
+        for handler in getattr(instance, "handlers", []):     # urllib OpenerDirector
+            if isinstance(handler, urllib.request.HTTPRedirectHandler):
+                handler.max_redirections = URL_IMPORT_MAX_REDIRECTS
+        return instance
+
+    return wrapped
+
+
+def download(job: Job, pid: str, url: str, trusted: bool = False) -> str:
+    """Mengunduh video dari link (YouTube, Instagram, TikTok, dll.) dengan yt-dlp.
+    Anti-SSRF (P5.4): setiap koneksi (termasuk redirect & URL manifest/segmen turunan) hanya ke IP publik, atau
+    jaringan tepercaya bila diminta admin global (trusted). Lihat netpolicy & docs/SECURITY_AUDIT_URL.md."""
     import yt_dlp
 
     folder = storage.project_dir(pid)
     storage.update_project(pid, status="mengunduh")
     job.update(0, "Menghubungi situs video...")
+    limit = URL_IMPORT_MAX_MB * 1024 * 1024
+    sizes: dict = {}
+    too_large: list = []
 
     def hook(d: dict) -> None:
+        sizes[d.get("filename")] = d.get("downloaded_bytes") or 0
+        if sum(sizes.values()) > limit:   # juga untuk unduhan tanpa ukuran di header (fragmen DASH/HLS)
+            too_large.append(True)        # yt-dlp bisa menelan exception dari hook: catat juga sebagai flag
+            raise DownloadTooLarge(f"Video melebihi batas {URL_IMPORT_MAX_MB} MB.")
         if d.get("status") != "downloading":
             if d.get("status") == "finished":
                 job.update(99, "Menggabungkan video dan audio...")
@@ -71,9 +137,19 @@ def download(job: Job, pid: str, url: str) -> str:
         "retries": 5,
         "fragment_retries": 5,
         "progress_hooks": [hook],
+        "proxy": DOWNLOAD_PROXY,                 # "" = langsung; HTTP(S)_PROXY lingkungan tidak dipakai diam-diam
+        "external_downloader": {"default": "native"},
+        "hls_prefer_native": True,
+        "concurrent_fragment_downloads": 1,      # satu thread: pemeriksaan alamat berlaku per thread
     }
     try:
-        return _download(job, pid, url, folder, opts, yt_dlp)
+        netpolicy.check_import_url(url, trusted)   # juga untuk job yang antre sebelum P5.4
+        with netpolicy.import_guard(trusted, [h for h in [netpolicy.proxy_host(DOWNLOAD_PROXY)] if h]) as guard:
+            return _download(job, pid, url, folder, opts, _safe_ydl(yt_dlp), guard, too_large)
+    except netpolicy.BlockedURL as exc:
+        _discard(folder)
+        storage.update_project(pid, status="gagal", name="Unduhan diblokir")
+        raise RuntimeError(str(exc)) from None
     except jobcontrol.JobCancelled as exc:
         # Unduhan dihentikan (kapan pun, termasuk setelah yt-dlp selesai): buang file setengah jadi.
         for leftover in folder.glob("source.*"):
@@ -83,18 +159,34 @@ def download(job: Job, pid: str, url: str) -> str:
         raise
 
 
-def _download(job: Job, pid: str, url: str, folder: Path, opts: dict, yt_dlp) -> str:
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except Exception as exc:
-        for leftover in folder.glob("source.*"):  # unduhan gagal: buang potongan file
-            leftover.unlink(missing_ok=True)
+def _discard(folder: Path) -> None:
+    for leftover in folder.glob("source.*"):  # unduhan gagal: buang potongan file
+        leftover.unlink(missing_ok=True)
+
+
+def _download(job: Job, pid: str, url: str, folder: Path, opts: dict, ydl_class, guard: dict,
+              too_large: list) -> str:
+    def refuse(exc: Optional[BaseException]) -> None:
+        _discard(folder)
         storage.update_project(pid, status="gagal", name="Unduhan gagal")
+        if guard["blocked"]:   # redirect/manifest/segmen menuju alamat internal: jangan ungkap alamatnya
+            raise RuntimeError("Link (atau pengalihannya) mengarah ke alamat jaringan internal/privat dan diblokir.") from None
+        if too_large or isinstance(exc, DownloadTooLarge):
+            raise RuntimeError(f"Video melebihi batas unduhan {URL_IMPORT_MAX_MB} MB.") from None
+
+    try:
+        with ydl_class(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except jobcontrol.JobCancelled:
+        raise
+    except Exception as exc:
+        refuse(exc)
         msg = str(exc).replace("ERROR: ", "")
         if "instagram" in url.lower() and ("login" in msg.lower() or "cookies" in msg.lower()):
             msg += "\n\nInstagram sering meminta login. Unduh videonya manual lalu unggah filenya."
         raise RuntimeError(msg) from exc
+    if too_large or guard["blocked"]:
+        refuse(None)
     files = sorted(folder.glob("source.*"), key=lambda p: p.stat().st_size, reverse=True)
     if not files:
         storage.update_project(pid, status="gagal", name="Unduhan gagal")

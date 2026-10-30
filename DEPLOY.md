@@ -278,4 +278,7 @@ docker compose exec web python -m app.manage list-users
 - API key AI hanya tersimpan di server dan tidak pernah dikirim ke browser.
 - Buka hanya port 80 & 443 di firewall server; database tidak terbuka ke internet.
 - Ambil video dari link (YouTube, dll.) bawaannya hanya untuk Admin & Admin Unit (`ALLOW_URL_IMPORT`).
+  Unduhan hanya boleh menuju IP publik (anti-SSRF, `docs/SECURITY_AUDIT_URL.md`). Sebagai lapisan tambahan,
+  batasi juga jaringan keluar container `worker` di tingkat host/firewall: blokir 169.254.169.254 (metadata
+  cloud), jaringan privat, dan port database/Redis lain.
   Pastikan konten yang diolah memang milik/izin organisasi.

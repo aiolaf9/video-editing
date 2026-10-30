@@ -46,11 +46,12 @@ def _streams(path):
 
 
 @pytest.mark.parametrize("name", ["single.mp4", "manifest.mpd"])
-def test_real_ytdlp_download(client, media_server, name):
+def test_real_ytdlp_download(client, media_server, trust_loopback, name):
+    """Server lokal = sumber internal tepercaya (impor admin). Jalur IP publik: tests/test_p54_ssrf.py."""
     from app import pipeline, storage
 
     pid = storage.create_project("uji yt-dlp")["id"]
-    source = pipeline.download(_Job(), pid, f"{media_server}/{name}")
+    source = pipeline.download(_Job(), pid, f"{media_server}/{name}", trusted=True)
     path = storage.project_dir(pid) / source
     assert path.suffix == ".mp4" and path.stat().st_size > 0
     assert _streams(path) == ["audio", "video"]       # DASH: video & audio terpisah digabung
