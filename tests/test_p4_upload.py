@@ -207,24 +207,23 @@ def test_corrupt_file_fails_verification_and_cleans_up(client):
 
 # ------------------------------------------------------------------ gangguan koneksi sungguhan
 
-@pytest.fixture(scope="module")
-def live_server(tmp_path_factory):
-    """Server uvicorn sungguhan: memutus socket di tengah potongan tidak bisa disimulasikan TestClient."""
-    data_dir = tmp_path_factory.mktemp("live")
+def _start_server(data_dir):
+    """Server uvicorn sungguhan (proses terpisah). Kredensial admin tes yang sama: di PostgreSQL server ini memakai
+    database sesi tes (admin sudah ada); di SQLite memakai database di data_dir."""
+    import httpx
+
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    # Kredensial admin tes yang sama: di PostgreSQL server ini memakai database sesi tes (admin sudah ada).
     env = dict(os.environ, VIDEO_APP_DATA=str(data_dir), EMBEDDED_WORKERS="0",
                DATABASE_URL=os.environ.get("DATABASE_URL", ""))
     if not env["DATABASE_URL"]:
         env.pop("DATABASE_URL")
     proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port)], cwd=REPO, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:  # server selalu dimatikan, juga bila persiapan di bawah gagal (proses yatim menahan koneksi DB)
-        import httpx
+    try:
         base = f"http://127.0.0.1:{port}"
-        for _ in range(100):
+        for _ in range(150):
             try:
                 if httpx.get(base + "/api/health", timeout=1).status_code == 200:
                     break
@@ -234,13 +233,32 @@ def live_server(tmp_path_factory):
         assert c.post("/api/auth/login", json={"email": os.environ["ADMIN_EMAIL"],
                                                "password": os.environ["ADMIN_PASSWORD"]}).status_code == 200
         c.pid = proc.pid
+        return proc, base, c
+    except BaseException:
+        _stop(proc)
+        raise
+
+
+def _stop(proc, kill=False):
+    if kill:
+        proc.kill()
+    else:
+        proc.terminate()
+    try:
+        proc.wait(10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(10)
+
+
+@pytest.fixture(scope="module")
+def live_server(tmp_path_factory):
+    """Server uvicorn sungguhan: memutus socket di tengah potongan tidak bisa disimulasikan TestClient."""
+    proc, base, c = _start_server(tmp_path_factory.mktemp("live"))
+    try:  # server selalu dimatikan (proses yatim menahan koneksi DB)
         yield base, c
     finally:
-        proc.terminate()
-        try:
-            proc.wait(10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        _stop(proc)
 
 
 def _cut_patch(base, cookie, path, offset, declared, payload, checksum=None):
@@ -499,3 +517,123 @@ def test_legacy_single_request_upload_still_works(client, sample_video, fake_ai)
         r = client.post("/api/projects", files={"file": ("lama.mp4", fh, "video/mp4")})
     assert r.status_code == 200
     wait_job(client, r.json()["job"]["id"])
+
+
+# ------------------------------------------------------------------ P4 final: restart & kedaluwarsa
+
+def test_web_server_restart_mid_upload(tmp_path, sample_video):
+    """Server web dimatikan paksa (SIGKILL) di tengah upload lalu dinyalakan ulang: upload lanjut dari posisi
+    terakhir yang tercatat, file utuh, job analisis tidak hilang setelah restart berikutnya."""
+    data = sample_video.read_bytes()
+    proc, base, c = _start_server(tmp_path)
+    try:
+        url = c.post("/api/uploads", headers={**H, "Upload-Length": str(len(data)),
+                                              "Upload-Metadata": meta("restart.mp4")}).headers["location"]
+        half = len(data) // 2
+        assert c.patch(url, content=data[:half], headers={**H, "Upload-Offset": "0",
+                       "Content-Type": "application/offset+octet-stream"}).status_code == 204
+    finally:
+        _stop(proc, kill=True)
+    proc, base, c = _start_server(tmp_path)
+    try:
+        assert int(c.head(url, headers=H).headers["upload-offset"]) == half
+        r = c.patch(url, content=data[half:], headers={**H, "Upload-Offset": str(half),
+                                                      "Content-Type": "application/offset+octet-stream"})
+        assert r.status_code == 204
+        st = c.get(url).json()
+        assert st["state"] == "selesai" and st["job"]
+        job_id = st["job"]["id"]
+    finally:
+        _stop(proc)
+    proc, base, c = _start_server(tmp_path)  # restart lagi: metadata & job tetap ada
+    try:
+        assert c.get(url).json()["state"] == "selesai"
+        # Job tidak hilang & tidak dibatalkan oleh restart. (Di PostgreSQL worker bawaan sesi tes memakai
+        # database yang sama dan bisa sudah mengambilnya, jadi statusnya tidak selalu "antre".)
+        job = c.get(f"/api/jobs/{job_id}")
+        assert job.status_code == 200 and job.json()["status"] != "batal"
+        proj = c.get(f"/api/projects/{st['project_id']}").json()
+        assert proj["source"] == "source.mp4" and proj["status"] != "mengunggah"  # metadata utuh setelah restart
+    finally:
+        _stop(proc)
+
+
+def test_expired_session_cannot_be_reactivated(unit_users, video_bytes):
+    """Lewat batas waktu tetapi pembersihan belum berjalan: PATCH/HEAD ditolak, tidak memperpanjang sesi."""
+    (ca, ua) = unit_users["a"]
+    url = create(ca, len(video_bytes)).headers["location"]
+    uid = url.rsplit("/", 1)[1]
+    row = session(uid)
+    assert patch(ca, url, 0, video_bytes[:100_000]).status_code == 204
+    with db.engine().begin() as c:
+        c.execute(update(db.uploads).where(db.uploads.c.id == uid).values(expires_at=time.time() - 1))
+    r = patch(ca, url, 100_000, video_bytes[100_000:200_000])
+    assert r.status_code == 410
+    assert session(uid)["state"] == "habis" and session(uid)["offset"] == 100_000
+    assert ca.head(url, headers=H).status_code == 410
+    assert uid not in {u["id"] for u in ca.get("/api/uploads").json()["uploads"]}
+    assert leases(row["project_id"]) == [] and lifecycle.unit_usage(ua["id"]) == 0
+    assert not (PROJECTS_DIR / row["project_id"]).exists()
+    # Tidak ada jalan menghidupkannya lagi, termasuk mengubah offset di header.
+    assert patch(ca, url, 0, video_bytes[:100_000]).status_code == 410
+
+
+def test_lost_quota_lease_stops_upload(unit_users, video_bytes):
+    """Reservasi kuota sudah lepas (mis. sweep lease): upload tidak boleh lanjut tanpa reservasi."""
+    (ca, ua) = unit_users["a"]
+    url = create(ca, len(video_bytes)).headers["location"]
+    uid = url.rsplit("/", 1)[1]
+    assert patch(ca, url, 0, video_bytes[:100_000]).status_code == 204
+    with db.engine().begin() as c:
+        c.execute(db.media_leases.delete().where(db.media_leases.c.id == session(uid)["lease_id"]))
+    assert patch(ca, url, 100_000, video_bytes[100_000:200_000]).status_code == 410
+    assert session(uid)["state"] == "habis"
+
+
+def test_crash_during_finalize_is_recovered(client, video_bytes, fake_ai):
+    """Proses mati setelah file di-rename tetapi sebelum status dicatat: status upload dilanjutkan saat dibaca."""
+    url = create(client, len(video_bytes)).headers["location"]
+    uid = url.rsplit("/", 1)[1]
+    off = 0
+    while off < len(video_bytes) - 1000:
+        off = int(patch(client, url, off, video_bytes[off:min(len(video_bytes) - 1000, off + 200_000)])
+                  .headers["upload-offset"])
+    row = session(uid)
+    # Simulasikan kematian proses di tengah finalisasi: data lengkap, sudah di-rename, status masih "final".
+    with uploads.part_path(row).open("ab") as fh:
+        fh.write(video_bytes[-1000:])
+    os.replace(uploads.part_path(row), PROJECTS_DIR / row["project_id"] / "source.mp4")
+    with db.engine().begin() as c:
+        c.execute(update(db.uploads).where(db.uploads.c.id == uid).values(
+            offset=len(video_bytes), state="final", updated=time.time() - uploads.FINALIZE_STALE - 5))
+    st = client.get(url).json()
+    assert st["state"] == "selesai" and st["job"]
+    assert (PROJECTS_DIR / st["project_id"] / "source.mp4").read_bytes() == video_bytes
+    assert leases(st["project_id"]) == []
+    assert client.get(url).json()["job"]["id"] == st["job"]["id"]  # dibaca lagi: tidak ada analisis ganda
+    analyses = [j for j in jobs.for_project(st["project_id"]) if j["task"] == "analyze"]
+    assert len(analyses) == 1
+    wait_job(client, st["job"]["id"])
+
+
+def test_transient_error_during_finalize_keeps_file(client, video_bytes, monkeypatch, fake_ai):
+    url = create(client, len(video_bytes)).headers["location"]
+    uid = url.rsplit("/", 1)[1]
+    calls = {"n": 0}
+    real = lifecycle.commit_upload
+
+    def flaky(lid, pid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database sedang restart")
+        return real(lid, pid)
+
+    monkeypatch.setattr(lifecycle, "commit_upload", flaky)
+    off = send_all(client, url, video_bytes[:-1], step=200_000)
+    r = patch(client, url, off, video_bytes[-1:])
+    assert r.status_code == 503 and "tidak hilang" in r.json()["detail"]
+    row = session(uid)
+    assert row["state"] == "aktif" and (PROJECTS_DIR / row["project_id"] / "source.mp4").exists()
+    st = client.get(url).json()  # dicoba lagi otomatis saat status dibaca (UI melakukannya)
+    assert st["state"] == "selesai"
+    wait_job(client, st["job"]["id"])

@@ -748,8 +748,14 @@ class Upload {
           throw e;
         }
       }
-      const { res } = await this.request("GET");
-      const info = await res.json();
+      let info = null;
+      for (let i = 0; i < 30; i++) {  // finalisasi bisa sedang dilanjutkan server (mis. setelah restart)
+        const { res } = await this.request("GET");
+        info = await res.json();
+        if (info.state !== "final" && !(info.state === "aktif" && info.offset === info.size)) break;
+        this.set("verifikasi", "Memverifikasi file di server...");
+        await new Promise((r) => setTimeout(r, 2000));
+      }
       if (info.state !== "selesai") throw new UploadFailure(422, info.error || "Upload belum terverifikasi.");
       localStorage.removeItem(uploadKey(this.file));
       this.result = info;

@@ -42,7 +42,9 @@ TUS_VERSION = "1.0.0"
 TUS_EXTENSIONS = "creation,termination,checksum"
 CHECKSUMS = {"sha1": hashlib.sha1, "sha256": hashlib.sha256, "md5": hashlib.md5}
 # Status sesi (kolom VARCHAR(10)). "habis" = tidak dilanjutkan sampai batas waktu resume.
-STATES = ("aktif", "selesai", "batal", "gagal", "habis")
+# "final" = file lengkap sedang diverifikasi/dijadikan sumber (diklaim atomik; dilanjutkan bila proses mati).
+STATES = ("aktif", "final", "selesai", "batal", "gagal", "habis")
+FINALIZE_STALE = 300.0  # "final" lebih lama dari ini tanpa kemajuan = proses yang memfinalisasi sudah mati
 RESUME_SECONDS = UPLOAD_RESUME_HOURS * 3600
 DISK_CHECK_EVERY = 64 * 1024 * 1024
 
@@ -100,7 +102,8 @@ def view(row: dict) -> dict:
 
 def list_active(user: dict) -> list[dict]:
     with db.engine().connect() as c:
-        rows = c.execute(select(db.uploads).where(db.uploads.c.user_id == user["id"], db.uploads.c.state == "aktif")
+        rows = c.execute(select(db.uploads).where(db.uploads.c.user_id == user["id"], db.uploads.c.state == "aktif",
+                                                  db.uploads.c.expires_at > time.time())
                          .order_by(db.uploads.c.created)).all()
     return [view(db.row(r)) for r in rows]
 
@@ -145,11 +148,33 @@ def create(user: dict, unit_id: Optional[str], size: int, metadata: dict, allowe
         return _row(c, uid)
 
 
+def _lease_alive(c, lease_id: Optional[str], now: float) -> bool:
+    if not lease_id:
+        return False
+    ml = db.media_leases.c
+    return c.execute(select(ml.id).where(ml.id == lease_id, ml.expires_at > now)).first() is not None
+
+
+def check_alive(row: dict, now: Optional[float] = None) -> dict:
+    """Sesi aktif yang sudah lewat batas waktu, atau yang reservasi kuotanya sudah lepas, tidak boleh dipakai
+    lagi (walau pembersihan belum sempat berjalan): langsung dinyatakan habis -> 410."""
+    now = now or time.time()
+    if row["state"] != "aktif":
+        return row
+    with db.engine().connect() as c:
+        alive = row["expires_at"] > now and _lease_alive(c, row.get("lease_id"), now)
+    if not alive:
+        abort(row, "habis", "Upload tidak dilanjutkan sampai batas waktu.")
+        raise UploadError(410, "Upload ini sudah kedaluwarsa. Unggah ulang file dari awal.")
+    return row
+
+
 def abort(row: dict, state: str = "batal", error: Optional[str] = None) -> None:
     """Hentikan sesi: file setengah jadi, proyek "mengunggah", dan reservasi kuota dilepas."""
     now = time.time()
     with db.engine().begin() as c:
-        changed = c.execute(update(db.uploads).where(db.uploads.c.id == row["id"], db.uploads.c.state == "aktif")
+        changed = c.execute(update(db.uploads).where(db.uploads.c.id == row["id"],
+                                                     db.uploads.c.state.in_(("aktif", "final")))
                             .values(state=state, error=error, updated=now)).rowcount
     if not changed:
         return
@@ -215,6 +240,7 @@ class ChunkWriter:
                 fresh = _row(c, row["id"])  # baca ulang setelah memegang kunci
             if fresh["state"] != "aktif":
                 raise UploadError(410, "Upload ini sudah tidak aktif.", fresh["offset"])
+            check_alive(fresh)  # lewat batas waktu / lease lepas: tidak bisa diaktifkan lagi
             if offset != fresh["offset"]:
                 raise UploadError(409, "Posisi upload tidak cocok.", fresh["offset"])
             # Database = sumber kebenaran: sisa tulisan dari proses yang mati sebelum mencatat offset dibuang.
@@ -277,21 +303,44 @@ class ChunkWriter:
             self.fh.close()
 
 
+def _claim_finalize(row: dict, now: float) -> bool:
+    """Hanya satu proses yang memfinalisasi. "final" yang macet (proses mati) boleh diambil alih."""
+    u = db.uploads.c
+    with db.engine().begin() as c:
+        return bool(c.execute(update(db.uploads).where(
+            u.id == row["id"], u.offset == u.size,
+            ((u.state == "aktif") | ((u.state == "final") & (u.updated < now - FINALIZE_STALE)))).values(
+            state="final", updated=now)).rowcount)
+
+
 def finalize(row: dict, on_complete: Optional[Callable[[dict], None]] = None) -> dict:
-    """File lengkap: verifikasi, jadikan video sumber proyek, ganti reservasi dengan ukuran aktual."""
+    """File lengkap: verifikasi, jadikan video sumber proyek, ganti reservasi dengan ukuran aktual.
+
+    Idempoten: bila proses mati di tengah jalan (mis. setelah rename), panggilan berikutnya (GET/HEAD status
+    upload) melanjutkan dari langkah yang belum selesai. Kesalahan sementara (bukan file rusak) TIDAK menghapus
+    file yang sudah lengkap: sesi kembali "aktif" dan finalisasi dicoba lagi.
+    """
+    now = time.time()
+    if not _claim_finalize(row, now):
+        with db.engine().connect() as c:
+            return _row(c, row["id"])  # sudah/sedang difinalisasi proses lain
     part = part_path(row)
+    source = f"source{row['ext']}"
+    dst = PROJECTS_DIR / row["project_id"] / source
     try:
-        actual = part.stat().st_size
-        if actual != row["size"]:
-            raise UploadError(422, f"Ukuran file tidak cocok ({actual} dari {row['size']} byte).")
-        try:
-            info = media.probe(part)
-        except media.MediaError:
-            raise UploadError(422, "File bukan video yang bisa dibaca. Periksa file lalu unggah ulang.")
-        if not info.get("width"):
-            raise UploadError(422, "File tidak berisi gambar video.")
-        source = f"source{row['ext']}"
-        os.replace(part, PROJECTS_DIR / row["project_id"] / source)  # rename, bukan salin
+        if part.exists():  # langkah verifikasi & rename belum terjadi
+            actual = part.stat().st_size
+            if actual != row["size"]:
+                raise UploadError(422, f"Ukuran file tidak cocok ({actual} dari {row['size']} byte).")
+            try:
+                info = media.probe(part)
+            except media.MediaError:
+                raise UploadError(422, "File bukan video yang bisa dibaca. Periksa file lalu unggah ulang.")
+            if not info.get("width"):
+                raise UploadError(422, "File tidak berisi gambar video.")
+            os.replace(part, dst)  # rename, bukan salin
+        elif not (dst.exists() and dst.stat().st_size == row["size"]):
+            raise UploadError(422, "File upload tidak ditemukan di server. Unggah ulang.")
         lifecycle.commit_upload(row["lease_id"], row["project_id"])  # reservasi -> ukuran aktual (satu transaksi)
         lifecycle.mark_uploaded(row["project_id"])
         storage.update_project(row["project_id"], source=source, status="antre")  # terakhir: baru "jadi"
@@ -299,22 +348,28 @@ def finalize(row: dict, on_complete: Optional[Callable[[dict], None]] = None) ->
         abort(row, "gagal", str(exc))
         raise
     except Exception as exc:
-        log.exception("Finalisasi upload %s gagal", row["id"])
-        abort(row, "gagal", "Gagal menyimpan file di server.")
-        raise UploadError(500, "Gagal menyimpan file di server. Coba unggah ulang.") from exc
-    now = time.time()
+        log.exception("Finalisasi upload %s gagal sementara", row["id"])
+        with db.engine().begin() as c:  # data tetap aman; dicoba lagi pada permintaan berikutnya
+            c.execute(update(db.uploads).where(db.uploads.c.id == row["id"], db.uploads.c.state == "final")
+                      .values(state="aktif", updated=time.time()))
+        raise UploadError(503, "Server sedang sibuk menyimpan file. Coba lagi sebentar; file Anda tidak hilang.") from exc
     meta = json.loads(row.get("meta") or "{}")
-    with db.engine().begin() as c:
-        c.execute(update(db.uploads).where(db.uploads.c.id == row["id"]).values(
-            state="selesai", updated=now, lease_id=None))
-    row = dict(row, state="selesai", lease_id=None)
     if on_complete:
         try:
             meta["job"] = on_complete(row)
         except Exception as exc:  # mis. antrean penuh: file tetap aman, analisis bisa dimulai ulang
             meta["job_error"] = str(exc)
-        with db.engine().begin() as c:
-            c.execute(update(db.uploads).where(db.uploads.c.id == row["id"]).values(meta=json.dumps(meta)))
-        row["meta"] = json.dumps(meta)
+    with db.engine().begin() as c:
+        c.execute(update(db.uploads).where(db.uploads.c.id == row["id"]).values(
+            state="selesai", updated=time.time(), lease_id=None, meta=json.dumps(meta)))
     log.info("Upload %s selesai (%d byte) -> proyek %s", row["id"], row["size"], row["project_id"])
+    return dict(row, state="selesai", lease_id=None, meta=json.dumps(meta))
+
+
+def recover(row: dict, on_complete: Optional[Callable[[dict], None]] = None) -> dict:
+    """Dipanggil saat status upload dibaca: lanjutkan finalisasi yang terputus (restart/crash)."""
+    now = time.time()
+    if row["offset"] == row["size"] and (row["state"] == "aktif" or (
+            row["state"] == "final" and row["updated"] < now - FINALIZE_STALE)):
+        return finalize(row, on_complete)
     return row

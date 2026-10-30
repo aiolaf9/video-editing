@@ -527,7 +527,7 @@ def upload_create(request: Request, user: dict = CurrentUser):
 
 @app.head("/api/uploads/{uid}")
 def upload_head(uid: str, user: dict = CurrentUser):
-    row = uploads.get(uid, user)
+    row = uploads.recover(uploads.check_alive(uploads.get(uid, user)), lambda r: _start_analysis(r, user))
     if row["state"] in ("batal", "habis", "gagal"):
         raise uploads.UploadError(410, row["error"] or "Upload ini sudah tidak aktif.")
     return Response(status_code=200, headers={**TUS, "Upload-Offset": str(row["offset"]),
@@ -536,10 +536,18 @@ def upload_head(uid: str, user: dict = CurrentUser):
 
 @app.get("/api/uploads/{uid}")
 def upload_status(uid: str, user: dict = CurrentUser):
-    return uploads.view(uploads.get(uid, user))
+    row = uploads.get(uid, user)
+    try:
+        row = uploads.recover(uploads.check_alive(row), lambda r: _start_analysis(r, user))
+    except uploads.UploadError:
+        row = uploads.get(uid, user)  # status terbaru (gagal/habis) tetap dilaporkan sebagai data
+    return uploads.view(row)
 
 
 def _start_analysis(row: dict, user: dict) -> dict:
+    existing = [j for j in jobs.for_project(row["project_id"]) if j["task"] == "analyze"]
+    if existing:  # finalisasi yang dilanjutkan setelah crash: jangan menggandakan analisis
+        return jobs.view(existing[-1])
     meta = storage.load_project(row["project_id"])
     language = json.loads(row.get("meta") or "{}").get("language")
     return _queue_job("analyze", "analisis", meta, user, {"language": language}, "Analisis video")
