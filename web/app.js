@@ -153,7 +153,8 @@ async function refreshProjects() {
   } catch (e) { return; }
   const list = $("projectList");
   list.innerHTML = state.projects.map((p) => `
-    <li data-id="${p.id}" class="${state.project && state.project.id === p.id ? "active" : ""}">
+    <li data-id="${p.id}" class="${state.project && state.project.id === p.id ? "active" : ""}${p.thumb ? " has-thumb" : ""}">
+      ${p.thumb ? `<img class="thumb" src="/api/projects/${p.id}/thumb" alt="" loading="lazy">` : ""}
       <span class="name">${esc(p.name)}</span>
       <span class="meta">${esc(p.status)}${p.duration ? " · " + fmt(p.duration) : ""}${p.render_count ? " · " + p.render_count + " klip" : ""}${p.owner_name ? " · " + esc(p.owner_name) : ""}${state.me && state.me.role === "admin" && p.unit_name ? " · " + esc(p.unit_name) : ""}${mediaListLabel(p.media)}</span>
     </li>`).join("") || '<li class="muted">Belum ada proyek.</li>';
@@ -187,6 +188,10 @@ async function refreshProjectData() {
   renderMusicOptions();
   renderRenders();
   if (mediaGone(p.media)) return;  // media sudah dihapus: jangan memuat preview/transkrip
+  if (p.preview_ready && p.status !== "siap" && !$("player").src) {
+    $("player").src = `/api/projects/${p.id}/preview`;  // preview bisa diputar sambil transkrip dibuat
+    toast("Preview siap diputar. Transkrip & klip menyusul.");
+  }
   if (p.status === "siap") {
     if (!$("player").src) {
       $("player").src = `/api/projects/${p.id}/preview`;
@@ -595,27 +600,300 @@ function switchTab(id) {
   document.querySelectorAll(".tab-panel").forEach((p) => (p.hidden = p.id !== id));
 }
 
-// ------------------------------------------------------------ impor
-async function uploadFile(file) {
-  const form = new FormData();
-  form.append("file", file);
-  const lang = $("langSelect").value;
-  if (lang) form.append("language", lang);
-  toast(`Mengunggah ${file.name}...`);
+// ------------------------------------------------------------ upload bertahap (protokol tus 1.0.0)
+// File dikirim per potongan. Bila koneksi putus, browser di-refresh, atau upload dijeda, upload melanjutkan
+// dari byte terakhir yang sudah DIKONFIRMASI server (bukan dari awal). Progres & kecepatan dihitung dari
+// byte yang sudah diterima server; "selesai" baru tampil setelah server memverifikasi file.
+const MB = 1024 * 1024;
+const uploadCfg = { chunkMb: 8, maxMb: 4096, resumeHours: 12 };
+const uploads = [];          // Upload yang sedang/baru saja berjalan di tab ini
+let serverUploads = [];      // upload belum selesai dari sesi sebelumnya (setelah refresh / tab lain)
+const UPLOAD_PARALLEL = 2;
+
+const b64 = (s) => btoa(unescape(encodeURIComponent(s)));
+const fmtSpeed = (bps) => (bps >= MB ? (bps / MB).toFixed(1) + " MB/dtk" : Math.round(bps / 1024) + " KB/dtk");
+const fmtEta = (sec) => (sec < 60 ? `${Math.max(1, Math.round(sec))} dtk` : sec < 3600 ? `${Math.round(sec / 60)} mnt` : `${(sec / 3600).toFixed(1)} jam`);
+const uploadKey = (file) => `ve-upload:${state.me ? state.me.id : ""}:${file.name}:${file.size}:${file.lastModified}`;
+
+async function sha256b64(buf) {
+  if (!(window.crypto && crypto.subtle)) return null;  // http non-localhost: tanpa checksum (server tetap memeriksa ukuran & isi)
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+  let bin = "";
+  for (let i = 0; i < d.length; i++) bin += String.fromCharCode(d[i]);
+  return btoa(bin);
+}
+
+class UploadFailure extends Error {
+  constructor(status, message, offset) { super(message); this.status = status; this.offset = offset; }
+}
+
+class Upload {
+  constructor(file, url = null) {
+    this.file = file; this.size = file.size; this.url = url; this.offset = 0; this.inflight = 0;
+    this.state = "menunggu"; this.note = ""; this.retries = 0; this.paused = false; this.running = false;
+    // Mulai kecil (progres cepat terlihat), lalu menyesuaikan kecepatan koneksi (lihat run()).
+    this.chunk = Math.min(uploadCfg.chunkMb, 2) * MB; this.samples = []; this.xhr = null; this.result = null;
+    this.uid = Math.random().toString(36).slice(2);
+  }
+
+  get speed() {  // byte/dtk dari byte yang sudah dikonfirmasi server, jendela ±8 dtk
+    const s = this.samples;
+    if (s.length < 2) return 0;
+    const [t0, o0] = s[0], [t1, o1] = s[s.length - 1];
+    return t1 > t0 ? (o1 - o0) / ((t1 - t0) / 1000) : 0;
+  }
+
+  set(stateName, note = "") { this.state = stateName; this.note = note; renderUploads(); }
+
+  async request(method, extra = {}) {
+    let res;
+    try {
+      res = await fetch(this.url || "/api/uploads", { method, headers: { "Tus-Resumable": "1.0.0", ...extra } });
+    } catch {
+      throw new UploadFailure(0, "Koneksi terputus.");  // jaringan belum pulih: dicoba lagi otomatis
+    }
+    let detail = "";
+    try { detail = (await res.clone().json()).detail || ""; } catch { /* tanpa isi */ }
+    return { res, detail };
+  }
+
+  async open() {
+    const key = uploadKey(this.file);
+    if (!this.url) this.url = localStorage.getItem(key);
+    if (this.url) {
+      const { res } = await this.request("HEAD");
+      if (res.ok) { this.offset = +res.headers.get("Upload-Offset"); return; }
+      localStorage.removeItem(key);  // sesi lama sudah tidak ada: mulai baru
+      this.url = null;
+    }
+    const lang = $("langSelect").value;
+    const meta = `filename ${b64(this.file.name)}` + (lang ? `,language ${b64(lang)}` : "");
+    const { res, detail } = await this.request("POST", { "Upload-Length": String(this.size), "Upload-Metadata": meta });
+    if (res.status !== 201) throw new UploadFailure(res.status, detail || `Upload ditolak (${res.status}).`);
+    this.url = res.headers.get("Location");
+    this.offset = 0;
+    localStorage.setItem(key, this.url);
+  }
+
+  patch(buf, checksum) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      this.xhr = xhr;
+      xhr.open("PATCH", this.url);
+      xhr.timeout = 120000;
+      xhr.setRequestHeader("Tus-Resumable", "1.0.0");
+      xhr.setRequestHeader("Upload-Offset", String(this.offset));
+      xhr.setRequestHeader("Content-Type", "application/offset+octet-stream");
+      if (checksum) xhr.setRequestHeader("Upload-Checksum", `sha256 ${checksum}`);
+      xhr.upload.onprogress = (e) => {
+        this.inflight = e.loaded;
+        if (this.offset + e.loaded >= this.size) this.set("verifikasi", "Memverifikasi file di server...");
+        else renderUploads();
+      };
+      xhr.onload = () => {
+        this.inflight = 0;
+        if (xhr.status === 204) return resolve(+xhr.getResponseHeader("Upload-Offset"));
+        let detail = "";
+        try { detail = JSON.parse(xhr.responseText).detail; } catch { /* kosong */ }
+        reject(new UploadFailure(xhr.status, detail || `Error ${xhr.status}`, +(xhr.getResponseHeader("Upload-Offset") || -1)));
+      };
+      xhr.onerror = xhr.ontimeout = () => { this.inflight = 0; reject(new UploadFailure(0, "Koneksi terputus.")); };
+      xhr.onabort = () => { this.inflight = 0; reject(new UploadFailure(-1, "Dijeda.")); };
+      xhr.send(buf);
+    });
+  }
+
+  async run() {
+    if (this.running) return;
+    this.running = true;
+    try {
+      if (!this.url || this.state === "menunggu" || this.state === "gagal") {
+        this.set("menyiapkan", "Menyiapkan upload...");
+        await this.open();
+      }
+      while (this.offset < this.size) {
+        if (this.paused) return this.set("dijeda", "Dijeda. Klik Lanjutkan untuk meneruskan.");
+        if (!navigator.onLine) return this.set("terputus", "Koneksi internet terputus. Upload dilanjutkan otomatis saat online.");
+        this.set("mengunggah");
+        const end = Math.min(this.size, this.offset + this.chunk);
+        const buf = await this.file.slice(this.offset, end).arrayBuffer();
+        const checksum = await sha256b64(buf);
+        const t0 = Date.now();
+        try {
+          this.offset = await this.patch(buf, checksum);
+          this.retries = 0;
+          const dt = (Date.now() - t0) / 1000;  // ukuran potongan menyesuaikan kecepatan (target ±5 dtk)
+          if (dt < 2 && this.chunk < 32 * MB) this.chunk *= 2;
+          else if (dt > 10 && this.chunk > MB) this.chunk = Math.max(MB, this.chunk / 2);
+          this.samples.push([Date.now(), this.offset]);
+          while (this.samples.length > 2 && Date.now() - this.samples[0][0] > 8000) this.samples.shift();
+        } catch (e) {
+          if (e.status === -1) continue;                         // dijeda/dibatalkan: dicek di awal loop
+          if (e.status === 409 || e.status === 423) {             // posisi beda (mis. tab lain): ikuti server
+            if (e.offset >= 0) this.offset = e.offset;
+            else { const { res } = await this.request("HEAD"); this.offset = +res.headers.get("Upload-Offset"); }
+            if (e.status === 423) await new Promise((r) => setTimeout(r, 2000));
+            continue;
+          }
+          if (e.status === 460) continue;                        // potongan rusak di jalan: kirim ulang
+          if (e.status === 0 || e.status >= 500 && e.status !== 507) {
+            this.retries += 1;
+            if (this.retries > 8) return this.set("terputus", "Koneksi bermasalah. Klik Coba lagi untuk melanjutkan dari bagian terakhir.");
+            const wait = Math.min(30, 2 ** this.retries);
+            this.set("terputus", `Koneksi terputus. Mencoba lagi dalam ${wait} dtk (melanjutkan dari ${fmtSize(this.offset)})...`);
+            await new Promise((r) => setTimeout(r, wait * 1000));
+            if (this.offset >= 0) { const { res } = await this.request("HEAD"); if (res.ok) this.offset = +res.headers.get("Upload-Offset"); }
+            continue;
+          }
+          throw e;
+        }
+      }
+      const { res } = await this.request("GET");
+      const info = await res.json();
+      if (info.state !== "selesai") throw new UploadFailure(422, info.error || "Upload belum terverifikasi.");
+      localStorage.removeItem(uploadKey(this.file));
+      this.result = info;
+      this.set("selesai", info.job ? "Selesai & terverifikasi. Membuat preview..." : "Selesai & terverifikasi.");
+      await refreshProjects();
+      if (!state.project) await openProject(info.project_id);
+    } catch (e) {
+      if (e.status === 0 && !this.paused) {  // gangguan jaringan saat membuka/menutup sesi: coba lagi otomatis
+        this.retries += 1;
+        if (this.retries <= 8) {
+          const wait = Math.min(30, 2 ** this.retries);
+          this.set("terputus", `Koneksi terputus. Mencoba lagi dalam ${wait} dtk...`);
+          setTimeout(() => { if (this.state === "terputus" && !this.paused) this.resume(); }, wait * 1000);
+        } else this.set("terputus", "Koneksi bermasalah. Klik Coba lagi untuk melanjutkan dari bagian terakhir.");
+        return;
+      }
+      const full = e.status === 507;
+      if (e.status === 410 || e.status === 404) localStorage.removeItem(uploadKey(this.file));
+      this.set("gagal", full ? `Penyimpanan server tidak cukup: ${e.message}` : e.message);
+    } finally {
+      this.running = false;
+      pumpUploads();
+    }
+  }
+
+  pause() { this.paused = true; if (this.xhr) this.xhr.abort(); this.set("dijeda", "Dijeda."); }
+  resume() { this.paused = false; if (this.state !== "terputus") this.retries = 0; this.set("menunggu"); pumpUploads(); }
+
+  async cancel() {
+    this.paused = true;
+    if (this.xhr) this.xhr.abort();
+    if (this.url) { try { await this.request("DELETE"); } catch { /* sesi akan kedaluwarsa sendiri */ } }
+    localStorage.removeItem(uploadKey(this.file));
+    uploads.splice(uploads.indexOf(this), 1);
+    renderUploads();
+    refreshProjects();
+  }
+}
+
+function pumpUploads() {
+  const running = uploads.filter((u) => u.running).length;
+  uploads.filter((u) => u.state === "menunggu" && !u.running && !u.paused).slice(0, Math.max(0, UPLOAD_PARALLEL - running))
+    .forEach((u) => u.run());
+}
+
+function uploadFiles(files) {
+  for (const file of files) {
+    if (uploadCfg.maxMb && file.size > uploadCfg.maxMb * MB) { toast(`${file.name}: terlalu besar (maks ${uploadCfg.maxMb} MB).`, true); continue; }
+    const pending = serverUploads.find((s) => s.filename === file.name && s.size === file.size);
+    uploads.push(new Upload(file, pending ? `/api/uploads/${pending.id}` : null));
+    if (pending) serverUploads = serverUploads.filter((s) => s !== pending);
+  }
+  renderUploads();
+  pumpUploads();
+}
+
+function renderUploads() {
+  const label = { menunggu: "Menunggu giliran", menyiapkan: "Menyiapkan", mengunggah: "Mengunggah", verifikasi: "Memverifikasi",
+    dijeda: "Dijeda", terputus: "Terputus", selesai: "Selesai", gagal: "Gagal" };
+  const rows = uploads.map((u) => {
+    const done = u.offset / u.size * 100, fly = Math.min(100 - done, u.inflight / u.size * 100);
+    const sp = u.speed;
+    const sending = u.inflight > 0 && u.state === "mengunggah" ? ` (+${fmtSize(u.inflight)} sedang dikirim)` : "";
+    const detail = u.state === "mengunggah" && sp > 0
+      ? `${fmtSize(u.offset)} / ${fmtSize(u.size)} diterima server${sending} · ${fmtSpeed(sp)} · sisa ±${fmtEta((u.size - u.offset) / sp)}`
+      : `${fmtSize(u.offset)} / ${fmtSize(u.size)} diterima server${sending}`;
+    const btn = (act, text, cls = "ghost") => `<button class="${cls}" data-up="${u.uid}" data-act="${act}">${text}</button>`;
+    const actions = u.state === "selesai" ? (u.result ? btn("open", "Buka proyek") : "")
+      : u.state === "gagal" ? btn("retry", "Coba lagi") + btn("remove", "Tutup")
+      : u.state === "terputus" ? btn("retry", "Coba lagi") + btn("cancel", "Batalkan", "ghost danger")
+      : u.paused ? btn("resume", "Lanjutkan") + btn("cancel", "Batalkan", "ghost danger")
+      : u.state === "verifikasi" ? "" : btn("pause", "Jeda") + btn("cancel", "Batalkan", "ghost danger");
+    return `<li class="upload-item ${u.state}">
+      <div class="upload-name" title="${esc(u.file.name)}">${esc(u.file.name)}</div>
+      <div class="bar"><div style="width:${done.toFixed(2)}%"></div><div class="inflight" style="left:${done.toFixed(2)}%;width:${fly.toFixed(2)}%"></div></div>
+      <div class="upload-meta"><b>${label[u.state] || u.state}</b> · ${Math.floor(done)}% · ${detail}</div>
+      ${u.note ? `<div class="upload-note">${esc(u.note)}</div>` : ""}
+      <div class="row">${actions}</div></li>`;
+  });
+  const stale = serverUploads.map((s) => `<li class="upload-item terputus">
+      <div class="upload-name">${esc(s.filename)}</div>
+      <div class="bar"><div style="width:${(s.offset / s.size * 100).toFixed(2)}%"></div></div>
+      <div class="upload-meta"><b>Belum selesai</b> · ${Math.floor(s.offset / s.size * 100)}% · ${fmtSize(s.offset)} / ${fmtSize(s.size)}</div>
+      <div class="upload-note">Pilih file yang sama untuk melanjutkan dari bagian terakhir (berlaku sampai ${fmtDateTime(s.expires_at)}).</div>
+      <div class="row"><button class="ghost" data-stale="${s.id}" data-act="pick">Pilih file</button>
+        <button class="ghost danger" data-stale="${s.id}" data-act="drop">Batalkan</button></div></li>`);
+  $("uploadList").innerHTML = rows.concat(stale).join("");
+}
+
+async function loadServerUploads() {
   try {
-    const res = await api("/api/projects", { method: "POST", body: form });
-    await refreshProjects();
-    await openProject(res.project.id);
-  } catch (e) { toast(e.message, true); }
+    const data = await api("/api/uploads");
+    Object.assign(uploadCfg, { chunkMb: data.chunk_mb, maxMb: data.max_mb, resumeHours: data.resume_hours });
+    serverUploads = data.uploads.filter((s) => !uploads.some((u) => u.url && u.url.endsWith(s.id)));
+    renderUploads();
+  } catch { /* abaikan */ }
+}
+
+function bindUploads() {
+  let pickFor = null;
+  $("uploadList").addEventListener("click", async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.stale) {
+      const s = serverUploads.find((x) => x.id === b.dataset.stale);
+      if (b.dataset.act === "pick") { pickFor = s; $("resumeInput").click(); }
+      if (b.dataset.act === "drop") {
+        await fetch(`/api/uploads/${s.id}`, { method: "DELETE", headers: { "Tus-Resumable": "1.0.0" } });
+        serverUploads = serverUploads.filter((x) => x !== s);
+        renderUploads();
+        refreshProjects();
+      }
+      return;
+    }
+    const u = uploads.find((x) => x.uid === b.dataset.up);
+    if (!u) return;
+    ({ pause: () => u.pause(), resume: () => u.resume(), retry: () => u.resume(), cancel: () => u.cancel(),
+       remove: () => { uploads.splice(uploads.indexOf(u), 1); renderUploads(); },
+       open: () => openProject(u.result.project_id) }[b.dataset.act] || (() => {}))();
+  });
+  $("resumeInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file || !pickFor) return;
+    if (file.name !== pickFor.filename || file.size !== pickFor.size) {
+      toast(`Itu bukan file yang sama (butuh ${pickFor.filename}, ${fmtSize(pickFor.size)}).`, true);
+      return;
+    }
+    uploadFiles([file]);
+  });
+  window.addEventListener("online", () => uploads.filter((u) => u.state === "terputus").forEach((u) => u.resume()));
+  window.addEventListener("offline", () => uploads.filter((u) => u.running).forEach((u) => u.note = "Koneksi internet terputus..."));
+  window.addEventListener("beforeunload", (e) => {
+    if (uploads.some((u) => u.running)) { e.preventDefault(); e.returnValue = ""; }  // upload tetap bisa dilanjutkan nanti
+  });
 }
 
 // ------------------------------------------------------------ event
 function bind() {
   const dz = $("dropzone");
-  $("fileInput").addEventListener("change", (e) => { if (e.target.files[0]) uploadFile(e.target.files[0]); e.target.value = ""; });
+  $("fileInput").addEventListener("change", (e) => { uploadFiles([...e.target.files]); e.target.value = ""; });
   ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); }));
   ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("over"); }));
-  dz.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) uploadFile(f); });
+  dz.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
 
   $("urlForm").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -966,6 +1244,7 @@ async function checkHealth() {
 
 bind();
 bindPlan();
+bindUploads();
 setInterval(() => { if (state.project) renderMedia(); }, 60_000);
 loadSettings();
 $("logoutBtn").addEventListener("click", async () => {
@@ -976,4 +1255,5 @@ loadMe().then(() => {
   loadUnitGuidebook();
   checkHealth();
   refreshProjects();
+  loadServerUploads();
 }).catch(() => { /* diarahkan ke halaman login */ });

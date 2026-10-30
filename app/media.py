@@ -1,4 +1,5 @@
 """Pembungkus FFmpeg/FFprobe: probe, preview, energi audio, dan eksekusi dengan progress."""
+import hashlib
 import json
 import os
 import subprocess
@@ -11,7 +12,9 @@ from typing import Callable, Optional
 import numpy as np
 
 from . import jobcontrol
-from .config import FFMPEG, FFMPEG_STALL_TIMEOUT, FFPROBE, PROBE_TIMEOUT
+from .config import (FFMPEG, FFMPEG_STALL_TIMEOUT, FFPROBE, PREVIEW_COPY_MAX_HEIGHT, PREVIEW_COPY_MAX_KBPS,
+                     PREVIEW_HEIGHT, PREVIEW_HWACCEL, PREVIEW_LONG_HEIGHT, PREVIEW_LONG_MINUTES, PREVIEW_MAX_KBPS,
+                     PROBE_TIMEOUT)
 
 ProgressFn = Optional[Callable[[float], None]]
 
@@ -23,12 +26,23 @@ class MediaError(RuntimeError):
     pass
 
 
-def probe(path: Path) -> dict:
+def _probe_raw(path: Path) -> dict:
     cmd = [FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)]
     proc = jobcontrol.run_capture(cmd, text=True, timeout=PROBE_TIMEOUT)
     if proc.returncode != 0:
         raise MediaError(f"File tidak bisa dibaca sebagai video: {proc.stderr.strip()[-400:]}")
-    info = json.loads(proc.stdout)
+    return json.loads(proc.stdout)
+
+
+def _rotation(video: dict) -> int:
+    for side in video.get("side_data_list", []) or []:
+        if "rotation" in side:
+            return int(float(side["rotation"]))
+    return int(video.get("tags", {}).get("rotate", 0) or 0)
+
+
+def probe(path: Path) -> dict:
+    info = _probe_raw(path)
     video = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
     audio = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), None)
     if video is None:
@@ -37,12 +51,7 @@ def probe(path: Path) -> dict:
     width, height = int(video["width"]), int(video["height"])
     # Video dari HP sering menyimpan rotasi sebagai metadata; FFmpeg memutarnya otomatis
     # saat decode, jadi ukuran efektifnya harus ditukar.
-    rotation = 0
-    for side in video.get("side_data_list", []) or []:
-        if "rotation" in side:
-            rotation = int(float(side["rotation"]))
-    if not rotation and "rotate" in video.get("tags", {}):
-        rotation = int(video["tags"]["rotate"])
+    rotation = _rotation(video)
     if abs(rotation) % 180 == 90:
         width, height = height, width
 
@@ -128,20 +137,112 @@ def run_ffmpeg(args: list[str], duration: float = 0, progress: ProgressFn = None
             raise MediaError(f"FFmpeg gagal (kode {code}):\n{tail}")
 
 
-def make_preview(src: Path, dst: Path, duration: float, has_audio: bool, progress: ProgressFn = None) -> None:
-    """Membuat salinan ringan 480p H.264 agar bisa diputar lancar di browser."""
-    args = ["-i", str(src), "-map", "0:v:0", "-vf", "scale=-2:'min(480,ih)'",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p"]
-    if has_audio:
+# Naikkan bila resep preview berubah: preview lama otomatis dibuat ulang, sisanya dipakai ulang.
+PREVIEW_VERSION = 2
+
+
+def preview_plan(src: Path, duration: float) -> dict:
+    """Cara membuat preview untuk sumber ini.
+
+    copy      : sumber sudah ramah browser (H.264 8-bit, AAC/tanpa audio, tanpa rotasi, tinggi & bitrate kecil):
+                cukup remux + faststart, tanpa decode/encode. Timestamp identik dengan sumber.
+    transcode : H.264 480p (video panjang: 360p + dekode cepat). Audio AAC disalin apa adanya.
+    """
+    raw = _probe_raw(src)
+    video = next((s for s in raw.get("streams", []) if s.get("codec_type") == "video"), {})
+    audio = next((s for s in raw.get("streams", []) if s.get("codec_type") == "audio"), None)
+    height = int(video.get("height") or 0)
+    kbps = int(raw.get("format", {}).get("bit_rate") or 0) / 1000
+    audio_copy = audio is not None and audio.get("codec_name") == "aac" and int(audio.get("channels") or 0) <= 2
+    copy = (video.get("codec_name") == "h264" and video.get("pix_fmt") in ("yuv420p", "yuvj420p")
+            and _rotation(video) == 0 and 0 < height <= PREVIEW_COPY_MAX_HEIGHT
+            and 0 < kbps <= PREVIEW_COPY_MAX_KBPS and (audio is None or audio_copy))
+    long = bool(PREVIEW_LONG_MINUTES) and duration > PREVIEW_LONG_MINUTES * 60
+    return {"version": PREVIEW_VERSION, "mode": "copy" if copy else "transcode",
+            "height": None if copy else (PREVIEW_LONG_HEIGHT if long else PREVIEW_HEIGHT),
+            "fast_decode": long and not copy, "audio": None if audio is None else ("copy" if audio_copy else "aac"),
+            "hwaccel": None if copy or PREVIEW_HWACCEL == "none" else PREVIEW_HWACCEL}
+
+
+def _preview_key(src: Path, plan: dict) -> str:
+    st = src.stat()
+    raw = json.dumps({"name": src.name, "size": st.st_size, "mtime": st.st_mtime_ns, "plan": plan}, sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _preview_args(src: Path, plan: dict, out: Path, hwaccel: Optional[str]) -> list[str]:
+    if plan["mode"] == "copy":
+        args = ["-i", str(src), "-map", "0:v:0", "-c:v", "copy"]
+    else:
+        from . import resources
+
+        n = resources.cpu_threads()
+        # Decoder H.264 memakai frame-threading: thread > core menutup jeda antar-frame (decode 1080p ±15% lebih
+        # cepat). Filter & encoder tetap dibatasi anggaran worker (P3).
+        inopts = ["-threads", str(2 * n)]
+        if plan["fast_decode"]:  # video panjang: lewati deblocking & frame non-referensi (fps lebih rendah)
+            inopts += ["-skip_loop_filter", "all", "-skip_frame", "noref"]
+        if hwaccel:
+            inopts += ["-hwaccel", hwaccel]
+        args = [*inopts, "-i", str(src), "-map", "0:v:0", "-vf", f"scale=-2:'min({plan['height']},ih)'",
+                "-filter_threads", str(n), "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                "-maxrate", f"{PREVIEW_MAX_KBPS}k", "-bufsize", f"{2 * PREVIEW_MAX_KBPS}k", "-pix_fmt", "yuv420p"]
+        if plan["fast_decode"]:
+            args += ["-fps_mode", "vfr"]
+    if plan["audio"] == "copy":
+        args += ["-map", "0:a:0", "-c:a", "copy"]
+    elif plan["audio"] == "aac":
         args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "96k"]
+    if plan["mode"] != "copy":
+        args += ["-threads", str(resources.cpu_threads())]
+    return args + ["-movflags", "+faststart", str(out)]
+
+
+def make_preview(src: Path, dst: Path, duration: float, has_audio: bool = True, progress: ProgressFn = None) -> dict:
+    """Preview ringan untuk browser & pelacakan wajah. Dipakai ulang selama sumber dan resepnya sama.
+
+    Render final TIDAK memakai preview: selalu dari video sumber asli.
+    """
+    plan = preview_plan(src, duration)
+    key = _preview_key(src, plan)
+    meta_path = dst.with_name(dst.stem + ".meta.json")
+    try:
+        cached = json.loads(meta_path.read_text()) if dst.exists() else None
+    except (OSError, ValueError):
+        cached = None
+    if cached and cached.get("key") == key:
+        if progress:
+            progress(1.0)
+        return {**plan, "cached": True, "seconds": 0.0}
     # Tulis ke file sementara lalu ganti nama: preview lama tidak rusak bila proses dibatalkan.
     tmp = dst.with_name(f".{dst.stem}.part{dst.suffix}")
-    args += ["-movflags", "+faststart", str(tmp)]
+    started = time.time()
     try:
-        run_ffmpeg(args, duration, progress)
+        try:
+            run_ffmpeg(_preview_args(src, plan, tmp, plan["hwaccel"]), duration, progress)
+        except MediaError:
+            if not plan["hwaccel"]:
+                raise
+            # Dekoder hardware gagal (driver/codec): ulangi dengan CPU, hasil tetap sama.
+            run_ffmpeg(_preview_args(src, plan, tmp, None), duration, progress)
         os.replace(tmp, dst)
     finally:
         tmp.unlink(missing_ok=True)
+    seconds = round(time.time() - started, 2)
+    meta_path.write_text(json.dumps({"key": key, "plan": plan, "seconds": seconds, "created": time.time()}))
+    return {**plan, "cached": False, "seconds": seconds}
+
+
+def make_thumbnail(preview: Path, dst: Path, duration: float) -> None:
+    """Gambar kecil untuk daftar proyek, diambil dari preview (murah)."""
+    if dst.exists() and dst.stat().st_mtime >= preview.stat().st_mtime:
+        return
+    tmp = dst.with_name(f".{dst.stem}.part.jpg")
+    cmd = [FFMPEG, "-v", "error", "-y", "-ss", f"{max(0.0, duration * 0.1):.2f}", "-i", str(preview),
+           "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", str(tmp)]
+    if jobcontrol.run_capture(cmd, timeout=60).returncode == 0 and tmp.exists():
+        os.replace(tmp, dst)
+    tmp.unlink(missing_ok=True)
 
 
 def audio_energy(src: Path) -> list[float]:

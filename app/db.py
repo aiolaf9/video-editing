@@ -124,6 +124,28 @@ media_leases = Table(
     Column("expires_at", Float, nullable=False, index=True),
 )
 
+# Sesi upload bertahap (P4, protokol tus 1.0.0). File ditulis langsung ke folder proyek sebagai
+# upload-<id>.part lalu di-rename (tanpa salinan). Kuota direservasi lewat media_leases (lease_id).
+uploads = Table(
+    "uploads", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("user_id", String(12), nullable=False, index=True),
+    Column("unit_id", String(12), nullable=True, index=True),
+    Column("project_id", String(12), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True),
+    Column("kind", String(10), nullable=False, default="video"),
+    Column("filename", String(200), nullable=False, default=""),
+    Column("ext", String(10), nullable=False),
+    Column("size", BigInteger, nullable=False),
+    Column("offset", BigInteger, nullable=False, default=0),
+    Column("lease_id", String(16), nullable=True),
+    Column("state", String(10), nullable=False, index=True),   # aktif|selesai|batal|gagal|habis (uploads.STATES)
+    Column("error", String(300), nullable=True),
+    Column("meta", Text, nullable=True),
+    Column("created", Float, nullable=False),
+    Column("updated", Float, nullable=False),
+    Column("expires_at", Float, nullable=False, index=True),
+)
+
 jobs = Table(
     "jobs", metadata,
     Column("id", String(12), primary_key=True),

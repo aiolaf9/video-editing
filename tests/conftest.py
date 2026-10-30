@@ -6,8 +6,11 @@ from pathlib import Path
 
 import pytest
 
-# Data uji disimpan di folder sementara, bukan di ./data
-os.environ.setdefault("VIDEO_APP_DATA", tempfile.mkdtemp(prefix="ve-test-"))
+# Data uji disimpan di folder sementara, bukan di ./data, dan dihapus lagi di akhir sesi (pytest_unconfigure).
+_OWN_TMP: list[str] = []
+if "VIDEO_APP_DATA" not in os.environ:
+    os.environ["VIDEO_APP_DATA"] = tempfile.mkdtemp(prefix="ve-test-")
+    _OWN_TMP.append(os.environ["VIDEO_APP_DATA"])
 os.environ.setdefault("EMBEDDED_WORKERS", "1")
 os.environ.setdefault("ADMIN_EMAIL", "admin@test.local")
 os.environ.setdefault("ADMIN_PASSWORD", "rahasia-admin-123")
@@ -22,6 +25,15 @@ def pytest_configure(config):
     # tes pembersihan (sweep dengan waktu di masa depan) akan menganggapnya file tertinggal.
     if not config.option.basetemp:
         config.option.basetemp = tempfile.mkdtemp(prefix="ve-pytest-")
+        _OWN_TMP.append(str(config.option.basetemp))
+
+
+def pytest_unconfigure(config):
+    # Tanpa ini setiap sesi tes meninggalkan ratusan MB (video uji, preview, render) di /tmp.
+    import shutil
+
+    for path in _OWN_TMP:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _ffmpeg(*args):

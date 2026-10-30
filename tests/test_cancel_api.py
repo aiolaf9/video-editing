@@ -261,3 +261,7 @@ def test_status_values_fit_database_columns():
 
     limit = db.jobs.c.status.type.length
     assert all(len(s) <= limit for s in (*jobs.ACTIVE, *jobs.DONE)), (jobs.ACTIVE, jobs.DONE, limit)
+    from app import uploads
+    assert all(len(s) <= db.uploads.c.state.type.length for s in uploads.STATES), uploads.STATES
+    assert all(len(s) <= db.workers.c.state.type.length for s in ("idle", "sibuk", "menunggu", "berhenti"))
+    assert len("mengunggah") <= db.projects.c.status.type.length

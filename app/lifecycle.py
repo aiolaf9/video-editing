@@ -292,7 +292,7 @@ def ensure_quota(unit: Optional[dict], incoming: int = 0) -> None:
 # ------------------------------------------------------------------ lease (upload & unduhan aktif)
 
 def acquire_lease(pid: str, kind: str, nbytes: int = 0, unit: Optional[dict] = None,
-                  now: Optional[float] = None) -> str:
+                  now: Optional[float] = None, ttl: Optional[float] = None) -> str:
     """Pegang media proyek selama upload/unduhan. nbytes > 0 = reservasi kuota unit (atomik)."""
     now = now or time.time()
     lid = uuid.uuid4().hex[:16]
@@ -306,17 +306,17 @@ def acquire_lease(pid: str, kind: str, nbytes: int = 0, unit: Optional[dict] = N
             _check_quota(c, unit, nbytes, now)
         c.execute(insert(db.media_leases).values(
             id=lid, project_id=pid, unit_id=unit["id"] if unit else None, kind=kind, bytes=max(0, nbytes),
-            owner=_OWNER, created=now, expires_at=now + LEASE_TTL[kind]))
+            owner=_OWNER, created=now, expires_at=now + (ttl or LEASE_TTL[kind])))
     return lid
 
 
-def renew_lease(lid: str, now: Optional[float] = None) -> None:
+def renew_lease(lid: str, now: Optional[float] = None, ttl: Optional[float] = None) -> None:
     now = now or time.time()
     ml = db.media_leases.c
     with db.engine().begin() as c:
         kind = c.execute(select(ml.kind).where(ml.id == lid)).scalar()
         if kind:
-            c.execute(update(db.media_leases).where(ml.id == lid).values(expires_at=now + LEASE_TTL[kind]))
+            c.execute(update(db.media_leases).where(ml.id == lid).values(expires_at=now + (ttl or LEASE_TTL[kind])))
 
 
 def release_lease(lid: str, collect: bool = True) -> None:
@@ -336,6 +336,14 @@ def commit_upload(lid: str, pid: str) -> int:
         c.execute(update(db.project_media).where(db.project_media.c.project_id == pid).values(bytes=size))
         c.execute(delete(db.media_leases).where(db.media_leases.c.id == lid))
     return size
+
+
+def mark_uploaded(pid: str, now: Optional[float] = None) -> None:
+    """Upload bertahap selesai: masa simpan dihitung sejak file lengkap diterima, bukan sejak upload dimulai."""
+    now = now or time.time()
+    with db.engine().begin() as c:
+        c.execute(update(db.project_media).where(db.project_media.c.project_id == pid).values(
+            uploaded_at=now, last_activity=now))
 
 
 def commit_size(pid: str, unit: Optional[dict], now: Optional[float] = None) -> int:
@@ -445,7 +453,7 @@ def _incomplete_uploads(now: float) -> list[str]:
     with db.engine().connect() as c:  # hanya proyek terkelola: proyek lama tidak pernah dihapus otomatis
         stale = [r[0] for r in c.execute(select(pr.id).select_from(
             db.projects.join(db.project_media, pm.project_id == pr.id)).where(
-            pr.status == "baru", pr.created < now - INCOMPLETE_UPLOAD_HOURS * HOUR))]
+            pr.status.in_(("baru", "mengunggah")), pr.created < now - INCOMPLETE_UPLOAD_HOURS * HOUR))]
         busy = _busy_projects(c, stale, now) if stale else set()
     return [pid for pid in stale if pid not in busy]
 
@@ -604,6 +612,8 @@ def sweep(now: Optional[float] = None) -> dict:
             result["skipped"] = True
             return result
         try:
+            from . import uploads
+            result["uploads_expired"] = uploads.expire(now)  # upload terputus yang tidak dilanjutkan
             result["leases_expired"] = _expire_leases(now)
             for pid in _expired_candidates(now):
                 result["expired"] += delete_media(pid, "kedaluwarsa", now)

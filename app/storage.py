@@ -129,6 +129,10 @@ def delete_project(pid: str) -> None:
         c.execute(delete(db.renders).where(db.renders.c.project_id == pid))
         c.execute(delete(db.music).where(db.music.c.project_id == pid))
         c.execute(delete(db.jobs).where(db.jobs.c.project_id == pid))
+        # Upload yang masih berjalan untuk proyek ini ikut berhenti (reservasi kuota dilepas di drop_project).
+        c.execute(update(db.uploads).where(db.uploads.c.project_id == pid, db.uploads.c.state == "aktif").values(
+            state="batal", error="Proyek dihapus.", updated=time.time()))
+        c.execute(update(db.uploads).where(db.uploads.c.project_id == pid).values(project_id=None))
         lifecycle.drop_project(pid, c)
         c.execute(delete(db.projects).where(db.projects.c.id == pid))
     shutil.rmtree(PROJECTS_DIR / pid, ignore_errors=True)

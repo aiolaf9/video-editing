@@ -153,6 +153,32 @@ ditandai "tidak merespons" (job-nya otomatis diulang setelah 2 menit).
 Untuk Prometheus/Grafana, isi `METRICS_TOKEN` di `.env` lalu ambil `https://domain/metrics` dengan header
 `Authorization: Bearer <token>` (metrik `ve_queue_*`, `ve_worker_*`, `ve_cpu_percent`, `ve_memory_*`, `ve_disk_free_bytes`).
 
+## Upload & preview
+
+**Upload bertahap (protokol tus 1.0.0).** Browser mengirim video per potongan (mulai 2 MB, menyesuaikan kecepatan
+sampai 32 MB). Bila koneksi putus, upload melanjutkan sendiri dari byte terakhir yang sudah diterima server; setelah
+browser di-refresh, pengguna cukup memilih file yang sama. Setiap potongan diperiksa checksum SHA-256 (di HTTPS)
+dan file akhir diverifikasi (ukuran & isi video) sebelum dinyatakan selesai. File ditulis langsung ke folder
+proyek (sekali tulis, tanpa salinan sementara) dan kuota unit direservasi di awal, sekali saja walau dilanjutkan.
+
+| Pengaturan | Bawaan | Arti |
+|---|---|---|
+| `UPLOAD_RESUME_HOURS` | 12 | Upload terputus bisa dilanjutkan selama ini sejak aktivitas terakhir; lewat itu file setengah jadi & reservasi kuota dibersihkan |
+| `MAX_ACTIVE_UPLOADS_PER_USER` | 4 | Upload belum selesai per pengguna (mencegah penimbunan ruang) |
+| `UPLOAD_CHUNK_MAX_MB` | 64 | Batas satu potongan |
+
+Endpoint upload lama (`POST /api/projects`, satu request) tetap ada untuk klien API, tetapi butuh ruang disk 2x
+ukuran file sementara (spool + salinan). Halaman web memakai upload bertahap.
+
+**Preview.** Render final selalu memakai video sumber asli; preview hanya untuk diputar di browser & pelacakan wajah.
+- Sumber yang sudah ramah browser (H.264 8-bit, AAC, tinggi <= `PREVIEW_COPY_MAX_HEIGHT` 720, bitrate <=
+  `PREVIEW_COPY_MAX_KBPS` 4000) tidak di-transcode: cukup remux (±1 dtk untuk video 5 menit).
+- Selain itu transcode 480p (`PREVIEW_HEIGHT`). Video lebih panjang dari `PREVIEW_LONG_MINUTES` (20) memakai 360p dan
+  dekode cepat (fps sedikit lebih rendah) agar analisis tidak tertahan lama.
+- Preview tidak dibuat ulang selama video sumber dan resepnya sama (analisis ulang memakai preview yang ada).
+- Server dengan GPU/Intel QuickSync: `PREVIEW_HWACCEL=auto` (atau `cuda`/`vaapi`/`qsv`); bila gagal otomatis kembali ke CPU.
+  Di CPU, 61% waktu preview 1080p adalah decode H.264 yang tidak bisa dipercepat tanpa decoder hardware.
+
 ## Penyimpanan media sementara
 
 Video sumber, preview, dan hasil render bersifat **sementara**:

@@ -240,3 +240,21 @@ table.grid td select, table.grid td input { padding: 4px 6px; }
 .project-list .meta .exp-gone { color: var(--danger); }
 .download-btn { display: inline-block; background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; padding: 7px 12px; border-radius: 8px; }
 .download-btn:hover { filter: brightness(1.1); }
+
+/* Upload bertahap (P4) */
+.upload-hint { margin: 6px 0 0; font-size: 12px; }
+.upload-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.upload-item { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; background: var(--panel-2); }
+.upload-item .upload-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-item .bar { position: relative; margin: 6px 0 4px; }
+.upload-item .bar .inflight { position: absolute; top: 0; height: 100%; opacity: .35; background: var(--accent); }
+.upload-item .upload-meta { font-size: 12px; color: var(--muted); }
+.upload-item .upload-note { font-size: 12px; margin-top: 4px; }
+.upload-item.terputus .upload-note, .upload-item.dijeda .upload-note { color: var(--accent-2); }
+.upload-item.gagal { border-color: var(--danger); }
+.upload-item.gagal .upload-note { color: var(--danger); }
+.upload-item.selesai { border-color: #2e7d4f; }
+.upload-item .row { margin-top: 6px; gap: 6px; }
+.upload-item .row button { padding: 4px 10px; font-size: 12px; }
+.project-list li.has-thumb { display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 8px; }
+.project-list li .thumb { grid-row: span 2; width: 56px; height: 32px; object-fit: cover; border-radius: 4px; margin-top: 2px; background: #000; }

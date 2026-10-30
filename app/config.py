@@ -122,3 +122,22 @@ ANALYSIS_WORKERS = int(os.environ.get("ANALYSIS_WORKERS", "1"))
 WORKER_REPORT_INTERVAL = float(os.environ.get("WORKER_REPORT_INTERVAL", "10"))
 # Token untuk /metrics (format Prometheus). Kosong = endpoint dimatikan.
 METRICS_TOKEN = os.environ.get("METRICS_TOKEN", "")
+
+# ---- Upload bertahap & preview (P4) ----
+# Upload dipotong per chunk (protokol tus). Upload yang terputus bisa dilanjutkan selama UPLOAD_RESUME_HOURS
+# sejak aktivitas terakhir; setelah itu file setengah jadi & reservasi kuotanya dibersihkan otomatis.
+UPLOAD_RESUME_HOURS = float(os.environ.get("UPLOAD_RESUME_HOURS", "12"))
+UPLOAD_CHUNK_MAX_MB = int(os.environ.get("UPLOAD_CHUNK_MAX_MB", "64"))       # batas satu PATCH
+UPLOAD_CHUNK_MB = int(os.environ.get("UPLOAD_CHUNK_MB", "8"))                # ukuran chunk awal di browser
+MAX_ACTIVE_UPLOADS_PER_USER = int(os.environ.get("MAX_ACTIVE_UPLOADS_PER_USER", "4"))
+# Preview: sumber yang sudah ramah browser (H.264 8-bit, AAC, tinggi <= batas, bitrate <= batas) tidak di-transcode,
+# cukup disalin ulang wadahnya (remux). Selain itu transcode ringan 480p (video panjang: 360p).
+PREVIEW_HEIGHT = int(os.environ.get("PREVIEW_HEIGHT", "480"))
+# 720p: pelacakan wajah membaca preview; preview 1080p (tanpa transcode) membuat langkah itu jauh lebih berat.
+PREVIEW_COPY_MAX_HEIGHT = int(os.environ.get("PREVIEW_COPY_MAX_HEIGHT", "720"))
+PREVIEW_COPY_MAX_KBPS = int(os.environ.get("PREVIEW_COPY_MAX_KBPS", "4000"))
+PREVIEW_LONG_MINUTES = float(os.environ.get("PREVIEW_LONG_MINUTES", "20"))   # 0 = tidak ada mode video panjang
+PREVIEW_LONG_HEIGHT = int(os.environ.get("PREVIEW_LONG_HEIGHT", "360"))
+PREVIEW_MAX_KBPS = int(os.environ.get("PREVIEW_MAX_KBPS", "1500"))
+# Dekode hardware untuk preview: none | auto | vaapi | cuda | qsv. Gagal = otomatis kembali ke CPU.
+PREVIEW_HWACCEL = os.environ.get("PREVIEW_HWACCEL", "none").strip().lower()

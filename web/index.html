@@ -29,9 +29,12 @@
         <span id="retentionText">24 jam setelah aktivitas terakhir, paling lama 72 jam sejak upload</span>.
         Unduh hasil render Anda sebelum itu.</p>
       <label class="dropzone" id="dropzone">
-        <input type="file" id="fileInput" accept="video/*" hidden>
+        <input type="file" id="fileInput" accept="video/*" multiple hidden>
         <span>⬆️ Pilih atau seret file video ke sini</span>
       </label>
+      <p class="hint upload-hint">Upload bisa dijeda & dilanjutkan; bila koneksi terputus, upload melanjutkan sendiri dari bagian terakhir.</p>
+      <ul id="uploadList" class="upload-list"></ul>
+      <input type="file" id="resumeInput" accept="video/*" hidden>
       <div class="or" id="urlOr" hidden>atau tempel link</div>
       <form id="urlForm" class="row" hidden>
         <input type="url" id="urlInput" placeholder="https://youtube.com/... / instagram.com/..." required>

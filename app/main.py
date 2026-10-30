@@ -15,13 +15,14 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Respon
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 from sqlalchemy import delete, func, insert, select, true, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from . import ai, auth, clipper, db, jobs, lifecycle, monitor, plan, storage
+from . import ai, auth, clipper, db, jobs, lifecycle, monitor, plan, storage, uploads
 from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
                      MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
-                     METRICS_TOKEN, UPLOAD_TMP_DIR,
+                     METRICS_TOKEN, UPLOAD_CHUNK_MB, UPLOAD_RESUME_HOURS, UPLOAD_TMP_DIR,
                      WEB_DIR, WHISPER_MODEL)
 from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
                       RenderRequest, Settings, SuggestRequest, UnitIn, UrlImport, UserCreate, UserUpdate)
@@ -124,6 +125,14 @@ app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)
 @app.exception_handler(lifecycle.MediaGone)
 async def media_gone(_request: Request, _exc: lifecycle.MediaGone):
     return JSONResponse({"detail": MEDIA_GONE, "media_gone": True}, status_code=410)
+
+
+@app.exception_handler(uploads.UploadError)
+async def upload_error(_request: Request, exc: uploads.UploadError):
+    headers = {"Tus-Resumable": uploads.TUS_VERSION, "Cache-Control": "no-store"}
+    if exc.offset is not None:
+        headers["Upload-Offset"] = str(exc.offset)
+    return JSONResponse({"detail": str(exc)}, status_code=exc.status, headers=headers)
 
 
 @app.exception_handler(jobs.QueueFull)
@@ -276,6 +285,8 @@ def _project_view(meta: dict) -> dict:
     folder = storage.PROJECTS_DIR / meta["id"] / "renders"
     # Riwayat render tetap ditampilkan, tetapi hanya yang filenya benar-benar ada yang boleh diunduh.
     data["renders"] = [dict(r, available=usable and (folder / r["file"]).is_file()) for r in meta.get("renders", [])]
+    # Preview bisa diputar sebelum analisis (transkrip) selesai.
+    data["preview_ready"] = usable and (folder.parent / "preview.mp4").is_file()
     return data
 
 
@@ -402,6 +413,7 @@ def list_projects(user: dict = CurrentUser, unit: Optional[str] = None):
     media = lifecycle.info_many([p["id"] for p in items])
     for p in items:
         p["media"] = media[p["id"]]
+        p["thumb"] = media[p["id"]]["state"] in ("tersedia", "lama") and (storage.PROJECTS_DIR / p["id"] / "thumb.jpg").is_file()
     return items
 
 
@@ -459,6 +471,126 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
     job = _queue_job("download", "analisis", meta, user, {"url": body.url, "language": body.language},
                      "Unduh video")
     return {"project": meta, "job": job}
+
+
+# ------------------------------------------------------------------ upload bertahap (tus 1.0.0, P4)
+
+TUS = {"Tus-Resumable": uploads.TUS_VERSION}
+READ_PIECE = 1024 * 1024  # tulis ke disk per 1 MB: RAM per upload tetap kecil
+
+
+def _tus_request(request: Request) -> None:
+    if request.headers.get("tus-resumable") != uploads.TUS_VERSION:
+        raise uploads.UploadError(412, "Versi protokol upload tidak didukung (butuh Tus-Resumable: 1.0.0).")
+
+
+def _int_header(request: Request, name: str, required: bool = True) -> Optional[int]:
+    raw = request.headers.get(name)
+    if raw is None:
+        if required:
+            raise uploads.UploadError(400, f"Header {name} wajib.")
+        return None
+    if not raw.isdigit():
+        raise uploads.UploadError(400, f"Header {name} tidak valid.")
+    return int(raw)
+
+
+@app.options("/api/uploads")
+@app.options("/api/uploads/{uid}")
+def upload_options(uid: Optional[str] = None):
+    return Response(status_code=204, headers={**TUS, "Tus-Version": uploads.TUS_VERSION,
+                                              "Tus-Extension": uploads.TUS_EXTENSIONS,
+                                              "Tus-Max-Size": str(uploads.max_size()),
+                                              "Tus-Checksum-Algorithm": ",".join(uploads.CHECKSUMS)})
+
+
+@app.get("/api/uploads")
+def upload_list(user: dict = CurrentUser):
+    """Upload milik pengguna yang belum selesai (untuk dilanjutkan setelah refresh), beserta batasnya."""
+    return {"uploads": uploads.list_active(user), "max_mb": MAX_UPLOAD_MB, "chunk_mb": UPLOAD_CHUNK_MB,
+            "resume_hours": UPLOAD_RESUME_HOURS}
+
+
+@app.post("/api/uploads")
+def upload_create(request: Request, user: dict = CurrentUser):
+    _tus_request(request)
+    if request.headers.get("upload-defer-length"):
+        raise uploads.UploadError(400, "Ukuran file harus diketahui di awal.")
+    size = _int_header(request, "upload-length")
+    meta = uploads.parse_metadata(request.headers.get("upload-metadata"))
+    _check_pending(user)
+    unit_id = _target_unit(user)
+    jobs.check_capacity("analyze", unit_id)  # antrean penuh: tolak sebelum file dikirim
+    row = uploads.create(user, unit_id, size, meta, VIDEO_EXTS)
+    return Response(status_code=201, headers={**TUS, "Location": f"/api/uploads/{row['id']}", "Upload-Offset": "0"})
+
+
+@app.head("/api/uploads/{uid}")
+def upload_head(uid: str, user: dict = CurrentUser):
+    row = uploads.get(uid, user)
+    if row["state"] in ("batal", "habis", "gagal"):
+        raise uploads.UploadError(410, row["error"] or "Upload ini sudah tidak aktif.")
+    return Response(status_code=200, headers={**TUS, "Upload-Offset": str(row["offset"]),
+                                              "Upload-Length": str(row["size"]), "Cache-Control": "no-store"})
+
+
+@app.get("/api/uploads/{uid}")
+def upload_status(uid: str, user: dict = CurrentUser):
+    return uploads.view(uploads.get(uid, user))
+
+
+def _start_analysis(row: dict, user: dict) -> dict:
+    meta = storage.load_project(row["project_id"])
+    language = json.loads(row.get("meta") or "{}").get("language")
+    return _queue_job("analyze", "analisis", meta, user, {"language": language}, "Analisis video")
+
+
+@app.patch("/api/uploads/{uid}")
+async def upload_patch(uid: str, request: Request, user: dict = CurrentUser):
+    """Satu potongan. Dibaca bertahap dari jaringan & ditulis per 1 MB di thread terpisah: upload besar tidak
+    memblokir server dan tidak pernah dimuat utuh ke RAM."""
+    _tus_request(request)
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/offset+octet-stream":
+        raise uploads.UploadError(415, "Content-Type harus application/offset+octet-stream.")
+    offset = _int_header(request, "upload-offset")
+    length = _int_header(request, "content-length", required=False)
+    row = await run_in_threadpool(uploads.get, uid, user)
+    writer = await run_in_threadpool(uploads.ChunkWriter, row, offset, length, request.headers.get("upload-checksum"))
+    try:
+        buf = bytearray()
+        try:
+            async for piece in request.stream():
+                buf += piece
+                if len(buf) >= READ_PIECE:
+                    await run_in_threadpool(writer.write, bytes(buf))
+                    buf.clear()
+            if buf:
+                await run_in_threadpool(writer.write, bytes(buf))
+        except ClientDisconnect:
+            # Koneksi putus di tengah potongan. Tanpa checksum, byte yang sudah diterima disimpan (tus);
+            # dengan checksum, potongan tidak bisa diverifikasi sehingga dibuang & dikirim ulang klien.
+            if writer.hasher is None and (writer.written or buf):
+                if buf:
+                    await run_in_threadpool(writer.write, bytes(buf))
+                await run_in_threadpool(writer.commit, None)
+            else:
+                await run_in_threadpool(writer.rollback)
+            return Response(status_code=400)
+        row = await run_in_threadpool(writer.commit, lambda r: _start_analysis(r, user))
+    except BaseException:
+        if not writer.committed:
+            await run_in_threadpool(writer.rollback)
+        raise
+    finally:
+        await run_in_threadpool(writer.close)
+    return Response(status_code=204, headers={**TUS, "Upload-Offset": str(row["offset"])})
+
+
+@app.delete("/api/uploads/{uid}")
+def upload_delete(uid: str, user: dict = CurrentUser):
+    row = uploads.get(uid, user)
+    uploads.abort(row, "batal")
+    return Response(status_code=204, headers=TUS)
 
 
 @app.get("/api/projects/{pid}")
@@ -524,6 +656,16 @@ def get_preview(pid: str, user: dict = CurrentUser):
     if not path.exists():
         raise HTTPException(404, "Preview belum siap.")
     return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/api/projects/{pid}/thumb")
+def get_thumb(pid: str, user: dict = CurrentUser):
+    _project_for(pid, user)
+    lifecycle.require_available(pid)
+    path = storage.project_dir(pid) / "thumb.jpg"
+    if not path.exists():
+        raise HTTPException(404, "Belum ada gambar kecil.")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.post("/api/projects/{pid}/music")

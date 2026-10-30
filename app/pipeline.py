@@ -115,8 +115,13 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     storage.update_project(pid, **info)
     _limit_analysis_time(info["duration"])
 
-    media.make_preview(src, folder / "preview.mp4", info["duration"], info["has_audio"],
-                       job.stage(0, 18, "Membuat preview..."))
+    preview = media.make_preview(src, folder / "preview.mp4", info["duration"], info["has_audio"],
+                                 job.stage(0, 18, "Membuat preview..."))
+    job.update(18, "Preview siap (dipakai ulang)." if preview["cached"] else "Preview siap.")
+    try:
+        media.make_thumbnail(folder / "preview.mp4", folder / "thumb.jpg", info["duration"])
+    except Exception:  # thumbnail hanya pelengkap tampilan
+        pass
     track_faces(pid, job.stage(18, 25, "Melacak posisi wajah..."))
 
     energy: list[float] = []
