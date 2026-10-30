@@ -195,6 +195,89 @@ Regresi lokal (isi commit lokal): SQLite **317 lolos, 1 dilewati** (advisory loc
 baru) **333 lolos, 0 dilewati**. Catatan jujur: satu percobaan PostgreSQL sebelumnya memakai database lama yang gagal
 di-reset (perintah reset saya salah role) dan menghasilkan 4 kegagalan akibat data sisa; diulang dengan database baru.
 
+### Run #5 — commit `121f335`
+
+- **CI #9:** https://github.com/aiolaf9/video-editing/actions/runs/41080310030 — success. Lint, keamanan & lisensi,
+  migrasi lolos; SQLite **317 lolos, 1 dilewati** (advisory lock khusus PostgreSQL); PostgreSQL **333 lolos, 0 dilewati**.
+- **Production image #5:** https://github.com/aiolaf9/video-editing/actions/runs/41080310028 — success (artifact
+  `kesiapan-staging` ID 12988994263). Image `sha256:c9d727c1…c937` dari digest resmi; regresi di image **317 lolos,
+  1 dilewati**; isolasi 42/42; e2e fixture 14/14; pihak ketiga 3/3 (termasuk w3schools setelah perbaikan pemeriksa);
+  pemulihan 6/6 (SIGTERM di 10,6 %, SIGKILL di 7,6 %, sha256 `a3720f16…6401` identik); restart stack: 12 job identik;
+  log 917 baris tanpa secret.
+
+Angka RAM aktual (langkah baru, dibaca SETELAH unduhan fixture & pemulihan SIGTERM/SIGKILL; runner 15.984 MB):
+
+| Container | cgroup | `memory.max` | `memory.peak` | `memory.events` | `resources.memory()` (MB) | admission |
+|---|---|---|---|---|---|---|
+| worker-io | v2 | 512 MiB | 134,2 MiB | oom 0, oom_kill 0, max 0 | terpakai 93, tersedia 419; host 14.392 / 15.984 | io: **diterima**; render/analisis: tidak akan pernah muat (512 < 764 / 1664) |
+| worker-render | v2 | 1500 MiB | 110,4 MiB | oom 0, oom_kill 0, max 0 | terpakai 69, tersedia 1431 | io, render: diterima; analisis: tidak akan pernah muat (1500 < 1664) |
+| web | v2 | `max` (tanpa batas) | 240,2 MiB | oom 0, oom_kill 0 | aturan host: 14.371 / 15.984 | semua diterima (host) |
+
+`docker events --filter event=oom` sejak stack dinyalakan: kosong; `OOMKilled`: false untuk semua container; worker
+`io`/`render` berstatus `idle` (tidak ada yang `menunggu`). Catatan: `memory.peak` worker-io mencakup periode setelah
+container dibuat ulang oleh skenario SIGKILL, bukan seluruh run; event OOM Docker mencakup seluruh run.
+
+### Audit setelah run #5 (commit lokal, belum di-push)
+
+**C — kegagalan permanen.** Aturan di `121f335` menggagalkan job setelah 300 dtk bila tidak ada worker *hidup* yang
+mampu — termasuk ketika worker berkapasitas besar hanya sedang offline. Itu salah dan diganti:
+
+| Kasus | Status kapasitas antrean | Perilaku |
+|---|---|---|
+| 1. Melebihi kapasitas SEMUA worker yang dikenal (hidup & offline < 1 hari) | `konfigurasi` | menunggu + ERROR log + `ve_queue_unservable=1` + kolom admin; pesan pengguna "hubungi admin" |
+| 2. Worker yang mampu offline / berhenti | `mampu_offline` atau `tanpa_worker` | menunggu, tidak pernah digagalkan |
+| 3. Worker yang mampu sedang start/restart (belum melapor) | `siap` (dianggap mampu tanpa bukti sebaliknya) | menunggu/diambil |
+| 4. Worker yang mampu sibuk | `siap` | antre biasa |
+| 5. Worker yang mampu ada, RAM sementara kurang | `sementara` | menunggu; `ve_worker_blocked_seconds` |
+| 6. Konfigurasi berubah saat job menunggu | dihitung ulang tiap 60 dtk | hitungan "teramati sejak" diulang dari nol |
+
+Gagal permanen hanya bila operator menyetel `UNSERVABLE_FAIL_AFTER_SECONDS` > 0 (menyatakan daftar worker lengkap) DAN
+status `konfigurasi` teramati terus-menerus selama itu oleh proses worker yang sama (restart = mulai dari nol). Bawaan 0:
+tidak pernah. Baris worker offline dihapus setelah 1 hari, jadi penentuan "seluruh worker yang dikonfigurasi" tidak
+pasti dalam jangka panjang — itu alasan bawaannya tetap menunggu. Tes: 6 kasus + tanpa worker hidup + bawaan
+menunggu + kegagalan opsional dengan reset saat konfigurasi berubah dan saat worker besar hanya offline.
+
+**D — reservasi RAM paralel.** Jendela 60 dtk terbukti tidak aman: tes job render (700 MB) yang setelah 61 dtk baru
+memakai 100 MB membuat job kedua lolos (gagal pada implementasi lama, dijalankan sebelum perubahan). Diganti dengan
+reservasi sepanjang hidup job: `sisa = Σ perkiraan job berjalan − pertumbuhan RSS pohon proses (worker + FFmpeg)
+sejak job pertama mulai`, minimal 0. Bukti tes: tetap dicadangkan sampai job selesai walau satu jam (tidak optimistis
+untuk job panjang); job yang sudah memakai seluruh perkiraannya tidak dihitung dua kali; job yang melebihi perkiraan
+tertangkap lewat pemakaian aktual cgroup; dua thread bersamaan → tepat satu diterima; reservasi dilepas pada selesai,
+gagal, batal, dan shutdown (`finally` di worker); reservasi hanya di memori proses, sehingga restart tidak
+meninggalkan sisa. Batasan: bila beberapa job berjalan di SATU proses (mode tanam) dan satu job melampaui perkiraannya,
+kelebihan itu mengurangi sisa cadangan job lain (pertumbuhan RSS tidak bisa diatribusikan per job tanpa proses
+terpisah); di deployment Docker tiap container worker menjalankan satu job sekaligus, jadi tidak berlaku. Dua proses
+worker di container yang sama tidak berbagi reservasi (bukan konfigurasi yang didukung; skala dengan
+`--scale`/container terpisah).
+
+**E — pengukuran nyata `IO_MEM_MB=300`** (`bench/mem_io_measure.py`). Worker io sungguhan (`python -m app.worker
+--queues io`, kode commit lokal, venv produksi) di cgroup memory **v1** berbatas 512 MB (sandbox; sekaligus menguji
+jalur v1 `_cgroup_memory` pada kernel nyata: batas 536.870.912 & pemakaian terbaca), unduhan lewat jalur aplikasi
+(`jobs.submit` → yt-dlp → FFmpeg) dari server HTTP lokal, sampel tiap 50 ms:
+
+| Workload | Hasil | Puncak RSS anonim | Puncak "terpakai" admission (usage − inactive_file) | Puncak RSS pohon proses | `max_usage` cgroup (termasuk page cache) | OOM |
+|---|---|---|---|---|---|---|
+| MP4 1080p 120 dtk, 117 MB | selesai, sha256 = sumber | 84,8 MB | 89,4 MB | 111,4 MB | 230,4 MB | 0 |
+| HLS 30 segmen → remux mp4 | selesai, 120 dtk video+audio | 100,1 MB | 118,8 MB | 164,2 MB (2 proses) | 494,5 MB | 0 |
+| DASH video & audio terpisah → gabung FFmpeg | selesai, 120 dtk video+audio | 94,1 MB | 123,0 MB | 159,2 MB (2 proses) | 512 MB* | 0 |
+| MP4 besar 10 mnt, 584 MB | selesai, sha256 = sumber | 85,4 MB | 108,7 MB | 112,1 MB | 512 MB* | 0 |
+| 2 bersamaan: DASH + HLS (2 proses worker, cgroup yang sama) | keduanya selesai | 192,9 MB | 220,0 MB | 320,1 MB (4 proses) | 512 MB* | 0 |
+| 2 bersamaan: MP4 besar + MP4 | keduanya selesai, sha256 = sumber | 171,0 MB | 201,6 MB | 221,5 MB | 512 MB* | 0 |
+
+\* cgroup mencapai batas karena **page cache** berkas yang ditulis; kernel merebut kembali cache (`failcnt` naik:
+405–5.824), `oom_kill` tetap 0. Kebutuhan nyata per job ±70 MB di atas worker idle (±50 MB anonim) → `IO_MEM_MB=300`
+memberi margin ±4×; tidak diubah. Batasan: media sintetis (testsrc2/sine, bitrate konstan 8 Mbit/s), server lokal
+(unduhan 2–7 dtk; jaringan lambat memperpanjang durasi tetapi tidak memperbesar buffer yt-dlp secara berarti), FFmpeg
+lokal 7.1 (image 7.1.5), cgroup v1 lokal (staging v2). Situs nyata dengan ekstraksi JavaScript (Deno) belum diukur.
+
+**F — monitoring.** Admin membedakan worker siap / bekerja / menunggu resource (dengan "tertahan N mnt" & alasan) /
+tidak merespons, dan per antrean kolom "Kapasitas" (sementara vs konfigurasi vs worker offline). Pengguna biasa hanya
+melihat pesan umum ("Menunggu kapasitas server tersedia...", "Menunggu server dengan kapasitas memori yang cukup…
+hubungi admin"), tanpa angka RAM atau nama worker; `/api/admin/metrics` hanya admin, `/metrics` dengan token.
+
+Regresi lokal (commit lokal): SQLite **331 lolos, 1 dilewati** (advisory lock); PostgreSQL database baru **347 lolos,
+0 dilewati**.
+
 ### Tinjauan konfigurasi produksi (F)
 
 | Item | Status di `docker-compose.yml` produksi | Di overlay staging | Rekomendasi |
@@ -215,19 +298,20 @@ Strategi build yang dapat diulang (rekomendasi, belum diterapkan):
 3. Paket Debian (FFmpeg 7.1.5-0+deb13u1) mengikuti digest image dasar; catat `ffmpeg -version` di setiap rilis.
 4. Simpan image hasil build yang lolos di registry dengan digest; deploy berdasarkan digest, bukan tag.
 
-### Status kriteria penerimaan P5.5.1 (setelah run #4, `3e8de64`)
+### Status kriteria penerimaan P5.5.1 (setelah run #5, `121f335`, dan commit lokal audit C/D/E/F)
 
-| # | Kriteria | Status |
-|---|---|---|
-| 1 | CI umum berhasil | PASS (CI #8) |
-| 2 | Workflow image berhasil, tanpa skenario dilewati | PASS (#4); satu-satunya tes dilewati di image = advisory lock PostgreSQL, dijalankan & lolos di job PostgreSQL CI |
-| 3 | Image produksi terbangun dari digest resmi | PASS |
-| 4 | Compose staging berjalan, worker healthy | PASS |
-| 5 | Migrasi & health (langsung & via Caddy) | PASS |
-| 6 | Worker IO: admitted, antre → jalan → selesai, berkas benar | PASS (e2e fixture & pemulihan); **tanpa OOM: NOT VERIFIED** (tidak ada pemeriksaan eksplisit di run #4) |
-| 7 | Egress: unduhan fixture, sha256, redirect/DNS/IPv4/IPv6 internal ditolak, log squid, koneksi langsung diblokir | PASS (42/42, 14/14, bukti squid) |
-| 8 | Pemulihan SIGTERM/SIGKILL, antrean, cleanup, integritas, tanpa duplikat/menggantung | PASS (6/6) |
-| 9 | Media: regresi produksi penuh | PASS (299 di image, read-only) |
-| 10 | Tidak ada kebocoran secret; hasil dicatat | PASS |
-| B | Admission RAM host/container | perbaikan lokal + tes; bukti RAM/OOM staging: NOT VERIFIED sampai run #5 |
-| C | Job tidak menggantung diam-diam | perbaikan lokal + tes; belum diuji di staging |
+| # | Kriteria | Status | Bukti |
+|---|---|---|---|
+| 1 | CI umum sukses | PASS | CI #9: semua job sukses; SQLite 317/1 dilewati (PG-only), PostgreSQL 333/0 |
+| 2 | Production Image workflow sukses | PASS | run #5 success, semua langkah |
+| 3 | Image dari digest resmi | PASS | `python@sha256:aa943ce4…d159`, `debian@sha256:13e0a2e7…8b04` |
+| 4 | Migrasi, startup, health | PASS | migrate exit 0, `0006_uploads`, tanpa drift, health langsung & via Caddy |
+| 5 | Regresi media dalam image | PASS | 317 lolos (read-only, tanpa capability); 1 dilewati = advisory lock PG, lolos di CI PG |
+| 6 | Egress & unduhan end-to-end | PASS | 42/42, 14/14, sha256 identik, bukti squid |
+| 7 | SIGTERM/SIGKILL recovery | PASS | 6/6, sha256 identik, 1 job unduhan, 0 tertinggal `jalan` |
+| 8 | RAM host/container tervalidasi | PASS | angka cgroup v2 staging (tabel run #5) + cgroup v1 nyata lokal |
+| 9 | Tidak ada OOM pada skenario yang diuji | PASS | staging: event OOM kosong, OOMKilled false, `oom_kill 0`; lokal: 6 workload `oom_kill 0` |
+| 10 | Concurrent admission aman | PASS (tes + pengukuran lokal); staging: NOT VERIFIED | kelemahan jendela 60 dtk ditemukan & diperbaiki di commit lokal; Docker: satu job per container |
+| 11 | Starvation punya monitoring jelas | PASS (tes); tampilan admin baru: NOT VERIFIED di staging | metrik, admin, healthcheck |
+| 12 | Tidak digagalkan permanen karena worker sementara offline | PASS (tes, commit lokal) | aturan `121f335` gagal kriteria ini; diperbaiki, bawaan tidak pernah gagal permanen |
+| 13 | Tidak ada kebocoran secret | PASS | image, log staging 917 baris, pemindaian secret file & riwayat git di CI #9 |

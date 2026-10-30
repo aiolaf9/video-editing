@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import (CONTAINER_MEM_HEADROOM_MB, CPU_MAX_LOAD_PER_CORE, GPU_MIN_FREE_MB, HOST_HEAVY_WORKERS,
-                     MEM_RESERVE_MB, RAM_RAMP_SECONDS, TASK_MEM_MB,
+                     MEM_RESERVE_MB, TASK_MEM_MB,
                      WORKER_THREADS)
 
 log = logging.getLogger("video-editing.resources")
@@ -256,20 +256,43 @@ def gpu_with_free_vram(min_free_mb: Optional[float] = None) -> Optional[dict]:
 # ------------------------------------------------------------------ admission control
 
 ADMISSION_LOCK = threading.Lock()
-_inflight: dict = {}          # job_id -> (byte dicadangkan, waktu mulai): job di proses ini yang masih ramp-up
+# Reservasi RAM job yang sedang berjalan di proses ini, sepanjang hidup job (dilepas di `finally` worker: selesai,
+# gagal, batal, maupun dikembalikan ke antrean). Hanya ada di memori proses: proses yang mati/restart tidak
+# meninggalkan reservasi permanen.
+_inflight: dict = {}          # job_id -> byte perkiraan kebutuhan (TASK_MEM_MB)
+_own_base: Optional[int] = None   # RSS pohon proses (worker + FFmpeg) saat job pertama dari kelompok berjalan mulai
+
+
+def _own_rss() -> Optional[int]:
+    u = process_tree_usage()
+    return u["rss"] if u else None
 
 
 def reserve(job_id: str, queue: str) -> None:
-    _inflight[job_id] = (required_mb(queue) * 1024 * 1024, time.time())
+    global _own_base
+    if not _inflight:
+        _own_base = _own_rss()
+    _inflight[job_id] = required_mb(queue) * 1024 * 1024
 
 
 def release(job_id: str) -> None:
+    global _own_base
     _inflight.pop(job_id, None)
+    if not _inflight:
+        _own_base = None
 
 
-def reserved_bytes(now: Optional[float] = None) -> int:
-    now = time.time() if now is None else now
-    return sum(size for size, started in list(_inflight.values()) if now - started < RAM_RAMP_SECONDS)
+def reserved_bytes() -> int:
+    """Bagian kebutuhan job berjalan yang BELUM terlihat di pemakaian aktual: jumlah perkiraan dikurangi pertumbuhan
+    RSS pohon proses ini sejak job pertama mulai (tidak pernah negatif). Bertahan sampai job selesai, sehingga job
+    yang puncaknya di akhir (mis. penggabungan FFmpeg) tetap terhitung; RAM yang sudah dipakai job tercermin di
+    pemakaian aktual cgroup/host dan dikurangkan dari sini, sehingga tidak dihitung dua kali."""
+    estimate = sum(_inflight.values())
+    if not estimate:
+        return 0
+    now = _own_rss()
+    grown = max(0, now - _own_base) if now is not None and _own_base is not None else 0
+    return max(0, estimate - grown)
 
 
 def capacity_shortfall(queue: str) -> str:

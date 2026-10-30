@@ -81,21 +81,51 @@ def list_workers(now: Optional[float] = None) -> list[dict]:
     return rows
 
 
-def unservable_queues(now: Optional[float] = None) -> dict:
-    """{antrean: alasan} untuk antrean yang dilayani worker hidup, tetapi TIDAK SATU PUN mampu menampung job-nya
-    (RAM yang dibutuhkan melebihi batas container/host). Antrean tanpa worker hidup tidak dihitung: worker mungkin
-    sedang dimulai. Worker yang belum melaporkan kemampuannya dianggap mampu (tidak menggagalkan job tanpa bukti)."""
-    capable, reasons = set(), {}
-    for w in list_workers(now):
-        if not w["alive"]:
-            continue
-        for q in (w["queues"] or "").split(","):
-            if q in w["incapable"]:
-                reasons.setdefault(q, f"{w['name']}: {w['incapable'][q]}")
-            elif q:
-                capable.add(q)
-    return {q: why for q, why in reasons.items() if q not in capable}
+def queue_capacity(now: Optional[float] = None, workers: Optional[list] = None) -> dict:
+    """Status kapasitas per antrean, dari semua worker yang dikenal (baris `workers` < 1 hari, hidup maupun offline):
 
+    - siap: ada worker hidup yang mampu dan tidak tertahan admission;
+    - sementara: worker hidup yang mampu ada, tetapi semuanya tertahan RAM/CPU (akan lanjut sendiri);
+    - tanpa_worker: tidak ada worker hidup untuk antrean ini (offline, sedang start/restart);
+    - mampu_offline: worker hidup tidak mampu, tetapi ada worker yang mampu (atau belum melapor) yang sedang offline;
+    - konfigurasi: SEMUA worker yang dikenal untuk antrean ini melaporkan RAM-nya tidak akan pernah cukup.
+
+    Worker yang belum melaporkan kemampuannya dianggap mampu: tanpa bukti, job tidak dinyatakan mustahil."""
+    out: dict = {}
+    for w in workers if workers is not None else list_workers(now):
+        for q in filter(None, (w["queues"] or "").split(",")):
+            s = out.setdefault(q, {"alive_ready": 0, "alive_blocked": 0, "alive_incapable": 0, "offline_capable": 0,
+                                   "reasons": []})
+            if q in w["incapable"]:
+                if w["alive"]:
+                    s["alive_incapable"] += 1
+                s["reasons"].append(f"{w['name']}: {w['incapable'][q]}")
+            elif not w["alive"]:
+                s["offline_capable"] += 1
+            elif w["blocked"]:
+                s["alive_blocked"] += 1
+            else:
+                s["alive_ready"] += 1
+    result = {}
+    for q, s in out.items():
+        if s["alive_ready"]:
+            state = "siap"
+        elif s["alive_blocked"]:
+            state = "sementara"
+        elif not s["alive_incapable"]:
+            state = "tanpa_worker"
+        elif s["offline_capable"]:
+            state = "mampu_offline"
+        else:
+            state = "konfigurasi"
+        result[q] = {"state": state, "reason": "; ".join(s["reasons"][:3]) if state in ("konfigurasi", "mampu_offline")
+                     else ""}
+    return result
+
+
+def unservable_queues(now: Optional[float] = None) -> dict:
+    """{antrean: alasan} yang pasti tidak dapat dilayani konfigurasi worker saat ini (status `konfigurasi`)."""
+    return {q: c["reason"] for q, c in queue_capacity(now).items() if c["state"] == "konfigurasi"}
 
 def _pct(values: list[float], p: float) -> Optional[float]:
     if not values:
@@ -142,9 +172,14 @@ def queue_metrics(window: float = 3600, now: Optional[float] = None, unit_id: Op
 
 def snapshot() -> dict:
     disk = lifecycle.disk_status()
+    workers = list_workers()
+    metrics = queue_metrics()
+    capacity = queue_capacity(workers=workers)
+    for q, m in metrics.get("queues", {}).items():
+        m["capacity"] = capacity.get(q, {"state": "tanpa_worker", "reason": ""})
     return {"at": time.time(), "web": {"host": HOST, **resources.system_snapshot()},
             "disk": {k: disk[k] for k in ("total", "used", "free", "usable")},
-            "workers": list_workers(), **queue_metrics()}
+            "workers": workers, **metrics}
 
 
 def prometheus(snap: dict) -> str:
@@ -176,6 +211,13 @@ def prometheus(snap: dict) -> str:
         metric("ve_queue_oldest_wait_seconds", m["oldest_wait"], "Umur job tertua yang menunggu.", {"queue": q})
         metric("ve_queue_wait_seconds_p95", m["wait_p95"], "Waktu tunggu p95 (1 jam).", {"queue": q})
         metric("ve_jobs_failed_window", m["failed"], "Job gagal (1 jam).", {"queue": q})
+        cap = (m.get("capacity") or {}).get("state")
+        if cap:
+            metric("ve_queue_unservable", int(cap == "konfigurasi"),
+                   "1 = tidak ada worker yang dikenal dengan RAM cukup untuk antrean ini (perlu tindakan admin).",
+                   {"queue": q})
+            metric("ve_queue_capacity_waiting", int(cap in ("sementara", "tanpa_worker", "mampu_offline")),
+                   "1 = job antrean ini menunggu kapasitas sementara (worker tertahan/offline/start).", {"queue": q})
         metric("ve_jobs_done_window", m["done"], "Job selesai (1 jam).", {"queue": q})
         for task, d in m["duration"].items():
             metric("ve_job_duration_seconds_p95", d["p95"], "Durasi job p95 (1 jam).", {"queue": q, "task": task})

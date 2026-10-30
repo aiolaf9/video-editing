@@ -90,7 +90,18 @@ async function loadStatus() {
 // Monitoring rinci (admin pusat): mesin, antrean, dan worker. Diperbarui tiap 10 detik selama halaman Status dibuka.
 const QUEUE_NAMES = { analisis: "Analisis (Whisper)", render: "Render (FFmpeg)", io: "Unduhan dari link" };
 const WORKER_STATE = { idle: "siap", sibuk: "bekerja", menunggu: "menunggu resource", berhenti: "berhenti" };
+const CAPACITY = {
+  siap: ["siap", ""], sementara: ["menunggu RAM/CPU (sementara)", "muted"],
+  tanpa_worker: ["tidak ada worker hidup (offline/start)", "exp-gone"],
+  mampu_offline: ["worker yang mampu sedang offline", "exp-gone"],
+  konfigurasi: ["tidak dapat diproses: RAM worker tidak cukup (konfigurasi)", "exp-gone"],
+};
 const secs = (v) => (v === null || v === undefined ? "–" : v < 90 ? `${Math.round(v)} dtk` : `${(v / 60).toFixed(1)} mnt`);
+const capacityTxt = (c) => {
+  if (!c) return "–";
+  const [label, cls] = CAPACITY[c.state] || [c.state, ""];
+  return `<span class="${cls}">${esc(label)}</span>${c.reason ? `<div class="muted">${esc(c.reason)}</div>` : ""}`;
+};
 const pctTxt = (v) => (v === null || v === undefined ? "–" : `${Math.round(v)}%`);
 let metricsTimer = null;
 
@@ -107,12 +118,13 @@ async function loadMetrics() {
       ["Disk data tersisa", `${fmtBytes(m.disk.free)} dari ${fmtBytes(m.disk.total)}`],
       ["GPU", gpu],
     ].map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
-    $("queueTable").innerHTML = "<tr><th>Antrean</th><th>Menunggu</th><th>Berjalan</th><th>Tertua menunggu</th><th>Tunggu p50 / p95</th><th>Durasi p95</th><th>Selesai / gagal (1 jam)</th></tr>" +
+    $("queueTable").innerHTML = "<tr><th>Antrean</th><th>Menunggu</th><th>Berjalan</th><th>Tertua menunggu</th><th>Tunggu p50 / p95</th><th>Durasi p95</th><th>Selesai / gagal (1 jam)</th><th>Kapasitas</th></tr>" +
       Object.entries(m.queues).map(([name, s]) => {
         const dur = Object.values(s.duration || {})[0];
         return `<tr><td><b>${QUEUE_NAMES[name] || esc(name)}</b></td><td>${s.queued}</td><td>${s.running}</td>
           <td>${s.queued ? secs(s.oldest_wait) : "–"}</td><td>${secs(s.wait_p50)} / ${secs(s.wait_p95)}</td>
-          <td>${dur ? secs(dur.p95) : "–"}</td><td>${s.done} / <span class="${s.failed ? "exp-gone" : ""}">${s.failed}</span></td></tr>`;
+          <td>${dur ? secs(dur.p95) : "–"}</td><td>${s.done} / <span class="${s.failed ? "exp-gone" : ""}">${s.failed}</span></td>
+          <td>${capacityTxt(s.capacity)}</td></tr>`;
       }).join("");
     const ws = m.workers || [];
     $("workerTable").innerHTML = "<tr><th>Worker</th><th>Antrean</th><th>Status</th><th>CPU</th><th>RAM</th><th>Thread</th><th>Selesai / gagal</th><th>Kabar terakhir</th></tr>" +

@@ -139,9 +139,15 @@ Perlindungan yang selalu aktif:
   (bawaan 64, minimum 32; page cache tidak aktif tidak dihitung terpakai, cgroup v1 & v2). Job menunggu di antrean
   (status worker "menunggu resource", admin menampilkan lama tertahan, metrik `ve_worker_blocked_seconds`) daripada
   proses dibunuh karena kehabisan memori. Worker yang tertahan lebih dari `WORKER_BLOCKED_UNHEALTHY_SECONDS` (1800)
-  dilaporkan tidak sehat oleh healthcheck. Bila kebutuhan job **tidak akan pernah** muat di worker mana pun yang hidup
-  (mis. `WHISPER_MODEL=medium` dengan `ANALYSIS_MEM=3g`), log worker mencatat ERROR dan job tersebut digagalkan
-  dengan pesan jelas setelah `UNSERVABLE_GRACE_SECONDS` (300) — naikkan `mem_limit` atau perkecil kebutuhan.
+  dilaporkan tidak sehat oleh healthcheck. Kebutuhan RAM job berjalan dicadangkan sampai job selesai (dikurangi RAM
+  yang sudah benar-benar dipakai), sehingga job paralel di satu proses tidak melebihi kapasitas.
+- **Kapasitas per antrean** (halaman admin, kolom "Kapasitas"; metrik `ve_queue_unservable`): siap; menunggu RAM/CPU
+  (sementara); tidak ada worker hidup; worker yang mampu sedang offline; atau **tidak dapat diproses karena
+  konfigurasi** — semua worker yang dikenal untuk antrean itu (hidup maupun offline) tidak akan pernah punya RAM cukup
+  (mis. `WHISPER_MODEL=medium` dengan `ANALYSIS_MEM=3g`). Dalam kasus terakhir log worker mencatat ERROR dan job tetap
+  menunggu dengan pesan "hubungi admin"; naikkan `mem_limit` atau perkecil kebutuhan. Job hanya digagalkan permanen bila
+  `UNSERVABLE_FAIL_AFTER_SECONDS` > 0 (bawaan 0 = tidak pernah) dan kondisi itu teramati terus-menerus selama itu.
+  Pengguna biasa hanya melihat pesan umum, tanpa angka RAM atau nama server.
 - **CPU**: jumlah thread FFmpeg/OpenCV per job dibagi di antara job yang sedang berjalan; render didahulukan dari
   analisis (prioritas proses). Halaman web tetap responsif.
 - **Antrean**: per unit paling banyak `MAX_QUEUED_PER_UNIT` job menunggu (pesan 429) dan per antrean

@@ -100,12 +100,82 @@ def test_concurrent_admission_in_one_process_cannot_overcommit(monkeypatch):
     for t in threads:
         t.join()
     assert sorted(results) == [False, True]
-    # Setelah masa ramp-up, pemakaian aktual (terukur) yang dihitung: cadangan tidak dihitung dua kali selamanya.
-    job, (size, _) = next(iter(resources._inflight.items()))
-    resources._inflight[job] = (size, time.time() - config.RAM_RAMP_SECONDS - 1)
-    assert resources.reserved_bytes() == 0
-    resources.release(job)
-    assert resources._inflight == {}
+    resources.release(next(iter(resources._inflight)))
+    assert resources._inflight == {} and resources.reserved_bytes() == 0
+
+
+# ------------------------------------------------------------------ reservasi sepanjang hidup job (P5.5.1 D)
+
+def _fake_container(monkeypatch, limit_mb, state):
+    def mem():
+        return {"total": limit_mb * MB, "available": limit_mb * MB - state["used"], "used": state["used"],
+                "host_total": 16 * 2**30, "host_available": 10 * 2**30,
+                "container_limit": limit_mb * MB, "container_available": limit_mb * MB - state["used"]}
+    monkeypatch.setattr(resources, "memory", mem)
+    monkeypatch.setattr(resources, "process_tree_usage",
+                        lambda root=None: {"rss": state["rss"], "cpu_seconds": 0, "processes": 1})
+    monkeypatch.setattr(resources, "_inflight", {})
+    monkeypatch.setattr(resources, "_own_base", None)
+
+
+def test_reservation_survives_until_peak_of_long_job(monkeypatch):
+    """Dulu: setelah 60 dtk reservasi hilang dan job kedua lolos walau job pertama belum mencapai puncak (tes ini gagal
+    pada implementasi jendela 60 dtk). Kini sisa kebutuhan job A tetap dicadangkan sampai job A selesai."""
+    state = {"used": 100 * MB, "rss": 80 * MB}
+    _fake_container(monkeypatch, 1500, state)
+    clock = [1000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    assert resources.admit_memory("render")[0]
+    resources.reserve("A", "render")
+    clock[0] += 3600                                    # job panjang: satu jam kemudian
+    state["used"] += 100 * MB
+    state["rss"] += 100 * MB                            # job A baru memakai 100 dari 700 MB
+    assert resources.reserved_bytes() == 600 * MB
+    ok, why = resources.admit_memory("render")          # 200 + 600 (sisa A) + 700 + 64 > 1500
+    assert not ok and "container" in why
+    resources.release("A")
+    assert resources.admit_memory("render")[0]          # setelah A selesai, kapasitas kembali
+
+
+def test_actual_usage_and_reservation_are_not_double_counted(monkeypatch):
+    state = {"used": 100 * MB, "rss": 80 * MB}
+    _fake_container(monkeypatch, 1600, state)
+    resources.reserve("A", "render")
+    state["used"] += 700 * MB
+    state["rss"] += 700 * MB                            # job A memakai seluruh perkiraannya
+    assert resources.reserved_bytes() == 0              # tidak dihitung lagi di atas pemakaian aktual
+    ok, why = resources.admit_memory("render")          # 800 terpakai + 700 + 64 = 1564 <= 1600
+    assert ok, why
+    state["used"] += 300 * MB
+    state["rss"] += 300 * MB                            # job A melebihi perkiraan: pemakaian aktual yang menentukan
+    assert not resources.admit_memory("render")[0]
+    resources.release("A")
+
+
+@pytest.mark.parametrize("ending", ["selesai", "gagal", "batal", "shutdown"])
+def test_reservation_released_however_job_ends(client, monkeypatch, ending):
+    from app import jobcontrol, jobs, storage, worker
+
+    monkeypatch.setattr(resources, "_inflight", {})
+    monkeypatch.setattr(resources, "admit_memory", lambda queue: (True, ""))
+    seen = []
+
+    def task(job):
+        seen.append(dict(resources._inflight))
+        if ending == "gagal":
+            raise RuntimeError("uji gagal")
+        if ending in ("batal", "shutdown"):
+            raise jobcontrol.JobCancelled("dibatalkan" if ending == "batal" else "shutdown")
+        return {}
+
+    monkeypatch.setattr(worker, "_run_task", task)
+    pid = storage.create_project(f"reservasi-{ending}")["id"]
+    jid = jobs.submit("download", "uji", pid, {"url": "https://example.com/v.mp4"}, "Unduh", queue="uji-res")["id"]
+    assert worker.run_one(("uji-res",), "uji-res-worker")
+    assert list(seen[0]) == [jid]                       # dicadangkan selama job berjalan
+    assert resources._inflight == {} and resources._own_base is None
+    if ending == "shutdown":
+        jobs.request_cancel(jid)                        # job dikembalikan ke antrean: bersihkan
 
 
 def test_claimed_job_is_requeued_when_memory_no_longer_fits(client, monkeypatch):
@@ -121,7 +191,7 @@ def test_claimed_job_is_requeued_when_memory_no_longer_fits(client, monkeypatch)
     monkeypatch.setattr(resources, "admit_memory", lambda queue: (False, "RAM container tersedia 100 MB < 364 MB"))
     assert worker.run_one(("uji-admission",), "uji-admission-worker") is False
     job = jobs.get(jid)
-    assert ran == [] and job["status"] == "antre" and "RAM" in job["message"]
+    assert ran == [] and job["status"] == "antre" and job["message"] == worker.WAIT_TEMPORARY
 
 
 # ------------------------------------------------------------------ job tidak boleh menggantung diam-diam (P5.5.1 C)
@@ -151,12 +221,18 @@ def test_worker_never_claims_queue_it_can_never_fit(monkeypatch):
     assert allowed == ("render",) and "tidak akan pernah muat" in why
 
 
-def _worker(name, queues, incapable=None, state="idle", blocked_since=None):
-    from app import monitor
+def _worker(name, queues, incapable=None, state="idle", blocked_since=None, offline=False, reported=True):
+    from sqlalchemy import update
+
+    from app import db, monitor
 
     monitor.register(name, tuple(queues.split(",")))
-    monitor.report(name, state, reason="uji" if state == "menunggu" else None, system=True,
-                   extra={"incapable": incapable or {}, "blocked_since": blocked_since})
+    if reported:
+        monitor.report(name, state, reason="uji" if state == "menunggu" else None, system=True,
+                       extra={"incapable": incapable or {}, "blocked_since": blocked_since})
+    if offline:
+        with db.engine().begin() as c:
+            c.execute(update(db.workers).where(db.workers.c.name == name).values(heartbeat=time.time() - 3600))
 
 
 def _drop_workers(*names):
@@ -167,43 +243,114 @@ def _drop_workers(*names):
         c.execute(delete(db.workers).where(db.workers.c.name.in_(names)))
 
 
-def test_unservable_only_when_no_alive_worker_can_serve(client):
+SMALL = {"uji-cap": "batas RAM container 256 MB < kebutuhan 300 MB + ruang aman 64 MB"}
+
+
+@pytest.mark.parametrize("case,others,expected", [
+    ("1. melebihi kapasitas SEMUA worker yang dikenal", [], "konfigurasi"),
+    ("2. worker besar offline", [dict(offline=True)], "mampu_offline"),
+    ("2b. worker besar berhenti rapi", [dict(state="berhenti", offline=True)], "mampu_offline"),
+    ("3. worker besar sedang start (belum melapor)", [dict(reported=False)], "siap"),
+    ("4. worker besar sibuk", [dict(state="sibuk")], "siap"),
+    ("5. worker besar ada, RAM sementara kurang", [dict(state="menunggu", blocked_since=time.time() - 30)],
+     "sementara"),
+])
+def test_queue_capacity_cases(client, case, others, expected):
     from app import monitor
 
-    q = "uji-cap"
+    names = ["uji-cap-kecil"] + [f"uji-cap-besar-{i}" for i in range(len(others))]
     try:
-        _worker("uji-cap-kecil", q, {q: "batas RAM container 256 MB < 364 MB"})
-        assert monitor.unservable_queues() == {q: "uji-cap-kecil: batas RAM container 256 MB < 364 MB"}
-        _worker("uji-cap-besar", q)                                  # worker lain mampu: jangan gagalkan
-        assert q not in monitor.unservable_queues()
+        _worker(names[0], "uji-cap", SMALL)
+        for name, kw in zip(names[1:], others):
+            _worker(name, "uji-cap", **kw)
+        cap = monitor.queue_capacity()["uji-cap"]
+        assert cap["state"] == expected, case
+        assert (monitor.unservable_queues().get("uji-cap") is not None) == (expected == "konfigurasi")
     finally:
-        _drop_workers("uji-cap-kecil", "uji-cap-besar")
-    assert q not in monitor.unservable_queues()                      # tanpa worker hidup: mungkin sedang start
+        _drop_workers(*names)
 
 
-def test_unservable_jobs_fail_with_clear_error_after_grace(client, monkeypatch):
-    import time as _t
+def test_no_alive_worker_at_all_is_not_a_configuration_failure(client):
+    from app import monitor
 
+    try:
+        _worker("uji-cap-mati", "uji-cap", SMALL, offline=True)     # hanya worker kecil, dan sedang offline
+        assert monitor.queue_capacity()["uji-cap"]["state"] == "tanpa_worker"
+        assert "uji-cap" not in monitor.unservable_queues()
+    finally:
+        _drop_workers("uji-cap-mati")
+
+
+def _queued_job(queue, age):
     from sqlalchemy import update
 
-    from app import db, jobs, storage, worker
+    from app import db, jobs, storage
 
-    q = "uji-cap2"
-    pid = storage.create_project("tidak-muat")["id"]
-    old = jobs.submit("download", "uji", pid, {"url": "https://example.com/a.mp4"}, "Unduh", queue=q)["id"]
-    new = jobs.submit("download", "uji", pid, {"url": "https://example.com/b.mp4"}, "Unduh", queue=q)["id"]
+    pid = storage.create_project(f"tidak-muat-{queue}")["id"]
+    jid = jobs.submit("download", "uji", pid, {"url": "https://example.com/a.mp4"}, "Unduh", queue=queue)["id"]
     with db.engine().begin() as c:
-        c.execute(update(db.jobs).where(db.jobs.c.id == old).values(created=_t.time() - 3600))
+        c.execute(update(db.jobs).where(db.jobs.c.id == jid).values(created=time.time() - age))
+    return jid
+
+
+def test_unservable_waits_by_default_with_clear_user_message(client, monkeypatch):
+    from app import jobs, worker
+
+    monkeypatch.setattr(worker, "UNSERVABLE_FAIL_AFTER_SECONDS", 0)
+    monkeypatch.setattr(worker, "_unservable_since", {})
+    jid = _queued_job("uji-cap", age=86400)
     try:
-        _worker("uji-cap2-kecil", q, {q: "batas RAM container 256 MB < 364 MB"})
-        assert worker.fail_unservable() == 1
-        failed = jobs.get(old)
-        assert failed["status"] == "gagal" and "Tidak ada worker dengan RAM cukup" in failed["error"]
-        assert "256 MB" in failed["error"]
-        assert jobs.get(new)["status"] == "antre"                    # masih dalam masa tenggang
+        _worker("uji-cap-kecil", "uji-cap", SMALL)
+        assert worker.handle_unservable(time.time()) == 0
+        assert worker.handle_unservable(time.time() + 10 * 86400) == 0  # sampai kapan pun: tidak digagalkan
+        assert worker._unservable_since                                  # tetapi memang terdeteksi & diperingatkan
+        job = jobs.get(jid)
+        assert job["status"] == "antre" and job["message"] == worker.WAIT_CONFIG
+        assert "MB" not in job["message"] and "uji-cap-kecil" not in job["message"]  # tanpa detail server
     finally:
-        _drop_workers("uji-cap2-kecil")
-        jobs.request_cancel(new)
+        _drop_workers("uji-cap-kecil")
+        jobs.request_cancel(jid)
+
+
+def test_optional_permanent_failure_needs_continuous_observation(client, monkeypatch):
+    from app import jobs, worker
+
+    monkeypatch.setattr(worker, "UNSERVABLE_FAIL_AFTER_SECONDS", 300)
+    monkeypatch.setattr(worker, "_unservable_since", {})
+    jid = _queued_job("uji-cap", age=3600)
+    t0 = time.time()
+    try:
+        _worker("uji-cap-kecil", "uji-cap", SMALL)
+        assert worker.handle_unservable(t0) == 0                     # baru teramati: belum
+        # 6. konfigurasi berubah saat job menunggu: worker besar muncul -> hitungan diulang
+        _worker("uji-cap-besar", "uji-cap")
+        assert worker.handle_unservable(t0 + 200) == 0 and worker._unservable_since == {}
+        _drop_workers("uji-cap-besar")
+        assert worker.handle_unservable(t0 + 400) == 0                # teramati lagi sejak t0+400, bukan t0
+        assert jobs.get(jid)["status"] == "antre"
+        # 2. worker besar hanya offline: tetap menunggu walau sudah lewat batas
+        _worker("uji-cap-besar", "uji-cap", offline=True)
+        assert worker.handle_unservable(t0 + 2000) == 0 and jobs.get(jid)["status"] == "antre"
+        assert worker._unservable_since == {}                         # bukan "konfigurasi", tidak dihitung
+        _drop_workers("uji-cap-besar")
+        assert worker.handle_unservable(t0 + 2100) == 0
+        assert worker.handle_unservable(t0 + 2100 + 301) == 1         # 1. pasti tidak muat, teramati >= 300 dtk
+        job = jobs.get(jid)
+        assert job["status"] == "gagal" and job["error"] == worker.FAIL_CONFIG
+    finally:
+        _drop_workers("uji-cap-kecil", "uji-cap-besar")
+
+
+def test_temporary_requeue_message_has_no_server_details(client, monkeypatch):
+    from app import jobs, storage, worker
+
+    pid = storage.create_project("admission-pesan")["id"]
+    jid = jobs.submit("download", "uji", pid, {"url": "https://example.com/v.mp4"}, "Unduh", queue="uji-pesan")["id"]
+    monkeypatch.setattr(resources, "admit_memory", lambda q: (False, "RAM container tersedia 100 MB < 364 MB"))
+    assert worker.run_one(("uji-pesan",), "uji-pesan-worker") is False
+    job = jobs.get(jid)
+    assert job["status"] == "antre" and job["message"] == worker.WAIT_TEMPORARY
+    jobs.request_cancel(jid)
 
 
 def test_blocked_worker_is_visible_and_unhealthy_after_threshold(client, capsys):

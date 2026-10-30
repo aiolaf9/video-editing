@@ -21,7 +21,7 @@ from typing import Optional
 from . import db, jobcontrol, jobs, lifecycle, monitor, pipeline, resources, storage
 from .config import (ANALYSIS_WORKERS, CANCEL_GRACE, CLEANUP_INTERVAL, CPU_WAIT_MAX, DOWNLOAD_TIMEOUT,
                      JOB_TIMEOUT_MAX, RENDER_TIMEOUT_BASE, RENDER_TIMEOUT_PER_SEC, RETENTION_DAYS,
-                     UNSERVABLE_GRACE_SECONDS, WORKER_REPORT_INTERVAL)
+                     UNSERVABLE_FAIL_AFTER_SECONDS, WORKER_REPORT_INTERVAL)
 from .schemas import RenderRequest
 
 log = logging.getLogger("video-editing.worker")
@@ -147,7 +147,7 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
         if ok:
             resources.reserve(data["id"], data["queue"])
     if not ok:
-        jobs.requeue(data["id"], message=f"Menunggu RAM server tersedia ({why})")
+        jobs.requeue(data["id"], message=WAIT_TEMPORARY)
         log.info("[%s] %s dikembalikan ke antrean: %s", name, data["id"], why)
         return False
     job = jobs.Job(data)
@@ -243,16 +243,35 @@ def incapable_queues(queues: tuple[str, ...], known: Optional[dict] = None) -> d
     return found
 
 
-def fail_unservable(now: Optional[float] = None) -> int:
-    """Gagalkan job yang tidak akan pernah diproses worker hidup mana pun, dengan pesan yang jelas."""
-    now = now or time.time()
+# Pesan untuk pengguna biasa: tanpa angka RAM atau nama server (detail teknis hanya di log & halaman admin).
+WAIT_TEMPORARY = "Menunggu kapasitas server tersedia..."
+WAIT_CONFIG = "Menunggu server dengan kapasitas memori yang cukup. Bila lama tidak berubah, hubungi admin."
+FAIL_CONFIG = "Pekerjaan ini membutuhkan memori lebih besar daripada kapasitas server. Hubungi admin."
+_unservable_since: dict = {}     # antrean -> sejak kapan proses ini terus-menerus melihatnya tidak dapat dilayani
+
+
+def handle_unservable(now: Optional[float] = None) -> int:
+    """Antrean yang tidak dapat dilayani konfigurasi worker (monitor.queue_capacity == "konfigurasi"): job tetap
+    menunggu dengan pesan jelas, admin diberi peringatan. Gagal permanen hanya bila UNSERVABLE_FAIL_AFTER_SECONDS > 0
+    dan kondisi itu teramati terus-menerus selama itu; berubahnya konfigurasi mengulang hitungan."""
+    current = monitor.unservable_queues()          # status worker selalu menurut heartbeat saat ini
+    now = now or time.time()                       # `now` hanya untuk menghitung lamanya kondisi teramati
+    for q in [q for q in _unservable_since if q not in current]:
+        log.warning("Antrean %s kembali dapat dilayani worker.", q)
+        del _unservable_since[q]
     failed = 0
-    for q, why in monitor.unservable_queues(now).items():
-        n = jobs.fail_queued(q, f"Tidak ada worker dengan RAM cukup untuk pekerjaan ini ({why}). "
-                                "Hubungi admin server.", older_than=now - UNSERVABLE_GRACE_SECONDS)
-        if n:
-            log.error("%d job antrean %s digagalkan: tidak ada worker yang mampu (%s)", n, q, why)
-        failed += n
+    for q, why in current.items():
+        if q not in _unservable_since:
+            _unservable_since[q] = now
+            log.error("Antrean %s tidak dapat dilayani worker mana pun yang dikenal (%s). Job menunggu; naikkan "
+                      "mem_limit/RAM worker atau perkecil kebutuhan (mis. WHISPER_MODEL).", q, why)
+        jobs.mark_waiting(q, WAIT_CONFIG)
+        if UNSERVABLE_FAIL_AFTER_SECONDS > 0 and now - _unservable_since[q] >= UNSERVABLE_FAIL_AFTER_SECONDS:
+            n = jobs.fail_queued(q, FAIL_CONFIG, older_than=now - UNSERVABLE_FAIL_AFTER_SECONDS)
+            if n:
+                log.error("%d job antrean %s digagalkan: tidak dapat dilayani selama %.0f dtk (%s)", n, q,
+                          now - _unservable_since[q], why)
+            failed += n
     return failed
 
 
@@ -281,7 +300,7 @@ def loop(queues: tuple[str, ...], name: Optional[str] = None, stop: Optional[thr
             if now - last_maintenance > 60:
                 last_maintenance = now
                 jobs.requeue_stale()
-                fail_unservable(now)
+                handle_unservable(now)
             if {"analisis", "render"} & set(queues) and now - last_sweep > CLEANUP_INTERVAL:
                 last_sweep = now
                 lifecycle.sweep()  # hanya satu worker yang benar-benar bekerja (advisory lock)

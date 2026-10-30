@@ -113,15 +113,14 @@ MEM_RESERVE_MB = int(os.environ.get("MEM_RESERVE_MB", "512"))
 # hanya dibutuhkan ruang aman kecil: batas itu sudah memisahkan container dari host.
 # Minimum 32 MB: lebih kecil dari itu, fluktuasi alokasi Python/FFmpeg bisa langsung memicu OOM killer container.
 CONTAINER_MEM_HEADROOM_MB = max(32, int(os.environ.get("CONTAINER_MEM_HEADROOM_MB", "64")))
-# Job yang baru mulai belum memakai RAM-nya: selama masa ini kebutuhannya dicadangkan agar job lain di proses yang
-# sama tidak ikut lolos; setelahnya pemakaian aktual (terukur) yang dihitung, sehingga tidak dihitung dua kali.
-RAM_RAMP_SECONDS = float(os.environ.get("RAM_RAMP_SECONDS", "60"))
 # Worker yang hidup tetapi tertahan admission (RAM/CPU) lebih lama dari ini dianggap tidak sehat oleh
 # `manage worker-health` (healthcheck container), agar "hidup tapi tidak bekerja" tidak terlihat sehat.
 WORKER_BLOCKED_UNHEALTHY_SECONDS = float(os.environ.get("WORKER_BLOCKED_UNHEALTHY_SECONDS", "1800"))
-# Job di antrean yang TIDAK AKAN PERNAH muat di worker mana pun yang hidup (kebutuhan RAM > batas container/host)
-# digagalkan dengan pesan jelas setelah menunggu selama ini, bukan menggantung selamanya.
-UNSERVABLE_GRACE_SECONDS = float(os.environ.get("UNSERVABLE_GRACE_SECONDS", "300"))
+# Antrean yang tidak dapat dilayani karena konfigurasi (SEMUA worker yang dikenal untuk antrean itu, hidup maupun
+# offline, melaporkan RAM-nya tidak akan pernah cukup): job tetap menunggu dengan pesan jelas & admin diberi
+# peringatan (log, metrik, halaman admin). Hanya bila nilai ini > 0 (operator menyatakan daftar worker sudah lengkap),
+# job digagalkan permanen setelah kondisi itu teramati terus-menerus selama sekian detik. Bawaan 0: tidak pernah.
+UNSERVABLE_FAIL_AFTER_SECONDS = float(os.environ.get("UNSERVABLE_FAIL_AFTER_SECONDS", "0"))
 _WHISPER_MEM = {"tiny": 700, "base": 900, "small": 1600, "medium": 3200, "large-v3": 5500, "large-v2": 5500}
 TASK_MEM_MB = {
     "analisis": int(os.environ.get("ANALYSIS_MEM_MB", str(_WHISPER_MEM.get(WHISPER_MODEL, 2500)))),

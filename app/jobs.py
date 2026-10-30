@@ -317,6 +317,14 @@ def fail_queued(queue: str, error: str, older_than: float) -> int:
             status="gagal", error=error[:4000], message="Gagal", finished=now, heartbeat=now)).rowcount
 
 
+def mark_waiting(queue: str, message: str) -> int:
+    """Pesan job 'antre' di antrean ini (mis. alasan menunggu kapasitas), tanpa mengubah status."""
+    with db.engine().begin() as c:
+        return c.execute(update(db.jobs).where(db.jobs.c.queue == queue, db.jobs.c.status == "antre",
+                                               db.jobs.c.message.is_distinct_from(message)).values(
+            message=message[:300])).rowcount
+
+
 def requeue_stale(all_running: bool = False, worker_prefix: Optional[str] = None) -> int:
     """Kembalikan pekerjaan 'jalan' yang worker-nya mati.
 
