@@ -7,8 +7,8 @@ import json
 import time
 from typing import Any, Optional
 
-from sqlalchemy import (BigInteger, Boolean, Column, Float, ForeignKey, Integer, MetaData, String, Table, Text,
-                        create_engine, event, func, inspect, select, text)
+from sqlalchemy import (BigInteger, Boolean, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text,
+                        create_engine, event, func, select, text)
 from sqlalchemy.engine import Engine
 
 from .config import DATABASE_URL, DB_MAX_OVERFLOW, DB_POOL_SIZE
@@ -169,6 +169,10 @@ jobs = Table(
     Column("finished", Float, nullable=True),
     Column("heartbeat", Float, nullable=True),
     Column("priority", Integer, nullable=True),  # lebih kecil = lebih dulu (lihat jobs.priority_for)
+    # Penjadwalan (P3) & metrik monitoring.
+    Index("ix_jobs_queue_status", "queue", "status"),
+    Index("ix_jobs_queue_started", "queue", "started"),
+    Index("ix_jobs_queue_finished", "queue", "finished"),
 )
 
 # Registri worker (P3): status, job yang sedang dikerjakan, dan pemakaian resource. Diperbarui berkala
@@ -211,56 +215,30 @@ _engine: Optional[Engine] = None
 
 
 def engine() -> Engine:
+    """Engine aplikasi. Saat pertama dipakai, skema database divalidasi (app.migrate.ensure_schema): tabel TIDAK
+    lagi dibuat/diubah dengan create_all; perubahan skema hanya lewat migrasi Alembic."""
     global _engine
     if _engine is None:
-        if DATABASE_URL.startswith("sqlite"):
-            _engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
+        from . import migrate
 
-            @event.listens_for(_engine, "connect")
+        migrate.ensure_schema()
+        if DATABASE_URL.startswith("sqlite"):
+            eng = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
+
+            @event.listens_for(eng, "connect")
             def _sqlite_pragmas(conn, _record):
                 cur = conn.cursor()
                 cur.execute("PRAGMA journal_mode=WAL")   # baca & tulis bersamaan
                 cur.execute("PRAGMA foreign_keys=ON")
                 cur.execute("PRAGMA busy_timeout=30000")
                 cur.close()
-            metadata.create_all(_engine)
-            with _engine.begin() as conn:
-                _add_missing_columns(conn)
         else:
             # Permintaan yang melebihi pool menunggu giliran (pool_timeout), bukan membuka koneksi baru,
             # sehingga lonjakan pengguna tidak membuat PostgreSQL kehabisan koneksi.
-            _engine = create_engine(DATABASE_URL, pool_size=DB_POOL_SIZE, max_overflow=DB_MAX_OVERFLOW,
-                                    pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
-            # Beberapa proses web/worker bisa start bersamaan: kunci agar tabel dibuat satu kali saja.
-            with _engine.begin() as conn:
-                conn.execute(text("SELECT pg_advisory_xact_lock(727274)"))
-                metadata.create_all(conn)
-                _add_missing_columns(conn)
+            eng = create_engine(DATABASE_URL, pool_size=DB_POOL_SIZE, max_overflow=DB_MAX_OVERFLOW,
+                                pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
+        _engine = eng
     return _engine
-
-
-# Kolom yang ditambahkan setelah rilis pertama: (tabel, kolom, tipe SQL). Hanya kolom NULLABLE
-# (aman & mundur-kompatibel). Sementara sampai Alembic dipasang (Phase 1 / P5).
-ADDED_COLUMNS = [
-    ("units", "storage_quota_mb", "INTEGER"),
-    ("jobs", "priority", "INTEGER"),
-]
-
-# Indeks untuk penjadwalan (P3). CREATE INDEX IF NOT EXISTS didukung SQLite & PostgreSQL.
-ADDED_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS ix_jobs_queue_status ON jobs (queue, status)",
-    "CREATE INDEX IF NOT EXISTS ix_jobs_queue_started ON jobs (queue, started)",
-    "CREATE INDEX IF NOT EXISTS ix_jobs_queue_finished ON jobs (queue, finished)",  # metrik monitoring
-]
-
-
-def _add_missing_columns(conn) -> None:
-    existing = {t: {c["name"] for c in inspect(conn).get_columns(t)} for t, _, _ in ADDED_COLUMNS}
-    for table, column, sql_type in ADDED_COLUMNS:
-        if column not in existing[table]:
-            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
-    for stmt in ADDED_INDEXES:
-        conn.execute(text(stmt))
 
 
 def is_postgres() -> bool:

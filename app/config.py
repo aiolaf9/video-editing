@@ -31,6 +31,10 @@ DATABASE_URL = os.environ.get("DATABASE_URL") or f"sqlite:///{DATA_DIR / 'app.db
 # harus di bawah max_connections PostgreSQL (bawaan 100).
 DB_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "5"))
 DB_MAX_OVERFLOW = int(os.environ.get("DB_MAX_OVERFLOW", "5"))
+# Migrasi skema otomatis saat start (P5). Kosong = otomatis untuk SQLite (satu komputer), TIDAK untuk PostgreSQL:
+# di server jalankan `python -m app.manage db-upgrade` (Docker: service `migrate`) setelah backup.
+_auto = os.environ.get("AUTO_MIGRATE", "").strip().lower()
+AUTO_MIGRATE = None if _auto == "" else _auto not in ("0", "off", "false", "no")
 
 # Worker di dalam proses web (praktis untuk satu komputer). Di server, worker dijalankan
 # terpisah dengan `python -m app.worker` sehingga web tetap ringan walau render menumpuk.

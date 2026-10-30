@@ -217,11 +217,22 @@ docker compose exec web python -m app.manage media-cleanup
 
 ## Update aplikasi
 
+Skema database dikelola **Alembic** (lihat `docs/DATABASE_MIGRATIONS.md`). Web & worker menolak start bila skema
+database belum sesuai versi aplikasi; service `migrate` menaikkannya sekali sebelum web & worker start.
+
 ```bash
-cd /opt/video-editing && git pull && docker compose up -d --build
+cd /opt/video-editing
+./deploy/backup.sh                      # backup database dulu
+git pull
+docker compose build
+docker compose run --rm migrate         # migrasi skema (satu transaksi; gagal = database tetap versi lama)
+docker compose up -d
+docker compose exec web python -m app.manage db-status
 ```
 
-Data (akun, proyek, video) tersimpan di volume Docker dan tidak hilang saat update.
+Database dari versi sebelum P5 (tanpa catatan versi) dikenali otomatis dan dinaikkan tanpa menyentuh data.
+Data (akun, proyek, video) tersimpan di volume Docker dan tidak hilang saat update. Bila migrasi gagal, aplikasi
+lama tetap bisa dijalankan pada database itu; prosedur pemulihan ada di `docs/DATABASE_MIGRATIONS.md`.
 
 ## Backup
 

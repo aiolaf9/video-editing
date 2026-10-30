@@ -6,6 +6,10 @@
     python -m app.manage list-users
     python -m app.manage media-migrate [--apply] [--grace-hours 72]   (proyek lama -> media sementara)
     python -m app.manage media-cleanup                                  (jalankan pembersihan sekali)
+    python -m app.manage db-status                     (versi skema database vs aplikasi)
+    python -m app.manage db-upgrade [--target REV]     (migrasi Alembic; buat backup dulu di server)
+    python -m app.manage db-downgrade REV --allow-data-loss
+    python -m app.manage db-check                      (skema database = model aplikasi? untuk CI)
 """
 import argparse
 import getpass
@@ -42,6 +46,40 @@ def create_admin(email: str = "", name: str = "", password: str = "") -> None:
     print(f"Admin dibuat: {user['email']}. Silakan login di browser.")
 
 
+def _db_command(args) -> int:
+    """Perintah skema: TIDAK memanggil db.engine() (yang menolak start bila skema tertinggal)."""
+    from . import migrate
+
+    try:
+        if args.cmd == "db-status":
+            st = migrate.status()
+            print(f"Database: {st['current'] or ('(tanpa versi, setara ' + st['legacy'] + ')' if st['legacy'] else '(kosong)')}")
+            print(f"Aplikasi: {st['head']}  ->  {st['state']}")
+            return 0 if st["state"] == "terbaru" else 2
+        if args.cmd == "db-upgrade":
+            r = migrate.upgrade(target=args.target)
+            b, a = r["before"], r["after"]
+            print(f"{b['current'] or b['legacy'] or 'kosong'} -> {a['current']} ({a['state']})")
+            if r["backup"]:
+                print(f"Backup SQLite: {r['backup']}")
+            return 0
+        if args.cmd == "db-downgrade":
+            r = migrate.downgrade(args.target, allow_data_loss=args.allow_data_loss)
+            print(f"{r['before']['current']} -> {r['after']['current']}")
+            return 0
+        if args.cmd == "db-check":
+            st = migrate.status()
+            diffs = migrate.drift() if st["state"] == "terbaru" else ["skema belum terbaru: " + st["state"]]
+            for d in diffs:
+                print("BEDA:", d)
+            print("OK: skema database sama dengan model aplikasi." if not diffs else f"{len(diffs)} perbedaan.")
+            return 1 if diffs else 0
+    except migrate.SchemaError as exc:
+        print(f"GAGAL: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.manage")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -58,7 +96,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("--grace-hours", type=float, default=72.0,
                    help="Masa tenggang sebelum media proyek lama boleh dihapus (jam sejak sekarang)")
     sub.add_parser("media-cleanup", help="Jalankan satu putaran pembersihan media sekarang")
+    p = sub.add_parser("db-status", help="Versi skema database dibanding aplikasi")
+    p = sub.add_parser("db-upgrade", help="Migrasi skema ke versi terbaru (atau --target)")
+    p.add_argument("--target", default="head")
+    p = sub.add_parser("db-downgrade", help="Turunkan skema (menghapus data tabel/kolom yang lebih baru)")
+    p.add_argument("target")
+    p.add_argument("--allow-data-loss", action="store_true")
+    sub.add_parser("db-check", help="Gagal (exit 1) bila skema database berbeda dari model aplikasi")
     args = parser.parse_args(argv)
+    if args.cmd.startswith("db-"):
+        sys.exit(_db_command(args))
     db.engine()
 
     if args.cmd == "create-admin":

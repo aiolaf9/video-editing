@@ -228,7 +228,7 @@ def main():
 
     code = str(Path(args.code).resolve())
     data_dir = Path(tempfile.mkdtemp(prefix="ve-bench-", dir=os.environ.get("BENCH_CACHE")))
-    env = dict(os.environ, VIDEO_APP_DATA=str(data_dir), DATABASE_URL=args.db, EMBEDDED_WORKERS="0",
+    env = dict(os.environ, VIDEO_APP_DATA=str(data_dir), DATABASE_URL=args.db, EMBEDDED_WORKERS="0", AUTO_MIGRATE="1",
                CLEANUP_INTERVAL="1000000", PYTHONUNBUFFERED="1", WORKER_REPORT_INTERVAL="5")
     if args.real_whisper:
         env["BENCH_REAL_WHISPER"] = "1"
@@ -242,7 +242,13 @@ def main():
     sys.path.insert(0, code)
     from app import db, jobs, media, storage  # noqa: E402
 
-    db.metadata.drop_all(db.engine())
+    from sqlalchemy import text as _text
+
+    eng = db.engine()  # database benchmark khusus: kosongkan lalu buat ulang lewat migrasi Alembic
+    db.metadata.drop_all(eng)
+    with eng.begin() as c:
+        c.execute(_text("DROP TABLE IF EXISTS alembic_version"))
+    eng.dispose()
     db._engine = None
     db.engine()
     files = make_media()

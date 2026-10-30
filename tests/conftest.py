@@ -15,6 +15,8 @@ os.environ.setdefault("EMBEDDED_WORKERS", "1")
 os.environ.setdefault("ADMIN_EMAIL", "admin@test.local")
 os.environ.setdefault("ADMIN_PASSWORD", "rahasia-admin-123")
 os.environ.setdefault("MAX_PENDING_PER_USER", "50")
+# Database uji selalu baru: skema dibuat lewat migrasi Alembic (juga di PostgreSQL).
+os.environ.setdefault("AUTO_MIGRATE", "1")
 # Pembersihan media dijalankan eksplisit oleh tes (lifecycle.sweep(now=...)), bukan oleh worker bawaan.
 os.environ.setdefault("CLEANUP_INTERVAL", "1000000")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

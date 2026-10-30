@@ -42,13 +42,19 @@ def main():
     ap.add_argument("--drop-index", default="", help="indeks yang dihapus dulu (pembanding), mis. ix_jobs_queue_finished")
     ap.add_argument("--out")
     args = ap.parse_args()
-    os.environ.update(DATABASE_URL=args.db, VIDEO_APP_DATA=tempfile.mkdtemp(prefix="ve-dbbench-"), EMBEDDED_WORKERS="0")
+    os.environ.update(DATABASE_URL=args.db, VIDEO_APP_DATA=tempfile.mkdtemp(prefix="ve-dbbench-"), EMBEDDED_WORKERS="0", AUTO_MIGRATE="1")
     sys.path.insert(0, str(ROOT))
     from sqlalchemy import insert
 
     from app import db, jobs, monitor
 
-    db.metadata.drop_all(db.engine())
+    from sqlalchemy import text as _text
+
+    eng = db.engine()  # database benchmark khusus: kosongkan lalu buat ulang lewat migrasi Alembic
+    db.metadata.drop_all(eng)
+    with eng.begin() as c:
+        c.execute(_text("DROP TABLE IF EXISTS alembic_version"))
+    eng.dispose()
     db._engine = None
     db.engine()
     now = time.time()
