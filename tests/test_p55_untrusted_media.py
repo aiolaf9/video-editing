@@ -83,3 +83,47 @@ def test_whisper_receives_decoded_samples_not_a_path(monkeypatch, tmp_path):
     monkeypatch.setattr(transcribe, "_get_model", lambda: FakeModel())
     transcribe.transcribe(tmp_path / "berkas-pengguna.mp4", 1.0, language="id")
     assert isinstance(seen["audio"], np.ndarray)
+
+
+def test_worker_health_reflects_heartbeat(client):
+    """Healthcheck container worker (compose staging): sehat hanya bila worker host ini punya heartbeat baru."""
+    import time
+
+    from sqlalchemy import delete, insert
+
+    from app import db, manage
+
+    host = f"uji-health-{time.time_ns()}"
+    assert manage.worker_health(60, host) == 1                       # belum terdaftar
+    now = time.time()
+    with db.engine().begin() as c:
+        c.execute(insert(db.workers).values(name=f"{host}-1-render", host=host, queues="render", state="idle",
+                                            started=now, heartbeat=now))
+    try:
+        assert manage.worker_health(60, host) == 0
+        with db.engine().begin() as c:
+            c.execute(db.workers.update().where(db.workers.c.name == f"{host}-1-render").values(heartbeat=now - 300))
+        assert manage.worker_health(60, host) == 1                   # heartbeat basi
+        assert manage.worker_health(60, "uji-health") == 1          # awalan nama lain tidak terhitung
+    finally:
+        with db.engine().begin() as c:
+            c.execute(delete(db.workers).where(db.workers.c.name == f"{host}-1-render"))
+
+
+def test_local_file_reads_from_disguised_playlists_are_refused(tmp_path):
+    """Playlist/concat yang mencoba membaca berkas lokal lain (bukan media) tidak menghasilkan data."""
+    secret = tmp_path / "rahasia.txt"
+    secret.write_text("JANGAN-TERBACA\n" * 100)
+    cases = {
+        "hls.mp4": f"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nfile://{secret}\n#EXT-X-ENDLIST\n",
+        "hls2.m3u8": f"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n{secret}\n#EXT-X-ENDLIST\n",
+        "concat.mp4": f"ffconcat version 1.0\nfile {secret}\n",
+        "concat2.mp4": "ffconcat version 1.0\nfile ../../../../etc/hostname\n",
+    }
+    for name, body in cases.items():
+        path = tmp_path / name
+        path.write_text(body)
+        with pytest.raises(media.MediaError):
+            media.probe(path)
+        with pytest.raises(media.MediaError):
+            media.decode_audio(path)

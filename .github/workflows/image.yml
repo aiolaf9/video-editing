@@ -1,6 +1,7 @@
 # P5.5.1: build image PRODUKSI dari Dockerfile (image dasar resmi Docker Hub) lalu uji kesiapan staging:
-# versi, user non-root, lisensi & secret di dalam image, FFmpeg dengan media tidak tepercaya, compose produksi +
-# overlay staging (migrasi, health, worker, isolasi jaringan worker-io). Tanpa data produksi, tanpa API berbayar.
+# digest & versi, user non-root, lisensi & secret di dalam image, seluruh regresi di dalam image (read-only, tanpa
+# capability), FFmpeg dengan media tidak tepercaya, compose produksi + overlay staging (migrasi, health, worker,
+# isolasi jaringan worker-io, impor publik lewat proxy, upaya bypass, restart). Tanpa data produksi/API berbayar.
 name: Production image
 
 on:
@@ -15,103 +16,192 @@ concurrency:
   group: image-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}   # kegagalan di sisi kiri "| tee" tidak boleh tertutup
+
 env:
   COMPOSE: docker compose -f docker-compose.yml -f deploy/compose.staging.yml
+  PYTHON_IMAGE: python:3.12-slim
+  PROXY_BASE: debian:stable-slim
 
 jobs:
   image:
     name: Build image produksi & kesiapan staging
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Build image produksi (python:3.12-slim resmi) & proxy keluar (debian:stable-slim resmi)
+      - name: Tarik image dasar resmi & catat digest
         run: |
-          docker build --pull -t video-editing:latest .
-          docker build --pull -t video-editing-egress-proxy:latest deploy/egress-proxy
+          docker pull "$PYTHON_IMAGE"; docker pull "$PROXY_BASE"
+          py=$(docker image inspect "$PYTHON_IMAGE" --format '{{index .RepoDigests 0}}')
+          px=$(docker image inspect "$PROXY_BASE" --format '{{index .RepoDigests 0}}')
+          test -n "$py" && test -n "$px"
+          echo "PY_DIGEST=$py" >> "$GITHUB_ENV"; echo "PX_DIGEST=$px" >> "$GITHUB_ENV"
+          { echo "base python: $py"; echo "base proxy:  $px"; } | tee image-facts.txt
+
+      - name: Build image produksi & proxy keluar dari digest yang sama
+        run: |
+          docker build --build-arg PYTHON_IMAGE="$PY_DIGEST" -t video-editing:latest .
+          sed "s#^FROM .*#FROM $PX_DIGEST#" deploy/egress-proxy/Dockerfile > /tmp/proxy.Dockerfile
+          docker build -f /tmp/proxy.Dockerfile -t video-editing-egress-proxy:latest deploy/egress-proxy
           {
-            echo "base python: $(docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}')"
-            echo "base proxy:  $(docker image inspect debian:stable-slim --format '{{index .RepoDigests 0}}')"
+            echo "image id: $(docker image inspect video-editing:latest --format '{{.Id}}')"
             echo "ukuran image: $(docker image inspect video-editing:latest --format '{{.Size}}') byte"
-          } | tee image-facts.txt
+            echo "ukuran proxy: $(docker image inspect video-editing-egress-proxy:latest --format '{{.Size}}') byte"
+          } | tee -a image-facts.txt
 
       - name: Versi & user di dalam image
         run: |
           docker run --rm --entrypoint sh video-editing:latest -c '
             set -e
             echo "uid=$(id -u) user=$(id -un)"; test "$(id -u)" = 1000
+            . /etc/os-release; echo "os: $PRETTY_NAME"
             python -V; ffmpeg -version | head -1; ffprobe -version | head -1
             ffmpeg -hide_banner -buildconf | grep -o -- "--enable-gpl\|--enable-libx264\|--enable-nonfree" | sort -u
             pip --version; pip check
-            touch /app/tulis 2>/dev/null && { echo "GAGAL: /app dapat ditulis user aplikasi"; exit 1; } || echo "/app read-only untuk user aplikasi"
+            if touch /app/tulis 2>/dev/null; then echo "GAGAL: /app dapat ditulis user aplikasi"; exit 1; fi
+            echo "/app read-only untuk user aplikasi"
             pip freeze' | tee -a image-facts.txt
 
       - name: Lisensi paket di dalam image
-        run: docker run --rm -v "$PWD/scripts:/s:ro" --entrypoint python video-editing:latest /s/check_licenses.py
+        run: docker run --rm -v "$PWD/scripts:/s:ro" --entrypoint python video-editing:latest /s/check_licenses.py | tee -a image-facts.txt
 
-      - name: Tidak ada secret, .env, data, atau media di dalam image
+      - name: Tidak ada secret, .env, data, backup, atau media di dalam image
         run: |  # pragma: allowlist secret (pola grep pemeriksa, bukan secret)
           pip install -q detect-secrets==1.5.0
           docker history --no-trunc --format '{{.CreatedBy}}' video-editing:latest > history.txt
           if grep -iE '(api_key|secret|password|token)[^ ]*=[^ $]' history.txt; then echo "secret di layer image"; exit 1; fi
           cid=$(docker create video-editing:latest)
           docker export "$cid" | tar -t > files.txt
-          if grep -E '(^|/)(\.env|\.git|tests|data/projects)(/|$)|\.(mp4|mov|mkv|db|sqlite|dump)$' files.txt | grep -v '^usr/\|^etc/\|^var/'; then
-            echo "berkas terlarang di image"; exit 1; fi
-          mkdir image-root && docker cp "$cid:/app/." image-root/ && docker rm "$cid"
+          if grep -E '(^|/)(\.env|\.git|tests|backups?|data/projects)(/|$)|\.(mp4|mov|mkv|webm|db|sqlite|dump|sql\.gz)$' files.txt \
+              | grep -v '^usr/\|^etc/\|^var/'; then echo "berkas terlarang di image"; exit 1; fi
+          echo "berkas di image: $(wc -l < files.txt), tanpa .env/.git/tests/backup/data/media"
+          mkdir image-root && docker cp "$cid:/app/." image-root/ && docker rm "$cid" > /dev/null
           cd image-root
           detect-secrets-hook --baseline ../.secrets.baseline $(find app web -type f \( -name '*.py' -o -name '*.js' -o -name '*.html' -o -name '*.json' \))
+          echo "detect-secrets: tidak ada secret baru di /app"
 
-      - name: FFmpeg image ini tidak membuka jaringan dari media tidak tepercaya
-        run: docker run --rm -v "$PWD/deploy/checks:/c:ro" --entrypoint python video-editing:latest /c/media_trap.py | tee -a image-facts.txt
+      - name: FFmpeg/FFprobe image dengan media normal & tidak tepercaya (tanpa jaringan, read-only)
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:size=512m --cap-drop ALL \
+            --security-opt no-new-privileges -e VIDEO_APP_DATA=/tmp/data \
+            -v "$PWD/deploy/checks:/c:ro" --entrypoint python video-editing:latest /c/media_trap.py | tee -a image-facts.txt
+
+      - name: Seluruh regresi di dalam image produksi (read-only, tanpa capability; render, subtitle, overlay, preview)
+        run: |
+          docker run --rm --read-only --tmpfs /tmp:size=3g,mode=1777 --tmpfs /home/app:uid=1000,gid=1000,mode=0700 \
+            --cap-drop ALL --security-opt no-new-privileges -e HOME=/home/app -e HF_HUB_OFFLINE=1 \
+            -v "$PWD:/src:ro" -w /src --entrypoint sh video-editing:latest -c '
+              pip install --user -q --disable-pip-version-check "pytest>=8" "httpx>=0.27"
+              python -m pytest -q -p no:cacheprovider --durations=5' | tee image-tests.txt
 
       - name: Compose produksi + overlay staging
         run: |
           cp .env.example .env
           pg=$(openssl rand -hex 16); adm=$(openssl rand -hex 12)
           echo "::add-mask::$pg"; echo "::add-mask::$adm"
-          sed -i '/^POSTGRES_PASSWORD=/d; /^DOMAIN=/d; /^ADMIN_EMAIL=/d; /^ADMIN_PASSWORD=/d; /^COOKIE_SECURE=/d' .env
-          printf 'POSTGRES_PASSWORD=%s\nDOMAIN=localhost\nADMIN_EMAIL=admin@staging.local\nADMIN_PASSWORD=%s\nCOOKIE_SECURE=0\n' "$pg" "$adm" >> .env
+          sed -i '/^POSTGRES_PASSWORD=/d; /^DOMAIN=/d; /^ADMIN_EMAIL=/d; /^ADMIN_PASSWORD=/d; /^COOKIE_SECURE=/d; /^ALLOW_URL_IMPORT=/d' .env
+          printf 'POSTGRES_PASSWORD=%s\nDOMAIN=localhost\nADMIN_EMAIL=admin@staging.local\nADMIN_PASSWORD=%s\nCOOKIE_SECURE=0\nALLOW_URL_IMPORT=admins\n' "$pg" "$adm" >> .env
+          echo "ADMIN_PASSWORD=$adm" >> "$GITHUB_ENV"
           $COMPOSE up -d --no-build
-          for i in $(seq 1 90); do
-            state=$(docker inspect -f '{{.State.Health.Status}}' "$($COMPOSE ps -q web)" 2>/dev/null || true)
-            [ "$state" = healthy ] && break; sleep 2
+          for i in $(seq 1 120); do
+            unhealthy=$($COMPOSE ps --format '{{.Service}} {{.Health}}' | awk '$2 != "" && $2 != "healthy"' || true)
+            [ -z "$unhealthy" ] && break; sleep 2
           done
-          $COMPOSE ps -a
-          test "$state" = healthy
+          $COMPOSE ps -a --format 'table {{.Service}}\t{{.Status}}'
+          test -z "$unhealthy" || { echo "belum sehat: $unhealthy"; exit 1; }
 
-      - name: Migrasi, health, database, worker, user container
+      - name: PostgreSQL, migrasi, health (langsung & via Caddy), worker, user, volume
         run: |
-          set -e
-          test "$($COMPOSE ps -a migrate --format '{{.ExitCode}}')" = 0
-          $COMPOSE exec -T web python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read().decode())"
-          curl -fsSk --resolve localhost:443:127.0.0.1 https://localhost/api/health; echo
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$($COMPOSE ps -q db)")" = healthy && echo "postgres: healthy"
+          test "$($COMPOSE ps -a migrate --format '{{.ExitCode}}')" = 0 && echo "migrate: exit 0"
+          $COMPOSE exec -T web python -c "import urllib.request; print('web:', urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read().decode())"
+          echo "caddy: $(curl -fsSk --resolve localhost:443:127.0.0.1 https://localhost/api/health)"
           $COMPOSE exec -T web python -m app.manage db-status
           $COMPOSE exec -T web python -m app.manage db-check
           for svc in web worker-analisis worker-render worker-io; do
-            echo "$svc uid=$($COMPOSE exec -T $svc id -u)"; test "$($COMPOSE exec -T $svc id -u)" = 1000
+            u=$($COMPOSE exec -T $svc id -u); echo "$svc uid=$u"; test "$u" = 1000
+            if $COMPOSE exec -T $svc sh -c 'touch /app/x || touch /usr/x' 2>/dev/null; then echo "$svc: root fs dapat ditulis"; exit 1; fi
+            $COMPOSE exec -T $svc sh -c 'touch /data/.uji /tmp/.uji && rm /data/.uji /tmp/.uji'
           done
-          for i in $(seq 1 30); do
-            queues=$($COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "select string_agg(queues, ';' order by queues) from workers where state <> 'berhenti'")
-            case "$queues" in *io*) break;; esac; sleep 2
-          done
+          echo "root fs read-only; /data & /tmp dapat ditulis"
+          queues=$($COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "select string_agg(queues, ';' order by queues) from workers where state <> 'berhenti'")
           echo "worker terdaftar: $queues"
           for q in analisis render io; do echo "$queues" | grep -q "$q"; done
-          $COMPOSE exec -T web sh -c 'touch /data/.uji && rm /data/.uji && df -h /data | tail -1'
+          for svc in worker-analisis worker-render worker-io; do
+            echo "$svc: $(docker inspect -f '{{.State.Health.Status}}' $($COMPOSE ps -q $svc | head -1))"
+          done
+          $COMPOSE exec -T web sh -c 'df -h /data /tmp | tail -2'
+
+      - name: Header X-Forwarded-For hanya dipercaya dari Caddy
+        run: |
+          $COMPOSE exec -T worker-render python -c "import urllib.request as u; u.urlopen(u.Request('http://web:8000/api/health', headers={'X-Forwarded-For': '6.6.6.6'}), timeout=5)"
+          curl -fsSk --resolve localhost:443:127.0.0.1 -H 'X-Forwarded-For: 7.7.7.7' https://localhost/api/health > /dev/null
+          sleep 1
+          if $COMPOSE logs web | grep -E '(6\.6\.6\.6|7\.7\.7\.7)'; then echo "header palsu dipercaya"; exit 1; fi
+          echo "X-Forwarded-For palsu (dari worker & dari klien lewat Caddy) tidak dipercaya"
 
       - name: Isolasi jaringan worker-io (lapisan jaringan, bukan guard Python)
         run: $COMPOSE exec -T worker-io python - < deploy/checks/net_isolation.py | tee net-isolation.txt
+
+      - name: Impor publik lewat proxy & upaya bypass (end-to-end lewat Caddy)
+        run: |
+          $COMPOSE stop worker-analisis    # analisis (Whisper) bukan bagian P5.5.1
+          ADMIN_EMAIL=admin@staging.local python3 deploy/checks/e2e_staging.py | tee e2e.txt
+          $COMPOSE logs --no-color egress-proxy > squid.log
+          echo "squid TCP_TUNNEL ke sumber publik: $(grep -cE 'TCP_TUNNEL/200 .*(w3schools|samplelib|test-videos)' squid.log)"
+          grep -qE 'TCP_TUNNEL/200 .*(w3schools|samplelib|test-videos)' squid.log
+          echo "squid TCP_DENIED ke metadata lewat redirect: $(grep -cE 'TCP_DENIED/403 .*169\.254\.169\.254/latest/meta-data/e2e-redirect-p551' squid.log)"
+          grep -qE 'TCP_DENIED/403 .*169\.254\.169\.254/latest/meta-data/e2e-redirect-p551' squid.log
+
+      - name: Restart container tanpa merusak status job
+        run: |
+          q="select id || ':' || status from jobs order by id"
+          before=$($COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "$q")
+          echo "sebelum: $(echo "$before" | tr '\n' ' ')"
+          $COMPOSE restart db web worker-render worker-io egress-proxy caddy
+          for i in $(seq 1 90); do
+            unhealthy=$($COMPOSE ps --format '{{.Service}} {{.Health}}' | awk '$2 != "" && $2 != "healthy"' || true)
+            [ -z "$unhealthy" ] && break; sleep 2
+          done
+          test -z "$unhealthy" || { echo "belum sehat setelah restart: $unhealthy"; exit 1; }
+          after=$($COMPOSE exec -T db psql -U videoapp -d videoapp -tAc "$q")
+          echo "sesudah: $(echo "$after" | tr '\n' ' ')"
+          test "$before" = "$after"
+          test -n "$before"
+          ! echo "$after" | grep -q ':jalan$'
+          echo "caddy: $(curl -fsSk --resolve localhost:443:127.0.0.1 https://localhost/api/health)"
+          test "$($COMPOSE ps -a migrate --format '{{.ExitCode}}')" = 0
+
+      - name: Secret tidak muncul di log container staging
+        run: |
+          pgpw=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)
+          $COMPOSE logs --no-color > all-logs.txt 2>&1
+          if grep -qF -e "$pgpw" -e "$ADMIN_PASSWORD" all-logs.txt; then echo "secret muncul di log"; exit 1; fi
+          echo "log $(wc -l < all-logs.txt) baris: tanpa password database/admin"
+          rm -f all-logs.txt
 
       - name: Log & ringkasan
         if: always()
         run: |
           $COMPOSE ps -a > compose-ps.txt 2>&1 || true
-          $COMPOSE logs --no-color --tail 200 > compose-logs.txt 2>&1 || true
+          $COMPOSE logs --no-color --tail 300 > compose-logs.txt 2>&1 || true
           rm -f .env
           $COMPOSE down -v --remove-orphans > /dev/null 2>&1 || true
+          {
+            echo "## Production image"
+            echo '```'
+            grep -E '^(base|image id|ukuran|uid|os:|Python|ffmpeg version|ffprobe version|--enable|No broken|[0-9]+ paket|permintaan|MP4 normal|masalah)' image-facts.txt || true
+            tail -1 image-tests.txt 2>/dev/null || true
+            tail -1 net-isolation.txt 2>/dev/null || true
+            tail -1 e2e.txt 2>/dev/null || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
@@ -119,7 +209,10 @@ jobs:
           name: kesiapan-staging
           path: |
             image-facts.txt
+            image-tests.txt
             net-isolation.txt
+            e2e.txt
+            squid.log
             compose-ps.txt
             compose-logs.txt
           if-no-files-found: ignore

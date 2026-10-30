@@ -5,26 +5,51 @@ x-hardening: &hardening
   security_opt: ["no-new-privileges:true"]
   cap_drop: ["ALL"]
 
+# Proses aplikasi: root filesystem read-only; yang bisa ditulis hanya volume /data, /tmp, dan home (cache font).
+x-app-hardening: &app-hardening
+  <<: *hardening
+  read_only: true
+  tmpfs:
+    - /tmp:size=1g,mode=1777
+    - /home/app:size=64m,uid=1000,gid=1000,mode=0700
+
+x-worker-health: &worker-health
+  healthcheck:
+    test: ["CMD", "python", "-m", "app.manage", "worker-health", "--max-age", "60"]
+    interval: 30s
+    timeout: 20s
+    retries: 3
+    start_period: 30s
+
 services:
   db:
     networks: [default, dl-db]
 
   migrate:
-    <<: *hardening
+    <<: *app-hardening
 
+  # Hanya Caddy (jaringan edge) yang dipercaya untuk header X-Forwarded-*; worker di jaringan default tidak.
   web:
+    <<: *app-hardening
+    networks: [default, edge]
+    environment:
+      FORWARDED_ALLOW_IPS: 172.31.250.0/24
+
+  caddy:
     <<: *hardening
+    cap_add: ["NET_BIND_SERVICE"]
+    networks: [edge]
 
   worker-analisis:
-    <<: *hardening
+    <<: [*app-hardening, *worker-health]
 
   worker-render:
-    <<: *hardening
+    <<: [*app-hardening, *worker-health]
 
   # Unduhan dari link = konten tidak tepercaya. Tanpa rute langsung ke internet: hanya ke database (antrean) dan
   # ke proxy keluar yang menolak IP privat/metadata. Tidak dapat menjangkau web, worker lain, maupun Caddy.
   worker-io:
-    <<: *hardening
+    <<: [*app-hardening, *worker-health]
     networks: [dl-db, dl-egress]
     depends_on:
       egress-proxy:
@@ -51,6 +76,10 @@ services:
     cpus: 0.5
 
 networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
   dl-db:
     internal: true
   dl-egress:

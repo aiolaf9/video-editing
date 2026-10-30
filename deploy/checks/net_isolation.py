@@ -56,6 +56,28 @@ for target in ["http://169.254.169.254/latest/meta-data/", "http://10.0.0.1/", "
 expect("proxy CONNECT 169.254.169.254:443 (wajib ditolak)",
        r := via_proxy("CONNECT 169.254.169.254:443 HTTP/1.1\r\nHost: 169.254.169.254:443"), r != "200")
 
+# CONNECT hanya ke 443; port/layanan lain ditolak.
+for target in ["example.com:22", "example.com:80", "example.com:8443", "db:5432", "127.0.0.1:443", "[::1]:443"]:
+    expect(f"proxy CONNECT {target} (wajib ditolak)", r := via_proxy(f"CONNECT {target} HTTP/1.1\r\nHost: {target}"),
+           r != "200")
+
+# IPv6 & bentuk alamat lain menuju jaringan internal.
+for target in ["http://[::ffff:169.254.169.254]/", "http://[::ffff:127.0.0.1]/", "http://[fd00::1]/", "http://[fe80::1]/",
+               "http://0x7f000001/", "http://0177.0.0.1/", "http://0/"]:
+    host = urlsplit(target).netloc
+    expect(f"proxy -> {target} (wajib ditolak)", r := via_proxy(f"GET {target} HTTP/1.1\r\nHost: {host}"),
+           r[:1] not in ("2", "3"))
+
+# Nama DNS publik yang resolve ke IP privat/metadata: squid harus memeriksa IP HASIL RESOLUSI. Wajib tepat 403
+# (ACL); 503 berarti DNS gagal sehingga uji tidak membuktikan apa pun.
+for target in ["http://169.254.169.254.nip.io/latest/meta-data/", "http://10.0.0.1.nip.io/", "http://127.0.0.1.nip.io:3128/",
+               "http://localtest.me/"]:
+    host = urlsplit(target).netloc
+    expect(f"proxy -> {target} (resolve ke IP internal, wajib 403)",
+           r := via_proxy(f"GET {target} HTTP/1.1\r\nHost: {host}"), r == "403")
+expect("proxy CONNECT 169.254.169.254.nip.io:443 (wajib 403)",
+       r := via_proxy("CONNECT 169.254.169.254.nip.io:443 HTTP/1.1\r\nHost: 169.254.169.254.nip.io:443"), r == "403")
+
 print(json.dumps(results, indent=1, ensure_ascii=False))
 bad = [r for r in results if not r["sesuai"]]
 print(f"{len(results) - len(bad)}/{len(results)} sesuai")

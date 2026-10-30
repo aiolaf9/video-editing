@@ -80,6 +80,21 @@ def _db_command(args) -> int:
     return 0
 
 
+def worker_health(max_age: float, host: Optional[str] = None) -> int:
+    """0 bila worker di container/host ini terdaftar dan heartbeat-nya tidak lebih tua dari max_age detik.
+    Nama worker diawali hostname (= ID container di Docker), lihat worker.run."""
+    import socket
+    import time
+
+    prefix = f"{host or socket.gethostname()}-"
+    with db.engine().connect() as c:
+        rows = c.execute(select(db.workers.c.name, db.workers.c.heartbeat, db.workers.c.state)
+                         .where(db.workers.c.name.startswith(prefix, autoescape=True))).all()
+    alive = [r for r in rows if r.state != "berhenti" and time.time() - r.heartbeat <= max_age]
+    print(f"{len(alive)}/{len(rows)} worker aktif di {prefix[:-1]}")
+    return 0 if alive else 1
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.manage")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -103,6 +118,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     p.add_argument("target")
     p.add_argument("--allow-data-loss", action="store_true")
     sub.add_parser("db-check", help="Gagal (exit 1) bila skema database berbeda dari model aplikasi")
+    p = sub.add_parser("worker-health", help="Healthcheck container worker: heartbeat worker di host ini masih baru")
+    p.add_argument("--max-age", type=float, default=60.0, help="Umur heartbeat maksimum (detik)")
     args = parser.parse_args(argv)
     if args.cmd.startswith("db-"):
         sys.exit(_db_command(args))
@@ -138,6 +155,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     elif args.cmd == "media-cleanup":
         from . import lifecycle
         print(lifecycle.sweep())
+    elif args.cmd == "worker-health":
+        sys.exit(worker_health(args.max_age))
     elif args.cmd == "list-users":
         with db.engine().connect() as c:
             for r in c.execute(select(db.users.c.email, db.users.c.name, db.users.c.role, db.users.c.active)):
