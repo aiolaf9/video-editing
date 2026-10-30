@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from conftest import login_client
+from conftest import login_client, process_alive
 
 from app import jobs, media, netpolicy, pipeline, storage, transcribe, worker
 
@@ -22,7 +22,7 @@ def _wait_status(c, job_id, statuses, timeout=60):
 
 
 def _alive(marker):
-    return bool(subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True).stdout.strip())
+    return process_alive(marker)
 
 
 @pytest.fixture

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from sqlalchemy import update
 
+from conftest import process_alive
+
 from app import db, jobcontrol, jobs, main, media, pipeline, storage, worker
 from app.jobcontrol import JobCancelled, JobControl
 
@@ -19,7 +21,7 @@ BODY = {"request": {"start": 0, "end": 4, "subtitles": {"enabled": False}, "anim
 
 
 def _alive(pattern):
-    return bool(subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True).stdout.strip())
+    return process_alive(pattern)
 
 
 def _project():

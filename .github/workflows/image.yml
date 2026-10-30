@@ -21,7 +21,8 @@ defaults:
     shell: bash --noprofile --norc -eo pipefail {0}   # kegagalan di sisi kiri "| tee" tidak boleh tertutup
 
 env:
-  COMPOSE: docker compose -f docker-compose.yml -f deploy/compose.staging.yml
+  # Produksi + overlay staging + fixture uji yang dikendalikan (server & DNS; tidak untuk produksi).
+  COMPOSE: docker compose -f docker-compose.yml -f deploy/compose.staging.yml -f deploy/compose.ci-fixtures.yml
   PYTHON_IMAGE: python:3.12-slim
   PROXY_BASE: debian:stable-slim
 
@@ -147,17 +148,33 @@ jobs:
           echo "X-Forwarded-For palsu (dari worker & dari klien lewat Caddy) tidak dipercaya"
 
       - name: Isolasi jaringan worker-io (lapisan jaringan, bukan guard Python)
-        run: $COMPOSE exec -T worker-io python - < deploy/checks/net_isolation.py | tee net-isolation.txt
+        run: $COMPOSE exec -T -e FIXTURES=1 worker-io python - < deploy/checks/net_isolation.py | tee net-isolation.txt
 
-      - name: Impor publik lewat proxy & upaya bypass (end-to-end lewat Caddy)
+      - name: Impor lewat proxy & upaya bypass dengan fixture terkendali (bukti utama, end-to-end lewat Caddy)
+        env:
+          ADMIN_EMAIL: admin@staging.local
         run: |
-          $COMPOSE stop worker-analisis    # analisis (Whisper) bukan bagian P5.5.1
-          ADMIN_EMAIL=admin@staging.local python3 deploy/checks/e2e_staging.py | tee e2e.txt
+          $COMPOSE stop worker-analisis    # analisis (Whisper) bukan bagian P5.5.1; job analisis tetap "antre"
+          python3 deploy/checks/e2e_staging.py fixtures | tee e2e.txt
           $COMPOSE logs --no-color egress-proxy > squid.log
-          echo "squid TCP_TUNNEL ke sumber publik: $(grep -cE 'TCP_TUNNEL/200 .*(w3schools|samplelib|test-videos)' squid.log)"
-          grep -qE 'TCP_TUNNEL/200 .*(w3schools|samplelib|test-videos)' squid.log
-          echo "squid TCP_DENIED ke metadata lewat redirect: $(grep -cE 'TCP_DENIED/403 .*169\.254\.169\.254/latest/meta-data/e2e-redirect-p551' squid.log)"
-          grep -qE 'TCP_DENIED/403 .*169\.254\.169\.254/latest/meta-data/e2e-redirect-p551' squid.log
+          check() { n=$(grep -cE "$2" squid.log || true); echo "squid $1: $n"; test "$n" -gt 0; }
+          check "unduhan fixture lewat proxy (TCP_MISS/200)" 'TCP_MISS/200 [0-9]+ GET http://fixture/media/ok\.mp4'
+          check "redirect -> internal-target (DNS->IP privat) ditolak" 'TCP_DENIED/403 [0-9]+ GET http://internal-target/secret-p551'
+          check "redirect -> metadata ditolak" 'TCP_DENIED/403 [0-9]+ GET http://169\.254\.169\.254/latest/meta-data/fixture-p551'
+          check "redirect -> loopback ditolak" 'TCP_DENIED/403 [0-9]+ GET http://127\.0\.0\.1/secret-p551'
+          if grep -E 'TCP_(MISS|TUNNEL)/[0-9]+ [0-9]+ [A-Z]+ [^ ]*(internal-target|169\.254\.169\.254|127\.0\.0\.1)' squid.log; then
+            echo "proxy meneruskan permintaan ke alamat internal"; exit 1; fi
+
+      - name: Impor dari situs internet pihak ketiga (pelengkap, tidak menentukan kelulusan)
+        continue-on-error: true
+        env:
+          ADMIN_EMAIL: admin@staging.local
+        run: python3 deploy/checks/e2e_staging.py thirdparty | tee e2e-thirdparty.txt
+
+      - name: Pemulihan job yang sedang berjalan (restart SIGTERM & crash SIGKILL worker-io, cleanup di tengah)
+        env:
+          ADMIN_EMAIL: admin@staging.local
+        run: python3 deploy/checks/recovery_staging.py | tee recovery.txt
 
       - name: Restart container tanpa merusak status job
         run: |
@@ -174,7 +191,7 @@ jobs:
           echo "sesudah: $(echo "$after" | tr '\n' ' ')"
           test "$before" = "$after"
           test -n "$before"
-          ! echo "$after" | grep -q ':jalan$'
+          if echo "$after" | grep -q ':jalan$'; then echo "ada job tertinggal 'jalan'"; exit 1; fi
           echo "caddy: $(curl -fsSk --resolve localhost:443:127.0.0.1 https://localhost/api/health)"
           test "$($COMPOSE ps -a migrate --format '{{.ExitCode}}')" = 0
 
@@ -200,6 +217,8 @@ jobs:
             tail -1 image-tests.txt 2>/dev/null || true
             tail -1 net-isolation.txt 2>/dev/null || true
             tail -1 e2e.txt 2>/dev/null || true
+            tail -1 e2e-thirdparty.txt 2>/dev/null || true
+            tail -1 recovery.txt 2>/dev/null || true
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -212,6 +231,8 @@ jobs:
             image-tests.txt
             net-isolation.txt
             e2e.txt
+            e2e-thirdparty.txt
+            recovery.txt
             squid.log
             compose-ps.txt
             compose-logs.txt

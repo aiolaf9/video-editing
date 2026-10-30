@@ -1,6 +1,5 @@
 """P1: batas waktu, pembatalan, dan penghentian subprocess (tingkat unit, tanpa worker)."""
 import os
-import subprocess
 import threading
 import time
 import uuid
@@ -9,13 +8,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conftest import process_alive
+
 from app import jobcontrol, media, transcribe
 from app.jobcontrol import JobCancelled, JobControl, SubprocessStalled
 
 
 def _alive(marker: str) -> bool:
-    out = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True).stdout.strip()
-    return bool(out)
+    return process_alive(marker)
 
 
 def _endless_ffmpeg_args(marker: str) -> list[str]:

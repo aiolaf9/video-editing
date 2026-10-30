@@ -78,6 +78,21 @@ for target in ["http://169.254.169.254.nip.io/latest/meta-data/", "http://10.0.0
 expect("proxy CONNECT 169.254.169.254.nip.io:443 (wajib 403)",
        r := via_proxy("CONNECT 169.254.169.254.nip.io:443 HTTP/1.1\r\nHost: 169.254.169.254.nip.io:443"), r == "403")
 
+# Fixture CI yang dikendalikan (deploy/compose.ci-fixtures.yml): bukti utama, tidak bergantung internet.
+if os.environ.get("FIXTURES") == "1":
+    expect("fixture:80 langsung (wajib gagal)", r := tcp("fixture", 80), r != "terhubung")
+    expect("internal-target:80 langsung (wajib gagal)", r := tcp("internal-target", 80), r != "terhubung")
+    expect("proxy -> http://fixture/media/ok.mp4.sha256 (wajib 200)",
+           r := via_proxy("GET http://fixture/media/ok.mp4.sha256 HTTP/1.1\r\nHost: fixture"), r == "200")
+    # Nama DNS terkendali yang resolve ke IP privat 10.250.0.0/24: squid wajib menolak berdasarkan IP hasil resolusi.
+    expect("proxy -> http://internal-target/secret-p551 (DNS -> IP privat, wajib 403)",
+           r := via_proxy("GET http://internal-target/secret-p551 HTTP/1.1\r\nHost: internal-target"),
+           r == "403")
+    expect("proxy CONNECT internal-target:443 (wajib ditolak)",
+           r := via_proxy("CONNECT internal-target:443 HTTP/1.1\r\nHost: internal-target:443"), r != "200")
+    expect("proxy CONNECT fixture:80 (port bukan 443, wajib ditolak)",
+           r := via_proxy("CONNECT fixture:80 HTTP/1.1\r\nHost: fixture:80"), r != "200")
+
 print(json.dumps(results, indent=1, ensure_ascii=False))
 bad = [r for r in results if not r["sesuai"]]
 print(f"{len(results) - len(bad)}/{len(results)} sesuai")

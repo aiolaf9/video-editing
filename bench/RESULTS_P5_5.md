@@ -51,6 +51,42 @@ Kekurangan run #1 yang ditemukan sendiri:
 | Caddy | staging: `cap_drop: ALL` + `NET_BIND_SERVICE`, `no-new-privileges`, hanya jaringan `edge` | workflow (health via Caddy) |
 | Root filesystem | staging: `read_only: true` + tmpfs `/tmp` & `/home/app` untuk migrate, web, semua worker | workflow (tulis `/app`,`/usr` gagal; `/data`,`/tmp` berhasil) |
 
+### Run #2 — commit `2489710`
+
+- **CI #6:** https://github.com/aiolaf9/video-editing/actions/runs/41064505431 — success.
+- **Production image #2:** https://github.com/aiolaf9/video-editing/actions/runs/41064505606 — **failure**.
+
+| Pemeriksaan | Hasil terukur |
+|---|---|
+| Digest image dasar | `python@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159`; proxy `debian@sha256:13e0a2e78aa0554ad5ff66e4e260c6dbcdff807eb1f39d43b9fb0288aae88b04`; image dibangun **dari digest tersebut** |
+| Image produksi | id `sha256:fff03b89d321b808846c5f90394c615d8cb7f65841c471cc02d49126d97e1cf2`, 1.360.108.634 byte; proxy 168.301.741 byte |
+| OS / Python / FFmpeg | Debian GNU/Linux 13 (trixie); Python 3.12.16; FFmpeg/FFprobe 7.1.5-0+deb13u1 (`--enable-gpl --enable-libx264`) |
+| `pip check` / lisensi | bersih; 58 paket, 0 GPL/AGPL |
+| Media (tanpa jaringan, read-only, tanpa capability) | 0 permintaan ke penjebak; MP4 normal 640x360 beraudio terbaca (48.298 sampel); 4 upaya baca berkas lokal ditolak |
+| Regresi di image | **9 gagal**, 283 lolos: tes memanggil `pgrep` (paket procps) yang tidak ada di image produksi |
+| Staging | tidak berjalan (langkah sebelumnya gagal) |
+
+Analisis akar masalah: `pgrep` hanya dipakai tiga helper tes (`tests/test_jobcontrol.py`, `test_cancel_api.py`,
+`test_p1_final.py`) untuk memeriksa apakah proses FFmpeg sudah mati; kode aplikasi tidak memakainya. Perbaikan:
+helper `process_alive()` di `tests/conftest.py` membaca `/proc/*/cmdline` (regex, setara `pgrep -f`), tanpa menambah
+paket ke image produksi. Diuji lokal dengan `pgrep` palsu yang selalu gagal: 28/28 lolos; helper mendeteksi proses
+hidup (True) dan mati (False) sehingga asersi "proses sudah mati" tidak lolos secara kosong.
+
+### Perubahan untuk run #3 (commit lokal)
+
+- Fixture **terkendali** (`deploy/compose.ci-fixtures.yml`, `deploy/checks/fixture_server.py`): server media
+  "publik" `fixture` (11.22.33.10) dan `internal-target` (10.250.0.0/24, nama DNS → IP privat) di port 80, sehingga
+  penolakan proxy terhadap `internal-target` hanya mungkin berasal dari ACL alamat IP (bukan aturan port).
+- E2E fixture (bukti utama): unduhan lewat proxy selesai, **sha256 identik** dengan sumber, berisi video+audio, tanpa
+  berkas sementara; redirect ke nama privat/metadata/loopback gagal tanpa berkas; `internal-target` menerima 0
+  permintaan; log squid `TCP_MISS/200` untuk fixture dan `TCP_DENIED/403` untuk tiap tujuan internal, serta tidak ada
+  `TCP_MISS`/`TCP_TUNNEL` ke alamat internal. Situs pihak ketiga dijalankan terpisah (`continue-on-error`).
+- Pemulihan (`deploy/checks/recovery_staging.py`): job unduhan yang **sedang berjalan** saat worker-io di-restart
+  (SIGTERM) dan di-crash (SIGKILL), dengan `media-cleanup` dijalankan di tengah unduhan; wajib: job selesai, berkas
+  identik, tepat 1 job unduhan per proyek, tanpa sisa berkas sementara, worker healthy lagi, job lain tidak berubah,
+  tidak ada job `jalan` tertinggal.
+- Workflow: `! cmd` diganti `if ...; then exit 1; fi` (negasi `!` tidak memicu `errexit`).
+
 ### Tinjauan konfigurasi produksi (F)
 
 | Item | Status di `docker-compose.yml` produksi | Di overlay staging | Rekomendasi |

@@ -1,0 +1,54 @@
+# Overlay KHUSUS UJI (CI/staging), di atas docker-compose.yml + deploy/compose.staging.yml. Tidak untuk produksi.
+# Menyediakan server & DNS yang dikendalikan sebagai bukti utama uji egress:
+#   fixture          -> 11.22.33.10 (subnet "publik" fiktif: lolos kebijakan proxy) : media & redirect
+#   internal-target  -> 10.250.0.0/24 (privat): nama DNS yang resolve ke IP privat; tidak boleh pernah dihubungi
+# worker-io TIDAK terhubung ke kedua jaringan ini; aksesnya hanya lewat egress-proxy.
+x-fixture: &fixture
+  image: video-editing:latest
+  restart: "no"
+  read_only: true
+  tmpfs: ["/tmp:size=256m,mode=1777"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  volumes: ["./deploy/checks:/c:ro"]
+  entrypoint: ["python", "/c/fixture_server.py"]
+  # Port 80 tanpa capability: sysctl ber-namespace (hanya container ini). Port 80 dipakai agar penolakan proxy
+  # terhadap internal-target hanya mungkin berasal dari ACL alamat IP, bukan dari aturan port.
+  sysctls:
+    net.ipv4.ip_unprivileged_port_start: "0"
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1/hits', timeout=3)"]
+    interval: 3s
+    timeout: 3s
+    retries: 40
+
+services:
+  fixture:
+    <<: *fixture
+    command: ["public"]
+    networks:
+      fx-public:
+        ipv4_address: 11.22.33.10
+
+  internal-target:
+    <<: *fixture
+    command: ["internal"]
+    networks: [fx-private]
+
+  egress-proxy:
+    networks: [dl-egress, egress-out, fx-public, fx-private]
+
+  # web perlu me-resolve nama fixture agar pemeriksaan awal API (check_import_url) memakai DNS yang sama.
+  web:
+    networks: [default, edge, fx-public, fx-private]
+
+networks:
+  fx-public:
+    ipam:
+      config:
+        - subnet: 11.22.33.0/24
+  fx-private:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.250.0.0/24

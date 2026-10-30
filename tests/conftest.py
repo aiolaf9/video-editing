@@ -68,6 +68,25 @@ def trust_loopback(monkeypatch):
     monkeypatch.setattr(netpolicy, "URL_IMPORT_TRUSTED_NETWORKS", "127.0.0.0/8")
 
 
+def process_alive(pattern: str) -> bool:
+    """Setara `pgrep -f pattern` (regex pada command line lengkap) tanpa bergantung pada paket procps, yang tidak
+    ada di image produksi (python:3.12-slim). Proses zombie (cmdline kosong) tidak dihitung, sama seperti pgrep -f."""
+    import re
+
+    rx = re.compile(pattern)
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                cmd = fh.read().replace(b"\0", b" ").decode(errors="replace").strip()
+        except OSError:
+            continue
+        if cmd and rx.search(cmd):
+            return True
+    return False
+
+
 def _ffmpeg(*args):
     subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args], check=True)
 
