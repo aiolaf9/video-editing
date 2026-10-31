@@ -100,7 +100,10 @@ class Recorder:
         self.model, self.original = model, model.transcribe
         self.variant, self.segments, self.kwargs = {}, [], {}
         tok = getattr(model, "hf_tokenizer", None)
-        self.ts_begin = tok.token_to_id("<|0.00|>") if tok is not None else None
+        # Sama dengan faster_whisper.tokenizer.Tokenizer.timestamp_begin (= <|notimestamps|> + 1). CI #32: versi lama
+        # memakai token_to_id("<|0.00|>") yang tidak ada di kosakata -> single_ts_end selalu null.
+        nots = tok.token_to_id("<|notimestamps|>") if tok is not None else None
+        self.ts_begin = nots + 1 if nots is not None else None
         model.transcribe = self
 
     def single_ts_end(self, tokens) -> Optional[bool]:
