@@ -535,3 +535,45 @@ estimasinya tidak menghitung durasi.
 
 Tidak ada varian yang lebih baik dari audio asli; `afftdn` merusak berat. Default TIDAK diubah. Noise pink sintetis
 SNR 10 dB bukan representasi audio lapangan; perlu uji audio lapangan nyata di tahap validasi produk.
+
+## Benchmark terarah W3/W6 — CI #28 (`975c872`, `bench=remediasi`, `bench_exps=det,gt`)
+
+Run: https://github.com/aiolaf9/video-editing/actions/runs/41198620409 — hanya job `det` & `gt` dibuat (mem, conc, noise
+tidak masuk matrix); regresi hijau. CI push #27 (`975c872`): regresi hijau, semua job benchmark skipped.
+small, container 3 GiB, satu runner, 3 run per mode; tanpa OOM/timeout (`oom_kill` 0, cgroup puncak 1961 MiB).
+
+### W6 — per set & mode
+
+| Set | Mode | Hash | WER | CER | sub/ins/del | Rasio kompresi | 4-gram berulang | RTF | RSS puncak | Fallback |
+|---|---|---|---|---|---|---|---|---|---|---|
+| id_long (935 kata) | default | 3 berbeda | 19,8–21,6% | 7,8–11,9% | 101–122 / 20–24 / 44–77 | 3,13–3,21 | 0,30–0,33 | 0,26–0,39 | 1448–1555 | 13 / 22 / 32 |
+| id_long | seed 1234 | identik 3/3 | 23,0% | 12,1% | 114 / 20 / 81 | 3,06 | 0,29 | 0,33 | 1446–1491 | 23 |
+| id_long | temperature 0 | identik 3/3 | **50,5%** | **37,8%** | 264 / 40 / **168** | **3,65** | **0,41** | 0,18 | 1050–1136 | 9 |
+| id_noisy (399 kata) | default | 3 berbeda | 56,4–59,4% | 44,6–51,5% | 31–76 / 1–2 / 148–205 | 2,25–2,69 | 0,18–0,30 | 0,30 | 1276–1333 | 10 |
+| id_noisy | seed 1234 | identik 3/3 | 56,4% | 46,1% | 50 / 2 / 173 | 2,42 | 0,22 | 0,30 | 1311–1334 | 10 |
+| id_noisy | temperature 0 | identik 3/3 | 50,6% | 34,4% | 84 / 8 / 110 | 2,54 | 0,16 | 0,16 | 933–939 | 1 |
+| en_clean gabungan (428 kata) | ketiga mode | identik 9/9 | **52,3%** | 48,0% | 18 / 0 / **206** | 2,38 | 0,24 | 0,11 | 829–896 | 0 |
+
+- en_clean selesai (skema utterances). Repeatability satu runner: seed & temperature 0 identik di semua set;
+  default berbeda bila ada fallback temperatur.
+- **temperature 0 tidak stabil lintas runner**: id_long WER 19,1% di CI #25 vs 50,5% di CI #28 (kode, model & audio
+  sama). Di CI #28 hasilnya disertai penghapusan 168 kata dan porsi 4-gram berulang 0,41 (default 0,30–0,33);
+  ambang compression ratio terlampaui hingga 5,72 tanpa diulang. Ini indikasi pengulangan + teks hilang, bukan bukti
+  halusinasi: contoh teks tidak disimpan di artifact (emit membuang teks), jadi diagnosis per segmen NOT VERIFIED.
+- **en_clean gabungan kehilangan ±48% kata** (206 penghapusan, 0 penyisipan) di ketiga mode tanpa fallback, padahal
+  per ucapan (CI #20) WER 8,2%. Audio gabungan valid (206,9 dtk = 198,9 + 20 × 0,4). Penyebab NOT VERIFIED
+  (hipotesis: segmen terlewat pada transkripsi panjang). Relevan untuk produksi karena aplikasi mentranskripsi
+  satu berkas panjang; id_long default juga menghapus 44–81 kata (5–9%).
+
+### W3 — acuan lama vs baru (20 ucapan id_clean, -35 dB)
+
+- Awal ucapan: lama = baru di 20/20.
+- Akhir ucapan: berubah di 10/20 ucapan (yang berakhir hening), lama lebih panjang 603–1707 ms (median seluruh
+  20: 302 ms).
+- Kata terakhir vs akhir suara: median |selisih| 1230 ms (acuan lama) → 613 ms (baru). Pada 10 ucapan yang
+  heningnya terdeteksi: semua ≤ 275 ms (median 117 ms). Pada 10 lainnya silencedetect tidak menemukan hening penutup
+  pada -35 dB (lantai noise rekaman) sehingga acuan = akhir berkas; selisihnya 950–3500 ms adalah batas acuan,
+  bukan kesalahan Whisper.
+- Sensitivitas ambang (-30..-45 dB): sebaran awal median 442 ms (maks 1445), akhir median 852 ms (maks 3053).
+- Kata pertama vs awal suara: median |selisih| 394 ms.
+- Timestamp kata: NOT VERIFIED (tidak ada anotasi waktu kata).
