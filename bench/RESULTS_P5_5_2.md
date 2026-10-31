@@ -399,3 +399,63 @@ puncak RSS FFmpeg maks (MB).
 | U1–U5 | Upload & siklus media | **PASS (lokal)** | jaringan nyata & UI jeda: NOT VERIFIED |
 | – | Kualitas visual konten nyata | **NOT VERIFIED** | hanya media sintetis |
 | – | Alur Field-to-Final & target 30 menit | **NOT VERIFIED** | tidak tersedia (bukan cakupan P5.5.2) |
+
+## Remediasi W3 / W5 / W6 / noise (investigasi; default produksi TIDAK diubah)
+
+### W5 — memory admission (P0): akar masalah terukur
+**Audit kode** (`app/transcribe.py` → `WhisperModel.transcribe`, faster-whisper 1.2.1, `vad_filter=True`):
+1. `media.decode_audio` menahan stdout FFmpeg (bytes) + salinan float32 seluruh audio;
+2. VAD Silero dijalankan atas **seluruh** audio (dipad);
+3. `collect_chunks` + `np.concatenate` menyalin seluruh audio ucapan;
+4. `self.feature_extractor(audio)` menghitung STFT + mel untuk **seluruh** audio ucapan sekaligus.
+Perkiraan admission `_WHISPER_MEM` (tiny 700, base 900, small 1600 MB) hanya mencakup model — tidak ada komponen
+yang bergantung durasi, padahal aplikasi tidak membatasi durasi video yang dianalisis (hanya ukuran upload 2 GB &
+batas waktu job 6 jam ≈ 115 menit video).
+
+**Pengukuran lokal tanpa model** (`bench/p552/whisper_mem_components.py`, jalur kode faster-whisper & aplikasi yang
+sama, kasus terburuk seluruh audio = ucapan, puncak VmHWM di atas RSS awal):
+
+| Durasi audio | Audio float32 | Setelah decode | Setelah VAD | Setelah fitur (total) |
+|---|---|---|---|---|
+| 1 mnt | 3,7 MB | +7 MB | +56 MB | **+96 MB** |
+| 10 mnt | 36,6 MB | +73 MB | +249 MB | **+656 MB** |
+| 30 mnt | 110 MB | +221 MB | +545 MB | **+1907 MB** |
+| 60 mnt | 220 MB | +443 MB | +902 MB | **+3718 MB** |
+
+≈ **62 MB per menit audio** (mayoritas STFT/mel atas seluruh audio). Cocok dengan runner: tiny 348 MB (ucapan
+pendek) → 835 MB (10 menit). Konsekuensi: video 60 menit melampaui `mem_limit` worker-analisis 3 GB untuk model
+**mana pun** → risiko OOM, bukan antre.
+
+**Opsi perbaikan (usulan, belum diimplementasikan):**
+| Opsi | Efek | Trade-off |
+|---|---|---|
+| A. Transkripsi per jendela (mis. 5–10 menit, dipotong di jeda VAD, timestamp di-offset) | memori tetap ≈ model + ±330–660 MB, tidak tumbuh dengan durasi | konteks antar-jendela hilang (`condition_on_previous_text`), perlu uji WER & timestamp di batas jendela |
+| B. Admission sadar durasi: `kebutuhan = tetap(model) + per_menit × menit + margin`, durasi dari probe (sudah ada) | job besar menunggu/ditolak jelas, bukan OOM | tetap tidak bisa memproses video panjang di container 3 GB tanpa A |
+| C. Batas durasi analisis (tolak > N menit dengan pesan jelas) | perlindungan cepat | membatasi produk |
+Rekomendasi: A + B (C sebagai pengaman sementara). Angka `tetap(model)` & per menit nyata per model diukur di runner
+(eksperimen `mem`), termasuk dua job serentak di container 3 GB (eksperimen `conc`).
+
+### W6 — determinisme (P1): hipotesis dari audit kode
+Aplikasi memakai default faster-whisper: `temperature=[0.0, 0.2, …, 1.0]` (fallback), `best_of=5`, `beam_size=5`,
+`condition_on_previous_text=True`, fallback bila `compression_ratio > 2,4` atau `avg_logprob < −1,0`. Pada
+temperature > 0 decoding memakai **sampling** (`num_hypotheses=best_of`, `sampling_temperature`) dan aplikasi tidak
+memanggil `ctranslate2.set_random_seed` → hasil dapat berbeda antar-run tepat pada audio sulit (panjang/noisy), sesuai
+pola di CI #20. Eksperimen `det`: mode default / seed tetap / `temperature=0`, 3 run per set, dengan jumlah fallback
+dicatat dari log faster-whisper. Pertanyaan yang dijawab: apakah determinisme penuh dapat dijamin (temp0, satu mesin
+& versi) atau hanya repeatability (seed).
+
+### W3 — timestamp (P1): rencana pemisahan
+Metrik W3 sebelumnya = batas UCAPAN (acuan silencedetect −35 dB), bukan timestamp KATA. Eksperimen `gt`: (1) sebaran
+acuan pada ambang −30/−35/−40/−45 dB untuk 20 ucapan tunggal (kualitas acuan); (2) selisih kata pertama/terakhir vs
+awal/akhir suara pada ucapan tunggal. Timestamp kata terverifikasi membutuhkan sampel beranotasi manual — belum
+tersedia (NOT VERIFIED); alignment tambahan (mis. forced alignment wav2vec2/MMS) hanya diusulkan bila (1)–(2)
+menunjukkan kesalahan nyata, karena menambah dependensi besar.
+
+### Audio lapangan (E)
+Eksperimen `noise` (small, decoding temp0 agar perbedaan bukan karena sampling) pada set SNR 10 dB: asli, `afftdn`,
+highpass+lowpass, `afftdn`+loudnorm, dan ambang VAD 0,35/0,65 — WER, RTF, RSS, waktu praproses. Mekanisme koreksi
+transkrip oleh pengguna: belum ada di aplikasi (backlog, bukan P5.5.2).
+
+### Cara menjalankan
+CI manual `bench=remediasi` (job `bench-remediation`, matrix mem/conc/det/gt/noise, tiap eksperimen di runner sendiri,
+image produksi, korpus FLEURS). Push biasa tidak menjalankannya.

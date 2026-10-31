@@ -13,9 +13,9 @@ on:
         type: boolean
         default: false
       bench:
-        description: "Benchmark P5.5.2 (Whisper asli & media di image produksi): none, smoke, full"
+        description: "Benchmark P5.5.2: none, smoke, full, remediasi (eksperimen W3/W5/W6/noise)"
         type: choice
-        options: [none, smoke, full]
+        options: [none, smoke, full, remediasi]
         default: none
       bench_models:
         description: "Model Whisper untuk benchmark, dipisah koma (tiny, base, small)"
@@ -264,6 +264,7 @@ jobs:
   bench-whisper:
     name: Benchmark Whisper asli (${{ matrix.model }})
     needs: bench-config
+    if: inputs.bench == 'smoke' || inputs.bench == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
@@ -319,6 +320,7 @@ jobs:
   bench-media:
     name: Benchmark preview & render (${{ inputs.bench }})
     needs: bench-config
+    if: inputs.bench == 'smoke' || inputs.bench == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
@@ -354,4 +356,69 @@ jobs:
             media.jsonl
             manifest.json
             media-log.txt
+          retention-days: 30
+
+  # P5.5.2 remediasi: eksperimen terisolasi (bench/p552/whisper_experiments.py). Default produksi tidak diubah:
+  # variasi decoding hanya diterapkan di proses eksperimen. `conc` berjalan di container ber-batas memori = batas
+  # worker-analisis compose (3g).
+  bench-remediation:
+    name: Remediasi P5.5.2 (${{ matrix.exp }})
+    needs: bench-config
+    if: inputs.bench == 'remediasi'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - exp: mem
+            args: --models tiny,base,small --minutes 10,30,60
+            docker: ""
+          - exp: conc
+            args: --models small --minutes 10
+            docker: --memory=3g --memory-swap=3g
+          - exp: det
+            args: --models small --sets id_long,id_noisy_snr10,en_clean --runs 3
+            docker: ""
+          - exp: gt
+            args: --models small
+            docker: ""
+          - exp: noise
+            args: --models small
+            docker: ""
+    env:
+      PY_DIGEST: python@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
+      HF_HUB_OFFLINE: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Mesin & versi
+        run: nproc; grep -m1 "model name" /proc/cpuinfo; free -m | sed -n 2p; echo "sha=${GITHUB_SHA}"
+      - name: Build image produksi dari digest
+        run: docker build --build-arg PYTHON_IMAGE="$PY_DIGEST" -t video-editing:bench .
+      - name: Korpus FLEURS
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q "huggingface_hub>=0.24"
+          python bench/p552/fleurs_corpus.py "$RUNNER_TEMP/corpus" --clean 20 --long-seconds 600 | tail -3
+      - name: Eksperimen ${{ matrix.exp }} di dalam image produksi
+        timeout-minutes: 210
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/hf" "$RUNNER_TEMP/xout"
+          chmod 777 "$RUNNER_TEMP/hf" "$RUNNER_TEMP/xout" "$RUNNER_TEMP/corpus"
+          docker run --rm ${{ matrix.docker }} -e HF_HOME=/hf -e HF_HUB_OFFLINE=0 -e WHISPER_DEVICE=cpu \
+            -e VIDEO_APP_DATA=/tmp/data -v "$PWD:/src:ro" -v "$RUNNER_TEMP/corpus:$RUNNER_TEMP/corpus" \
+            -v "$RUNNER_TEMP/hf:/hf" -v "$RUNNER_TEMP/xout:/out" -w /src --entrypoint python video-editing:bench \
+            bench/p552/whisper_experiments.py "$RUNNER_TEMP/corpus" /out/exp-${{ matrix.exp }}.jsonl \
+            --exp ${{ matrix.exp }} ${{ matrix.args }} | tee exp-log.txt
+          cp "$RUNNER_TEMP/xout/exp-${{ matrix.exp }}.jsonl" .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
+        if: always()
+        with:
+          name: remediasi-${{ matrix.exp }}
+          path: |
+            exp-*.jsonl
+            exp-log.txt
           retention-days: 30
