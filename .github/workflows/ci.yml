@@ -25,6 +25,10 @@ on:
         description: "Jumlah run per skenario benchmark"
         type: string
         default: "3"
+      bench_exps:
+        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise"
+        type: string
+        default: mem,conc,det,gt,noise
 
 permissions:
   contents: read
@@ -243,11 +247,13 @@ jobs:
     outputs:
       models: ${{ steps.c.outputs.models }}
       runs: ${{ steps.c.outputs.runs }}
+      remediasi: ${{ steps.c.outputs.remediasi }}
     steps:
       - id: c
         env:
           MODELS: ${{ inputs.bench_models }}
           RUNS: ${{ inputs.bench_runs }}
+          EXPS: ${{ inputs.bench_exps }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
@@ -259,6 +265,20 @@ jobs:
           assert 1 <= runs <= 10, "bench_runs harus 1-10"
           print("models=" + json.dumps(models))
           print(f"runs={runs}")
+          # Matrix remediasi: hanya eksperimen yang dipilih (argumen & batas container tetap di sini, tidak dari input).
+          small3g = "--cpus=4 --memory=3g --memory-swap=3g"
+          allx = {
+              "mem": {"args": "--models tiny,base,small --minutes 10,30,60",
+                      "docker": "--cpus=4 --memory=12g --memory-swap=12g"},
+              "conc": {"args": "--models small --minutes 10", "docker": small3g},
+              "det": {"args": "--models small --sets id_long,id_noisy_snr10,en_clean --runs 3", "docker": small3g},
+              "gt": {"args": "--models small", "docker": small3g},
+              "noise": {"args": "--models small", "docker": small3g},
+          }
+          exps = [e.strip() for e in os.environ["EXPS"].split(",") if e.strip()]
+          badx = [e for e in exps if e not in allx]
+          assert exps and not badx and len(set(exps)) == len(exps), f"bench_exps tidak valid: {badx or exps}"
+          print("remediasi=" + json.dumps({"include": [{"exp": e, **allx[e]} for e in exps]}))
           PY
 
   bench-whisper:
@@ -370,24 +390,8 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix:
-        include:
-          # Batas eksplisit: mem 12g (mengukur pertumbuhan hingga 60 mnt; runner 16 GB), lainnya 3g = worker-analisis.
-          - exp: mem
-            args: --models tiny,base,small --minutes 10,30,60
-            docker: --cpus=4 --memory=12g --memory-swap=12g
-          - exp: conc
-            args: --models small --minutes 10
-            docker: --cpus=4 --memory=3g --memory-swap=3g
-          - exp: det
-            args: --models small --sets id_long,id_noisy_snr10,en_clean --runs 3
-            docker: --cpus=4 --memory=3g --memory-swap=3g
-          - exp: gt
-            args: --models small
-            docker: --cpus=4 --memory=3g --memory-swap=3g
-          - exp: noise
-            args: --models small
-            docker: --cpus=4 --memory=3g --memory-swap=3g
+      # Disusun oleh bench-config dari input bench_exps (default: kelima eksperimen).
+      matrix: ${{ fromJSON(needs.bench-config.outputs.remediasi) }}
     env:
       PY_DIGEST: python@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
       HF_HUB_OFFLINE: "0"
