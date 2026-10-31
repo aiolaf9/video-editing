@@ -175,3 +175,54 @@ Jeda/lanjut di UI tidak diuji ulang (P4.3). Upload lewat jaringan nyata (latensi
 
 ### Feature gap (bukan kegagalan validasi)
 Concat beberapa rentang/klip; voiceover terpisah; watermark/logo (tidak ada sama sekali — overlay yang ada hanya animasi rencana: zoom, keyword, card, chips, checklist).
+
+## Run benchmark di runner (CI #15, dispatch `bench=smoke, bench_models=tiny, bench_runs=1`, `2bb0360`)
+
+https://github.com/aiolaf9/video-editing/actions/runs/41174704790 — job CI wajib sukses; CI #14 (push yang sama):
+semua job benchmark & heavy **skipped** (push tidak menjalankan benchmark).
+
+**Whisper tiny: FAIL (bug workflow, bukan model/dataset).** Langkah "Korpus FLEURS" gagal dengan
+`huggingface_hub.errors.OfflineModeIsEnabled`: `HF_HUB_OFFLINE=1` di tingkat workflow (agar regresi tidak mengunduh)
+tidak ditimpa untuk langkah di host. Whisper tidak sempat berjalan. Perbaikan: `HF_HUB_OFFLINE: "0"` di env job
+`bench-whisper` (commit lokal, menunggu persetujuan push).
+
+**Media di image produksi (runner ubuntu-24.04, FFmpeg image = digest run #6), smoke n = 1, 4 aset: 12/12 run sukses.**
+
+| Aset / operasi | Image: waktu (dtk), RTF, RSS MB | Lokal 6.1.1 median | A/V (ms) image | Subtitle image |
+|---|---|---|---|---|
+| Acuan 1080p30 — preview | 6,15; 0,102; 181 | 5,11 | 0 | – |
+| Acuan — render 9:16 | 9,22; 0,307; 382 | 8,74 | 0 | 15/15, ≤ 33,3 ms, 0 FP |
+| Acuan — original (SSIM 0,99966) | 6,66; 0,222; 368 | 6,56 | 0 | – |
+| 9:16 sumber — preview / 9:16 / original | 3,99 / 6,70 / 6,74 | 3,70 / 6,53 / 6,47 | 0 | 15/15, 0 FP |
+| WebM VP9/Opus — preview / 9:16 / original | 4,09 / 8,64 / 3,10 | 7,62 / 9,75 / 4,61 | +6 / +8 / +8 (= lokal) | 15/15, 0 FP |
+| VFR — preview / 9:16 / original | 0,17 / 9,60 / 3,54 | 0,20 / 12,79 / 4,93 | 0 | 15/15, ≤ 16,7 ms, 0 FP |
+
+Perbedaan hardware (runner vs sandbox) & versi FFmpeg: angka waktu **tidak** dipakai sebagai bukti optimasi.
+Temuan: (1) **VFR** — FFmpeg 7.1.5 (image) mempertahankan 36 fps rata-rata pada render; FFmpeg 6.1.1 lokal menjadi
+CFR 60 fps. Sinkronisasi 0 ms di keduanya. (2) Puncak RSS render di image 346–382 MB (lokal 304–327), < 700 MB.
+(3) WebM render original: SSIM 0,9886 tetapi PSNR 21,6 dB — kemungkinan perbandingan frame bergeser 1 frame
+(timestamp awal VP9); metode ukur kualitas untuk WebM NOT VERIFIED.
+Mode full (10 aset × 3 run, termasuk 30 menit) di image: belum dijalankan.
+
+## Target produk: tahap produksi video (hanya tahap yang tersedia diukur)
+
+Target produk: produksi video lapangan dari ±4–12 jam menjadi ≤ 30 menit. P5.5.2 TIDAK mengklaim alur Field-to-Final
+tersedia atau target 30 menit tercapai.
+
+| Tahap | Tersedia? | Ukuran saat ini |
+|---|---|---|
+| Upload | ya (tus) | 612 MB dalam 7,4 dtk via loopback lokal — jaringan nyata NOT VERIFIED |
+| Analisis AI (Whisper) | ya | BLOCKED (benchmark belum berjalan) |
+| Penyusunan timeline | sebagian (kandidat klip otomatis `clipper.suggest`; satu rentang per render) | belum diukur |
+| Preview | ya | RTF 0,003–0,17 (sintetis) |
+| Review manual | UI ada; waktu manusia | tidak diukur (bukan metrik sistem) |
+| Render final | ya (satu klip ≤ 10 menit) | RTF 0,10–0,48 (sintetis, 4 vCPU) |
+| Export | unduh berkas render | belum diukur terpisah |
+
+## Backlog (dicatat, TIDAK dikerjakan di P5.5.2)
+- Pesan kuota upload membingungkan (MiB vs MB; ukuran berkas tidak disebut).
+- Concat beberapa rentang/klip.
+- Voiceover terpisah.
+- Multi-watermark/logo.
+- Review & Finalize: thumbnail, judul, subtitle dapat diedit, caption postingan, pengeditan manual.
+- AI Field-to-Final untuk multi-footage.

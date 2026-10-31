@@ -272,6 +272,9 @@ jobs:
         model: ${{ fromJSON(needs.bench-config.outputs.models) }}
     env:
       PY_DIGEST: python@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
+      # Tingkat workflow memasang HF_HUB_OFFLINE=1 (regresi tidak boleh mengunduh). Job ini SENGAJA mengunduh model
+      # & korpus FLEURS (run #15 gagal di langkah korpus karena mode offline masih aktif di host).
+      HF_HUB_OFFLINE: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
