@@ -1,7 +1,7 @@
 # Hasil P5.5.2 — Validasi Media Nyata & AI
 
 Status: **berjalan** (P5.5.2-A selesai; B sebagian; C lokal). P5.5.2 belum selesai sampai benchmark Whisper asli
-& media di image produksi (workflow `Benchmark P5.5.2`) dijalankan.
+& media di image produksi (CI, dispatch manual `bench=smoke|full`) dijalankan.
 
 ## P5.5.2-A — Audit kemampuan & aset uji
 
@@ -22,7 +22,7 @@ Status: **berjalan** (P5.5.2-A selesai; B sebagian; C lokal). P5.5.2 belum seles
 | Prasyarat | Status |
 |---|---|
 | faster-whisper 1.2.1 / CTranslate2 4.8.4 terpasang | ada (venv produksi & image) |
-| Model tiny/base/small | **BLOCKED di sandbox pengembangan**: `huggingface.co` ditolak proxy (403 CONNECT, kebijakan). Tersedia di runner GitHub → workflow `bench-p552.yml` (perlu persetujuan push & menjalankan) |
+| Model tiny/base/small | **BLOCKED di sandbox pengembangan**: `huggingface.co` ditolak proxy (403 CONNECT, kebijakan). Tersedia di runner GitHub → job `bench-*` di `ci.yml` (dispatch manual) |
 | Ground truth ucapan (FLEURS id_id & en_us, CC-BY 4.0) | sama: hanya dari runner |
 | FFmpeg | sandbox 6.1.1 (tanpa libvmaf); image produksi 7.1.5 → angka resmi dari image |
 | GPU | tidak ada (sandbox & runner `ubuntu-24.04`) → semua angka CPU |
@@ -37,6 +37,15 @@ Status: **berjalan** (P5.5.2-A selesai; B sebagian; C lokal). P5.5.2 belum seles
 | `whisper_quality.py` | Whisper asli lewat `app.transcribe.transcribe`: muat model, RTF, CPU, puncak RSS, bahasa terdeteksi, WER/CER (huruf kecil, tanpa tanda baca), selisih batas ucapan |
 | `lifecycle_check.py` | upload tus berkas video nyata besar dengan putus & SIGKILL server, batal, kuota, lease/TTL, yatim |
 | `summarize_media.py` | median & p95 (nearest-rank) per skenario |
+
+**Cara menjalankan di runner.** GitHub hanya bisa men-dispatch workflow yang sudah terdaftar (pernah berjalan karena
+suatu event). Branch default repo ini (`claude/dreamy-carson-0mnbh2`) tidak berisi workflow apa pun, dan workflow
+baru yang hanya `workflow_dispatch` tidak pernah terdaftar: dispatch `bench-p552.yml` ditolak 404. `ci.yml` sudah
+terdaftar dan dispatch dengan `ref=v2/phase-1` terbukti memakai kode branch itu (CI #13, `head_sha` = `429920a`);
+input divalidasi terhadap berkas di ref tersebut (input asing ditolak "Unexpected inputs provided"). Karena itu
+benchmark ditempatkan sebagai job terpisah di `ci.yml`: input `bench` (none/smoke/full, bawaan none), `bench_models`
+(tiny,base,small) & `bench_runs` (1–10, divalidasi). Push biasa tidak menjalankannya; run manual punya grup
+`concurrency` sendiri sehingga tidak dibatalkan oleh push.
 
 Deteksi diverifikasi pada aset acuan: 30/30 pasangan flash–beep; subtitle 15/15 kata (deteksi luma maksimum di pita
 bawah; versi awal dengan luma rata-rata tidak mendeteksi teks kecil — diperbaiki, lihat riwayat commit).

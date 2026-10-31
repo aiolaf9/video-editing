@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+SMOKE = ("mp4_h264_aac_1080p30_16x9_stereo", "mp4_h264_1080x1920_30_9x16", "mp4_h264_vfr", "webm_vp9_opus_720p30")
 CLIP = (10.0, 40.0)
 LONG_CLIP = (1700.0, 1730.0)
 WORD_T = 0.8          # kata ke-k pada 2k + 0.8 dtk (di antara flash), durasi 0.5 dtk
@@ -99,7 +100,8 @@ def av_offsets(path):
     mt, mo = sum(t for t, _ in pairs) / n, sum(offs) / n
     var = sum((t - mt) ** 2 for t, _ in pairs)
     slope = sum((t - mt) * (o - mo) for t, o in pairs) / var if var else 0.0
-    return {"flash": len(f), "beep": len(b), "pairs": n, "offset_ms_median": round(statistics.median(offs), 1),
+    return {"flash": len(f), "beep": len(b), "pairs": n, "frame_ms": round(1000 / max(1e-9, probe(path)["fps"]), 1),
+            "audio_window_ms": 2.0, "offset_ms_median": round(statistics.median(offs), 1),
             "offset_ms_max_abs": round(max(abs(o) for o in offs), 1),
             "drift_ms_per_min": round(slope * 60, 2), "first_flash": f[0] if f else None}
 
@@ -110,13 +112,18 @@ def subtitle_errors(path, words_rel):
     top = dict(_series(path, "crop=iw:ih*0.12:0:0"))
     clean = [(t, v) for t, v in band if top.get(t, 0) < 128]          # buang frame flash (seluruh layar putih)
     on = _onsets(clean, 100, min_gap=0.8)
-    errs = []
+    errs, matched = [], set()
     for w in words_rel:
         near = min(on, key=lambda x: abs(x - w), default=None)
         if near is not None and abs(near - w) < 0.6:
             errs.append(round((near - w) * 1000, 1))
+            matched.add(near)
+    # False positive: munculnya teks di pita bawah yang tidak cocok dengan kata mana pun, dan frame "terang" pada
+    # waktu yang seharusnya tanpa subtitle (di luar [awal kata, akhir kata + 0,2 dtk]).
+    bright_outside = sum(1 for t, v in clean if v > 100 and not any(w - 0.05 <= t <= w + 0.7 for w in words_rel))
     return {"words": len(words_rel), "detected": len(errs), "err_ms": errs,
-            "err_ms_max_abs": max((abs(e) for e in errs), default=None)}
+            "err_ms_max_abs": max((abs(e) for e in errs), default=None),
+            "false_onsets": len([t for t in on if t not in matched]), "bright_frames_outside_words": bright_outside}
 
 
 def quality(render, src, start, dur):
@@ -193,6 +200,8 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--only", default="")
+    ap.add_argument("--mode", choices=("smoke", "full"), default="full",
+                    help="smoke: 4 aset representatif; full: seluruh matriks")
     ap.add_argument("--ops", default="preview,render_9x16_subs,render_original")
     ap.add_argument("--one", nargs=3, help=argparse.SUPPRESS)
     a = ap.parse_args()
@@ -202,7 +211,7 @@ def main():
     manifest = json.loads((Path(a.assets) / "manifest.json").read_text())
     out = Path(a.out)
     for name, m in manifest.items():
-        if a.only and name not in a.only.split(","):
+        if (a.only and name not in a.only.split(",")) or (a.mode == "smoke" and name not in SMOKE):
             continue
         for op in a.ops.split(","):
             for run in range(1, a.runs + 1):
