@@ -271,3 +271,30 @@ disusun). Perbaikan:
 `-fps_mode vfr`, `media.py:206`), sehingga mode frame keluaran render mengikuti bawaan versi FFmpeg: 6.1.1 → CFR
 60 fps (r_frame_rate sumber), 7.1.5 → VFR rata-rata 36 fps. Sinkronisasi A/V & subtitle benar di keduanya; tidak ada
 bukti bug. Backlog: tetapkan mode frame render secara eksplisit agar keluaran sama antar-versi FFmpeg.
+
+## Whisper tiny ASLI — smoke (CI #19, `b2d6cc3`, `bench=smoke, tiny, runs=1`)
+
+https://github.com/aiolaf9/video-editing/actions/runs/41176712848 — semua job sukses; artifact
+`bench-whisper-tiny` (ID 13033186906). Runner GitHub `ubuntu-24.04`, di dalam image produksi (digest run #6), CPU int8,
+`WHISPER_DEVICE=cpu`, cache model 75 MB. Korpus FLEURS split `test`, lisensi CC-BY 4.0.
+
+**Diagnostik korpus:** id_id 687 baris TSV, 7 kolom (id, file_name, raw_transcription, transcription, phonemes,
+num_samples, gender), 687 cocok dengan audio; kolom gender **"MALE" untuk seluruh 687 baris** (metadata gender FLEURS
+Indonesia tidak informatif) → **fallback dipakai**: `id_dialog`/`id_noisy_snr10` = 24 ucapan berurutan,
+`speaker_source=unknown`, `two_speakers_verified=false`. en_us 647 baris, gender 235 pria / 412 wanita.
+Set: id_clean 20 ucapan 214,7 dtk; id gabungan 24 ucapan 268,9 dtk; id panjang 50 ucapan 597,0 dtk; en_clean 20 ucapan
+198,9 dtk. Normalisasi teks: NFKC, huruf kecil, tanda baca dihapus; CER tanpa spasi.
+
+| Set (tiny, n = 1) | WER | CER | RTF | Muat model (dtk) | Puncak RSS (MB) | Bahasa terdeteksi | Batas ucapan: median |selisih| awal/akhir; dalam 300 ms |
+|---|---|---|---|---|---|---|---|
+| id bersih (20 ucapan) | 44,2 % | 15,6 % | 0,080 | 1,67 (unduh+muat, run pertama) | 348 | id 19, ms 1 | – |
+| id gabungan (bersih) | 68,4 % | 40,7 % | 0,086 | 0,64 | 513 | id | 140 / 180 ms; 15/24 & 11/24 |
+| id gabungan + noise SNR 10 dB | 79,7 % | 55,0 % | 0,037 | 0,65 | 506 | id | 406 / 395 ms; 8/24 & 5/24 |
+| id panjang (±10 mnt) | 58,6 % | 34,7 % | 0,064 | 0,60 | **835** | id | 201 / 210 ms; 26/50 & 22/50 |
+| en bersih (20 ucapan) | 14,7 % | 7,8 % | 0,083 | 0,61 | 314 | en 20 | – |
+
+Hasil deterministik (hash teks sama per set). Catatan: (1) tiny tidak memenuhi ambang kualitas yang ditetapkan untuk
+small (W1 ≤ 25 %) — tiny hanya dicatat; (2) **puncak RSS tiny 835 MB pada audio 10 menit melebihi perkiraan admission
+tiny 700 MB** (`_WHISPER_MEM`) — temuan untuk kriteria W5, belum diubah; (3) RTF noisy lebih rendah karena keluaran
+lebih sedikit (WER naik), bukan lebih efisien; (4) pergantian pembicara/diarization: NOT VERIFIED (fallback);
+(5) revisi model tercatat di artifact (`model_revision`), belum dibaca dari log.
