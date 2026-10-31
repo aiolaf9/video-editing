@@ -404,3 +404,131 @@ def test_loop_reports_blocked_since_and_reason(client, monkeypatch):
         stop.set()
         t.join(10)
         _drop_workers(name)
+
+
+# ------------------------------------------------------------------ verifikasi lanjutan (P5.5.1 final)
+
+def test_rss_drop_or_page_cache_change_never_makes_admission_optimistic(monkeypatch):
+    state = {"used": 100 * MB, "rss": 80 * MB}
+    _fake_container(monkeypatch, 1500, state)
+    resources.reserve("A", "render")                         # perkiraan 700
+    state["rss"] -= 30 * MB                                  # RSS turun di bawah titik awal (GC, unmap)
+    assert resources.reserved_bytes() == 700 * MB            # tidak pernah lebih kecil dari perkiraan penuh
+    state["rss"] += 30 * MB + 500 * MB                       # naik 500 ...
+    state["used"] += 500 * MB
+    state["rss"] -= 400 * MB                                 # ... lalu turun 400 (antar-fase job)
+    state["used"] -= 400 * MB
+    assert resources.reserved_bytes() == 600 * MB            # sisa mengikuti pemakaian saat ini: 700 - 100
+    # Page cache: hanya inactive_file yang dikeluarkan; cache aktif tetap dihitung terpakai (konservatif).
+    resources.release("A")
+
+
+def test_page_cache_active_counts_as_used_inactive_does_not(tmp_path):
+    root = _cg(tmp_path, 2, 512 * MB, 400 * MB, inactive=0)
+    assert resources._cgroup_memory(root) == (512 * MB, 400 * MB)       # cache aktif: tetap terpakai
+    root2 = tmp_path / "b"
+    root2.mkdir()
+    assert resources._cgroup_memory(_cg(root2, 2, 512 * MB, 400 * MB, inactive=300 * MB)) == (512 * MB, 100 * MB)
+
+
+def test_child_process_memory_counts_towards_reservation(monkeypatch):
+    """Subprocess (seperti FFmpeg) termasuk pohon proses: RAM yang sudah dipakainya mengurangi sisa cadangan."""
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(resources, "_inflight", {})
+    monkeypatch.setattr(resources, "_own_base", None)
+    resources.reserve("A", "io")                                            # 300 MB
+    child = subprocess.Popen([sys.executable, "-c", "import sys,time; b=bytearray(200*2**20); "
+                              "b[::4096]=b'x'*len(b[::4096]); print('ok', flush=True); time.sleep(30)"],
+                             stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "ok"
+        tree = resources.process_tree_usage()
+        assert tree["processes"] >= 2
+        remaining = resources.reserved_bytes()
+        assert 60 * MB <= remaining <= 130 * MB, remaining / MB             # 300 - ±200 (child) +- noise
+    finally:
+        child.kill()
+        child.wait()
+        resources.release("A")
+
+
+def test_real_ffmpeg_child_is_in_process_tree():
+    import subprocess
+
+    before = resources.process_tree_usage()
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-re", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=10",
+                             "-f", "null", "-"], stdin=subprocess.DEVNULL)
+    try:
+        time.sleep(1.0)
+        during = resources.process_tree_usage()
+        assert during["processes"] == before["processes"] + 1 and during["rss"] > before["rss"] + 5 * MB
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_reservation_does_not_survive_crash():
+    """Reservasi hanya di memori proses: proses yang mati (crash/SIGKILL) tidak meninggalkan sisa."""
+    import subprocess
+    import sys
+
+    code = ("import os; from app import resources; resources.reserve('A', 'render'); "
+            "assert resources._inflight; os._exit(9)")
+    assert subprocess.run([sys.executable, "-c", code], cwd=str(__import__("pathlib").Path(__file__).parents[1]),
+                          timeout=60).returncode == 9
+    check = "from app import resources; print(len(resources._inflight), resources.reserved_bytes())"
+    out = subprocess.run([sys.executable, "-c", check], cwd=str(__import__("pathlib").Path(__file__).parents[1]),
+                         capture_output=True, text=True, timeout=60).stdout.split()
+    assert out == ["0", "0"]
+
+
+def test_parallel_jobs_in_one_process_attribution_limit(monkeypatch):
+    """Batasan yang didokumentasikan: RSS agregat satu proses tidak bisa diatribusikan per job. Bila job A melampaui
+    perkiraannya, kelebihannya mengurangi sisa cadangan job B. Pemakaian aktual cgroup tetap dihitung penuh, jadi
+    total yang diperkirakan = terpakai + sisa; optimisme maksimal = kelebihan job A."""
+    state = {"used": 100 * MB, "rss": 80 * MB}
+    _fake_container(monkeypatch, 3000, state)
+    resources.reserve("A", "render")                        # 700
+    resources.reserve("B", "render")                        # 700, belum memakai apa pun
+    state["rss"] += 900 * MB                                # A memakai 900 (200 di atas perkiraan)
+    state["used"] += 900 * MB
+    assert resources.reserved_bytes() == 500 * MB           # ideal: 700 (sisa B); optimis 200 = kelebihan A
+    resources.release("A")
+    resources.release("B")
+
+
+def test_fail_after_is_read_from_environment(monkeypatch):
+    import importlib
+
+    monkeypatch.delenv("UNSERVABLE_FAIL_AFTER_SECONDS", raising=False)
+    assert importlib.reload(config).UNSERVABLE_FAIL_AFTER_SECONDS == 0          # bawaan: tidak pernah gagal
+    monkeypatch.setenv("UNSERVABLE_FAIL_AFTER_SECONDS", "900")
+    assert importlib.reload(config).UNSERVABLE_FAIL_AFTER_SECONDS == 900        # diaktifkan admin
+    monkeypatch.delenv("UNSERVABLE_FAIL_AFTER_SECONDS")
+    importlib.reload(config)
+
+
+def test_capable_worker_coming_back_online_resets_and_serves(client, monkeypatch):
+    from sqlalchemy import update
+
+    from app import db, jobs, monitor, worker
+
+    monkeypatch.setattr(worker, "UNSERVABLE_FAIL_AFTER_SECONDS", 300)
+    monkeypatch.setattr(worker, "_unservable_since", {})
+    jid = _queued_job("uji-cap", age=3600)
+    t0 = time.time()
+    try:
+        _worker("uji-cap-kecil", "uji-cap", SMALL)
+        assert worker.handle_unservable(t0) == 0 and "uji-cap" in worker._unservable_since   # timer berjalan
+        _worker("uji-cap-besar", "uji-cap")                                                # kembali online
+        assert monitor.queue_capacity()["uji-cap"]["state"] == "siap"
+        assert worker.handle_unservable(t0 + 10_000) == 0 and worker._unservable_since == {}
+        with db.engine().begin() as c:                                                     # lalu offline lagi
+            c.execute(update(db.workers).where(db.workers.c.name == "uji-cap-besar").values(heartbeat=t0 - 3600))
+        assert monitor.queue_capacity()["uji-cap"]["state"] == "mampu_offline"
+        assert worker.handle_unservable(t0 + 20_000) == 0 and jobs.get(jid)["status"] == "antre"
+    finally:
+        _drop_workers("uji-cap-kecil", "uji-cap-besar")
+        jobs.request_cancel(jid)
