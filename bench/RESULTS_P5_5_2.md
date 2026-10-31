@@ -226,3 +226,48 @@ tersedia atau target 30 menit tercapai.
 - Multi-watermark/logo.
 - Review & Finalize: thumbnail, judul, subtitle dapat diedit, caption postingan, pengeditan manual.
 - AI Field-to-Final untuk multi-footage.
+- Mode frame rate render eksplisit (`-fps_mode`), agar keluaran VFR sama antar-versi FFmpeg.
+
+## Run CI #17 (dispatch smoke tiny setelah `ad0f43b`)
+
+https://github.com/aiolaf9/video-editing/actions/runs/41176036325 — job CI wajib sukses.
+**Whisper tiny: FAIL — penyebab BARU, bukan mode offline.** Akses Hugging Face kini berhasil (unduhan FLEURS
+id_id ±11 dtk, peringatan "unauthenticated requests" saja). Gagal saat menyusun `id_dialog`: `No files to concat` —
+daftar ucapan pria/wanita kosong (kolom gender TSV FLEURS tidak terbaca seperti diasumsikan; set *clean* berhasil
+disusun). Perbaikan:
+- Baris `DIAGNOSTIK` di log: jumlah baris TSV, jumlah kolom, nama kolom (TSV FLEURS tanpa header; dipetakan dari
+  urutan terdokumentasi bila 7 kolom), ucapan yang cocok dengan audio, sebaran gender mentah & terbaca, contoh baris
+  dengan teks transkripsi diganti panjangnya saja.
+- Fallback bila gender tidak terbaca: 24 ucapan berurutan, `speaker_source=unknown`, `two_speakers_verified=false`.
+  Set ini HANYA untuk akurasi transkripsi audio gabungan; bukan percakapan dua pembicara terverifikasi. Evaluasi
+  pergantian pembicara/diarization: NOT VERIFIED selama identitas pembicara tidak terverifikasi (aplikasi juga tidak
+  memiliki fitur diarization).
+- Audio gabungan kosong/senyap ditolak (durasi < 1 dtk atau RMS < −60 dB, termasuk −inf); jumlah ucapan & durasi tiap
+  set dicatat di `corpus.json` dan baris `KORPUS` di log.
+- Diuji lokal: `fetch()` asli dengan modul huggingface_hub tiruan (TSV 7 kolom) → diagnostik benar; `main()` dengan
+  ucapan tanpa gender → fallback `unknown`, 24 ucapan, 105,6 dtk; ucapan senyap → berhenti dengan pesan jelas.
+
+## Investigasi temuan media smoke
+
+**PSNR WebM 21,6 dB vs SSIM 0,9886 — artefak metode ukur, bukan bug aplikasi.**
+1. Trim aplikasi tepat: frame pertama render identik (PSNR ∞) dengan frame sumber #300 (t = 10,000 dtk); frame #299
+   berbeda (3,88 dB).
+2. Pengukur lama memotong sumber dengan `-ss` di input; sumber WebM memiliki `start_time` −0,007 dtk (pre-skip Opus)
+   dan timestamp Matroska 1 ms (0,033 / 0,067 vs 1/30 dtk persis di render). Filter `psnr`/`ssim` memasangkan frame
+   per timestamp, sehingga tiap frame ke-3 dibandingkan dengan frame tetangga (pola ±35 dB) dan rata-rata PSNR
+   (berbasis MSE) jatuh.
+3. Perbaikan pengukur (`quality()`): sumber dipotong dengan `trim` pada timestamp hasil decode, kedua aliran disampel
+   ke grid 60 fps (pembulatan terdekat) sebelum dibandingkan, plus median PSNR per frame & jumlah frame < 30 dB.
+   Hasil ulang pada render lokal YANG SAMA (`9e03b509c6a1.mp4`, 900 frame; FFmpeg 6.1.1 sandbox): WebM dari SSIM
+   0,9886 / PSNR 21,6 dB menjadi **SSIM 0,9994 / PSNR 53,0 dB** (median 52,8; 0 frame < 30 dB); acuan tidak berubah
+   (0,99966 / 55,3 dB); 23,976 fps 0,99965 / 55,2 dB. Frame dibandingkan 1800 dari 1800 yang diharapkan (30 dtk ×
+   grid 60 fps) di ketiga render — tidak ada frame hilang. Ini **pengukuran lokal yang dikoreksi**, belum hasil
+   benchmark media full di image produksi.
+4. VFR: tetap 15 frame < 30 dB (= satu per flash; median 51,6 dB). Sumber VFR memberi jeda 2/60 dtk setelah frame
+   flash; konversi ke CFR menduplikasi frame tersebut dan penempatan duplikat ambigu pada pembanding. Sinkronisasi
+   0 ms; inspeksi visual tanpa artefak. Kualitas VFR via PSNR: NOT VERIFIED.
+
+**Perilaku VFR FFmpeg 6.1.1 vs 7.1.5.** `render.build_command` tidak menetapkan `-fps_mode`/`-r` (preview menetapkan
+`-fps_mode vfr`, `media.py:206`), sehingga mode frame keluaran render mengikuti bawaan versi FFmpeg: 6.1.1 → CFR
+60 fps (r_frame_rate sumber), 7.1.5 → VFR rata-rata 36 fps. Sinkronisasi A/V & subtitle benar di keduanya; tidak ada
+bukti bug. Backlog: tetapkan mode frame render secara eksplisit agar keluaran sama antar-versi FFmpeg.

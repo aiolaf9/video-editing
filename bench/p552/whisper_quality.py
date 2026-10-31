@@ -91,6 +91,7 @@ def child(model: str, set_name: str, corpus: Path, out: Path):
     ru = resource.getrusage(resource.RUSAGE_SELF)
     ruc = resource.getrusage(resource.RUSAGE_CHILDREN)
     res = {"model": model, "set": set_name, "lang_expected": data["lang"], "items": len(items),
+           "speaker_source": data.get("speaker_source"), "two_speakers_verified": data.get("two_speakers_verified"),
            "lang_detected": dict((x, langs.count(x)) for x in set(langs)),
            "load_s": round(load_s, 2), "transcribe_s": round(proc_s, 2), "audio_s": round(audio_s, 1),
            "rtf": round(proc_s / audio_s, 4) if audio_s else None,
@@ -125,7 +126,8 @@ def summarize(rows: list[dict]) -> list[dict]:
                     "n": len(v)}
         row = {"model": key[0], "set": key[1], "rtf": stat("rtf"), "load_s": stat("load_s"),
                "peak_rss_mb": stat("peak_rss_mb"), "wer": rs[0]["wer"], "cer": rs[0]["cer"],
-               "deterministic": len({r["hyp_sha256"] for r in rs}) == 1, "lang_detected": rs[0]["lang_detected"]}
+               "deterministic": len({r["hyp_sha256"] for r in rs}) == 1, "lang_detected": rs[0]["lang_detected"],
+               "speaker_source": rs[0].get("speaker_source")}
         if "timestamps" in rs[0]:
             ts = rs[0]["timestamps"]
             for side in ("start", "end"):

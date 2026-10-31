@@ -151,14 +151,34 @@ def subtitle_errors(path, words_rel):
 
 
 def quality(render, src, start, dur):
-    cmd = ["ffmpeg", "-hide_banner", "-v", "info", "-i", str(render), "-ss", str(start), "-t", str(dur),
-           "-i", str(src), "-lavfi", "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]scale2ref"
-           "[a2][b2];[a2][b2]ssim;[0:v]setpts=PTS-STARTPTS[c];[1:v]setpts=PTS-STARTPTS[d];[c][d]scale2ref[c2][d2];"
-           "[c2][d2]psnr", "-f", "null", "-"]
+    """SSIM/PSNR render vs segmen sumber yang sama, frame diselaraskan per waktu. Sumber dipotong dengan `trim` pada timestamp HASIL DECODE (bukan
+    `-ss` di input): pada WebM dengan start_time negatif (pre-skip Opus, -0,007 dtk) `-ss` memilih frame yang
+    bergeser 1 frame sehingga PSNR rata-rata turun ke ±21 dB walau trim aplikasi tepat. PSNR juga dilaporkan sebagai
+    median per frame (rata-rata FFmpeg berbasis MSE didominasi satu frame buruk di batas potongan)."""
+    stats = Path(render).with_suffix(".psnr.log")
+    # Kedua aliran disampel ke grid waktu yang sama (60 fps, pembulatan terdekat): filter ssim/psnr memasangkan frame
+    # berdasarkan timestamp, dan timestamp WebM/VFR (Matroska 1 ms) dibulatkan sehingga tiap frame ke-3 dipasangkan
+    # dengan frame tetangga tanpa langkah ini.
+    grid = "setpts=PTS-STARTPTS,fps=fps=60:round=near"
+    graph = (f"[1:v]trim=start={start}:duration={dur},{grid},split[s1][s2];"
+             f"[0:v]{grid},split[r1][r2];[r1][s1]scale2ref[a][b];[a][b]ssim;"
+             f"[r2][s2]scale2ref[c][d];[c][d]psnr=stats_file={stats}")
+    cmd = ["ffmpeg", "-hide_banner", "-v", "info", "-i", str(render), "-i", str(src), "-lavfi", graph, "-f", "null", "-"]
     err = subprocess.run(cmd, capture_output=True, text=True).stderr
     ssim = re.search(r"SSIM .*All:([0-9.]+)", err)
     psnr = re.search(r"PSNR .*average:([0-9.inf]+)", err)
-    return {"ssim": float(ssim.group(1)) if ssim else None, "psnr": psnr.group(1) if psnr else None}
+    frames, stats_text = [], ""
+    if stats.exists():
+        stats_text = stats.read_text()
+        frames = [float(v) for v in re.findall(r"psnr_avg:([0-9.]+|inf)", stats_text) if v != "inf"]
+        stats.unlink()
+    # Tidak boleh ada frame yang hilang diam-diam: jumlah pasangan frame yang dibandingkan vs yang diharapkan
+    # (durasi x 60 fps grid).
+    compared = len(re.findall(r"^n:", stats_text, flags=re.M))
+    return {"ssim": float(ssim.group(1)) if ssim else None, "psnr": psnr.group(1) if psnr else None,
+            "psnr_frame_median": round(statistics.median(frames), 2) if frames else "inf (identik)",
+            "psnr_frames_below_30db": sum(f < 30 for f in frames),
+            "frames_compared": compared, "frames_expected": round(dur * 60)}
 
 
 # ---------------------------------------------------------------- satu run (dijalankan di subprocess)

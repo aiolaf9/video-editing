@@ -21,6 +21,8 @@ import tarfile
 from pathlib import Path
 
 REPO = "google/fleurs"
+# Urutan kolom TSV FLEURS (tanpa baris header), sesuai skrip dataset google/fleurs.
+FLEURS_COLUMNS = ["id", "file_name", "raw_transcription", "transcription", "phonemes", "num_samples", "gender"]
 RATE = 16000
 
 
@@ -41,11 +43,31 @@ def fetch(lang: str, dest: Path):
                 (audio / Path(m.name).name).write_bytes(t.extractfile(m).read())
     utts = []
     for r in rows:
-        wav = next((c for c in r if c.endswith(".wav")), None)
-        if wav and (audio / wav).exists():
+        wav = next((c for c in r if c.strip().endswith(".wav")), None)
+        if wav and (audio / wav.strip()).exists():
             i = r.index(wav)
-            gender = next((c for c in r if c.upper() in ("MALE", "FEMALE")), "")
-            utts.append({"file": str(audio / wav), "text": r[i + 1], "gender": gender.upper()})
+            gender = next((c.strip().upper() for c in r if c.strip().upper() in ("MALE", "FEMALE")), "")
+            utts.append({"file": str(audio / wav.strip()), "text": r[i + 1], "gender": gender})
+    # Diagnostik (run CI #17 gagal karena daftar pria/wanita kosong; isi TSV tidak dapat dilihat dari sandbox).
+    # TSV FLEURS tidak berheader: nama kolom dipetakan dari urutan terdokumentasi bila jumlah kolom = 7. Teks ucapan
+    # tidak dicetak (hanya panjangnya); nilai lain dipotong 24 karakter. Data publik (CC-BY 4.0), tanpa data pribadi.
+    cols = sorted({len(r) for r in rows})
+    names = FLEURS_COLUMNS if cols == [len(FLEURS_COLUMNS)] else [f"kolom{i}" for i in range(max(cols or [0]))]
+    sample = {}
+    if rows:
+        for name, value in zip(names, rows[0]):
+            sample[name] = f"<{len(value)} karakter>" if "transcription" in name else value[:24]
+    gender_col = {}
+    if cols == [len(FLEURS_COLUMNS)]:
+        for r in rows:
+            gender_col[r[-1].strip() or "(kosong)"] = gender_col.get(r[-1].strip() or "(kosong)", 0) + 1
+    genders = {g or "(kosong)": sum(u["gender"] == g for u in utts) for g in {u["gender"] for u in utts}}
+    print("DIAGNOSTIK " + json.dumps({"lang": lang, "tsv_rows": len(rows), "kolom_per_baris": cols, "kolom": names,
+                                      "utts_cocok_audio": len(utts), "gender_terbaca": genders,
+                                      "isi_kolom_gender_mentah": gender_col, "contoh_baris": sample},
+                                     ensure_ascii=False), flush=True)
+    if not utts:
+        raise SystemExit(f"FLEURS {lang}: tidak ada ucapan yang cocok antara TSV & audio")
     return utts, info.sha
 
 
@@ -74,7 +96,8 @@ def speech_bounds(p) -> tuple[float, float]:
 def rms_db(p) -> float:
     err = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(p), "-af", "astats=measure_perchannel=0",
                           "-f", "null", "-"], capture_output=True, text=True).stderr
-    return float(re.findall(r"RMS level dB: (-?[0-9.]+)", err)[-1])
+    found = re.findall(r"RMS level dB: (-?inf|-?[0-9.]+)", err)
+    return float(found[-1]) if found else float("-inf")      # audio senyap total: astats mencetak -inf
 
 
 def concat(utts, out: Path, gap=0.4):
@@ -118,9 +141,23 @@ def main():
             continue
         male = [u for u in utts[a.clean:] if u["gender"] == "MALE"]
         female = [u for u in utts[a.clean:] if u["gender"] == "FEMALE"]
-        dialog = [u for pair in zip(male[:12], female[:12]) for u in pair]
+        if len(male) >= 12 and len(female) >= 12:
+            dialog, speaker_source = [u for pair in zip(male[:12], female[:12]) for u in pair], "fleurs_gender"
+        else:
+            # Gender tidak terbaca: ucapan berurutan, HANYA untuk akurasi transkripsi gabungan. Bukan percakapan dua
+            # pembicara terverifikasi; evaluasi pergantian pembicara/diarization tetap NOT VERIFIED.
+            dialog, speaker_source = utts[a.clean:a.clean + 24], "unknown"
+            print(f"PERINGATAN: gender pria/wanita {len(male)}/{len(female)} — fallback ucapan berurutan, "
+                  "speaker_source=unknown", flush=True)
+        if len(dialog) < 2:
+            raise SystemExit("FLEURS id: ucapan tidak cukup untuk set gabungan")
         b = concat(dialog, out / "id_dialog.wav")
-        sets["id_dialog"] = {"kind": "timeline", "lang": "id", "file": str(out / "id_dialog.wav"), "bounds": b}
+        dialog_dur = duration(out / "id_dialog.wav")
+        if dialog_dur < 1 or rms_db(out / "id_dialog.wav") < -60:
+            raise SystemExit(f"FLEURS id: audio gabungan kosong/senyap ({dialog_dur:.1f} dtk)")
+        sets["id_dialog"] = {"kind": "timeline", "lang": "id", "file": str(out / "id_dialog.wav"), "bounds": b,
+                             "speaker_source": speaker_source, "two_speakers_verified": speaker_source != "unknown",
+                             "utterances": len(dialog)}
         speech = out / "id_dialog.wav"
         d = duration(speech)
         # Noise pink diskalakan agar RMS-nya tepat 10 dB di bawah RMS ucapan (keseluruhan berkas).
@@ -131,7 +168,8 @@ def main():
                f"[1]volume={gain:.2f}dB[n];[0][n]amix=inputs=2:normalize=0:duration=first",
                "-ar", str(RATE), "-ac", "1", str(out / "id_noisy_snr10.wav"))
         sets["id_noisy_snr10"] = {"kind": "timeline", "lang": "id", "file": str(out / "id_noisy_snr10.wav"),
-                                  "bounds": b, "snr_db": 10}
+                                  "bounds": b, "snr_db": 10, "speaker_source": speaker_source,
+                                  "two_speakers_verified": speaker_source != "unknown", "utterances": len(dialog)}
         pool, total, long_utts = utts[a.clean + 24:] + utts[a.clean:a.clean + 24], 0.0, []
         for u in pool:
             if total >= a.long_seconds:
@@ -139,13 +177,16 @@ def main():
             long_utts.append(u)
             total += duration(u["file"]) + 0.4
         sets["id_long"] = {"kind": "timeline", "lang": "id", "file": str(out / "id_long.wav"),
-                           "bounds": concat(long_utts, out / "id_long.wav")}
+                           "bounds": concat(long_utts, out / "id_long.wav"), "utterances": len(long_utts)}
     for s in sets.values():
         if s["kind"] == "timeline":
             s["duration"] = duration(s["file"])
     (out / "corpus.json").write_text(json.dumps({"source": f"huggingface.co/datasets/{REPO}", "revision": rev,
                                                  "license": "CC-BY-4.0", "sets": sets}, ensure_ascii=False, indent=1))
-    print(json.dumps({k: (len(v.get("items", [])) or round(v["duration"])) for k, v in sets.items()}))
+    print("KORPUS " + json.dumps({k: {"ucapan": v.get("utterances") or len(v.get("items", [])),
+                                      "durasi_dtk": round(v.get("duration") or sum(i["duration"] for i in v["items"]), 1),
+                                      "speaker_source": v.get("speaker_source")} for k, v in sets.items()},
+                                 ensure_ascii=False))
 
 
 if __name__ == "__main__":
