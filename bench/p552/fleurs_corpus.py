@@ -89,7 +89,10 @@ def speech_bounds(p) -> tuple[float, float]:
     ends = [float(x) for x in re.findall(r"silence_end: ([0-9.]+)", err)]
     starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", err)]
     begin = ends[0] if starts and starts[0] < 0.05 and ends else 0.0
-    end = starts[-1] if starts and (not ends or starts[-1] > ends[-1]) else d
+    # Hening di akhir berkas: FFmpeg mencetak silence_start lalu silence_end tepat di akhir berkas (EOF). Dulu kasus ini
+    # dibaca sebagai "tidak ada hening akhir" sehingga akhir ucapan = akhir berkas (salah, P5.5.2 exp gt).
+    trailing = starts and (not ends or starts[-1] > ends[-1] or abs(ends[-1] - d) < 0.05)
+    end = starts[-1] if trailing else d
     return round(begin, 3), round(end, 3)
 
 
