@@ -459,3 +459,79 @@ transkrip oleh pengguna: belum ada di aplikasi (backlog, bukan P5.5.2).
 ### Cara menjalankan
 CI manual `bench=remediasi` (job `bench-remediation`, matrix mem/conc/det/gt/noise, tiap eksperimen di runner sendiri,
 image produksi, korpus FLEURS). Push biasa tidak menjalankannya.
+
+## Hasil remediasi — CI #25 (`5c84163`, `bench=remediasi`)
+
+Run: https://github.com/aiolaf9/video-editing/actions/runs/41192431720 — regresi (lint, keamanan, SQLite,
+PostgreSQL, migrasi) hijau; `mem`, `conc`, `gt`, `noise` selesai; `det` GAGAL di set ke-3 (`en_clean`,
+`KeyError: 'bounds'`, bug skema benchmark — 18 run id_long/id_noisy sebelumnya valid). Image produksi dari digest,
+CPU int8, 4 vCPU. Semua memori dalam MiB. Durasi metadata = durasi decode di semua run (`decode_ok`).
+
+### W5 — memori vs durasi (container 12 GiB; HANYA pengukuran pertumbuhan, bukan bukti aman di worker 3 GiB)
+
+| Model | Estimasi scheduler | 10 mnt RSS puncak | 30 mnt | 60 mnt | Kemiringan 10→60 | cgroup puncak 60 mnt* | Status |
+|---|---|---|---|---|---|---|---|
+| tiny | 700 | 832 | 1784 | 3333 | 50,4 MiB/mnt | 3539 | ok (tanpa OOM/timeout) |
+| base | 900 | 902 | 1809 | 3358 | 49,9 MiB/mnt | 3539** | ok |
+| small | 1600 | 1521 | 2079 | 3566 | 44,8 MiB/mnt | 4397 | ok |
+
+\* `memory.peak` container kumulatif; nilai baru tercatat bila run itu menaikkan puncak (tiny 60, small 60).
+\** tidak dinaikkan oleh run base 60 (3358 RSS < puncak sebelumnya). RTF small 0,32/0,30/0,39; jumlah fallback
+temperatur naik dengan durasi (small 15/37/161).
+
+- Pertumbuhan ±50 MiB per menit audio, SAMA untuk ketiga model: bagian durasi tidak bergantung model (decode +
+  VAD + STFT/mel atas seluruh audio; terukur tanpa model 62 MiB/mnt pada kasus terburuk).
+- Estimasi scheduler hanya model: small 1600 vs 3566 aktual (60 mnt) = 2,2×; tiny 700 vs 3333 = 4,8×.
+- Di worker-analisis 3 GiB, small diperkirakan melewati batas sekitar 45–50 mnt audio (ekstrapolasi, BELUM
+  dijalankan di container 3 GiB). cgroup 60 mnt (4397) jelas > 3072.
+
+### W5 — dua job bersamaan (container 3 GiB = worker-analisis)
+
+small × 2, audio 10 mnt, mulai berselang 15 dtk. Keputusan `admit_memory`: proses 1 admit (butuh 1600),
+proses 2 admit (butuh 1600). Hasil: keduanya selesai (RSS puncak 1543 + 1446 = 2988), `oom_kill` 0,
+**`memory.peak` 3072 = batas**. Tidak ada OOM, tetapi tanpa margin sama sekali: hasil ini **tidak** membuktikan
+aman. Pada audio sedikit lebih panjang kombinasi yang sama hampir pasti OOM; admission menyetujui keduanya karena
+estimasinya tidak menghitung durasi.
+
+### W6 — determinisme (small, container 3 GiB, 3 run per mode, satu runner)
+
+| Set | Mode | Hash teks | WER | CER | RTF | Fallback | RSS puncak |
+|---|---|---|---|---|---|---|---|
+| id_long 597 dtk | default | **2 berbeda** (run 1 ≠ 2,3) | 20,0% / 23,3% | 9,9% / 13,9% | 0,28–0,33 | 6 / 13 | 1441–1535 |
+| id_long | seed 1234 | 1 (identik 3/3) | 27,1% | 17,7% | 0,36 | 19 | 1436–1455 |
+| id_long | temperature 0 | 1 (identik 3/3) | **19,1%** | **9,5%** | **0,23** | 3 | 1074–1138 |
+| id_noisy_snr10 | default/seed/temp0 | 1 (identik 9/9) | 53,1% | 35,3% | 0,20 | 0 | 865–936 |
+| en_clean | — | TIDAK DIJALANKAN (bug benchmark) | | | | | |
+
+- Akar W6 terbukti: non-determinisme muncul hanya bila fallback temperatur > 0 terjadi (sampling tanpa seed).
+  Tanpa fallback (id_noisy) ketiga mode identik.
+- Lintas runner: set dan mode yang sama (id_noisy, temperature 0) di runner lain (job `noise`) memberi hash
+  berbeda (`e52f…` WER 50,4%, 2 fallback vs `a867…` WER 53,1%, 0 fallback). Repeatability satu runner ≠ determinisme
+  lintas hardware; temperature 0 TIDAK menjamin hasil sama di CPU berbeda.
+- Risiko temperature 0: segmen yang gagal ambang compression ratio (2,6–3,4 di id_long) disimpan apa adanya, bukan
+  diulang. Halusinasi/pengulangan per segmen BELUM diperiksa manual.
+
+### W3 — acuan timestamp
+
+- Sensitivitas ambang silencedetect (-30..-45 dB, 20 ucapan tunggal): sebaran awal ucapan median 442 ms, maks
+  1445 ms. Acuan awal ucapan sendiri tidak stabil sampai ±0,4 dtk.
+- Sebaran akhir 0 ms dan kata terakhir selalu 0,8–3,5 dtk sebelum "akhir suara" → **bug acuan**: FFmpeg mencetak
+  `silence_end` di akhir berkas untuk hening penutup; `speech_bounds` membacanya sebagai "tidak ada hening akhir"
+  sehingga akhir ucapan = akhir berkas. Seluruh angka "akhir ucapan" W3 sebelumnya TIDAK VALID. Diperbaiki lokal
+  (`a6b8a9c`); uji sintetis 6 kasus: lama salah di 4 kasus (+0,8 s.d. +3,5 dtk), baru tepat di 6/6.
+- Kata pertama vs awal suara (-35 dB): median |selisih| 394 ms (n=20).
+- Ketepatan timestamp kata: NOT VERIFIED (tidak ada anotasi waktu kata).
+
+### Noise (id_noisy_snr10, small, temperature 0, satu run per varian)
+
+| Varian | Praproses (dtk) | WER | CER | RTF | RSS puncak | Catatan |
+|---|---|---|---|---|---|---|
+| asli (VAD 0,5) | 0 | **50,4%** | **30,2%** | 0,174 | 1069 | acuan |
+| asli, VAD 0,35 | 0 | 50,6% | 33,5% | 0,147 | 881 | |
+| asli, VAD 0,65 | 0 | 52,9% | 34,9% | 0,151 | 937 | |
+| afftdn nf=-25 | 0,5 | **128,3%** | 82,9% | 0,189 | 924 | halusinasi berulang (compression ratio 31,6) |
+| highpass 100 + lowpass 7000 | 0,13 | 53,9% | 32,9% | 0,175 | 941 | |
+| afftdn + loudnorm | 4,0 | 59,2% | 38,4% | 0,140 | 870 | |
+
+Tidak ada varian yang lebih baik dari audio asli; `afftdn` merusak berat. Default TIDAK diubah. Noise pink sintetis
+SNR 10 dB bukan representasi audio lapangan; perlu uji audio lapangan nyata di tahap validasi produk.
