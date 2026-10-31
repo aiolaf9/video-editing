@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from whisper_quality import boundary_errors, wer_cer  # noqa: E402
+from whisper_quality import boundary_errors, norm, wer_cer  # noqa: E402
 
 
 def vm(key):
@@ -254,6 +254,37 @@ def exp_conc(args, sets, out):
                else ("OK" if all(r["status"] == "ok" for r in rows) else "NOT_OK")})
 
 
+def edit_ops(ref: list, hyp: list) -> dict:
+    """Jumlah substitusi / penyisipan (kata tambahan, indikasi halusinasi) / penghapusan (teks hilang)."""
+    n, m = len(ref), len(hyp)
+    d = [[(0, 0, 0, 0)] * (m + 1) for _ in range(n + 1)]   # (biaya, sub, ins, del)
+    for i in range(1, n + 1):
+        d[i][0] = (i, 0, 0, i)
+    for j in range(1, m + 1):
+        d[0][j] = (j, 0, j, 0)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            c, sb, ins, de = d[i - 1][j - 1]
+            best = (c + (ref[i - 1] != hyp[j - 1]), sb + (ref[i - 1] != hyp[j - 1]), ins, de)
+            c, sb, ins, de = d[i][j - 1]
+            best = min(best, (c + 1, sb, ins + 1, de))
+            c, sb, ins, de = d[i - 1][j]
+            best = min(best, (c + 1, sb, ins, de + 1))
+            d[i][j] = best
+    _, sb, ins, de = d[n][m]
+    return {"ref_words": n, "hyp_words": m, "sub": sb, "ins": ins, "del": de}
+
+
+def repetition(text: str) -> dict:
+    """Indikator pengulangan: rasio kompresi zlib teks keluaran & porsi 4-gram yang berulang."""
+    import zlib
+    words = norm(text)
+    grams = [tuple(words[i:i + 4]) for i in range(max(0, len(words) - 3))]
+    raw = text.encode()
+    return {"compression_ratio": round(len(raw) / max(1, len(zlib.compress(raw))), 2),
+            "repeated_4gram_frac": round(1 - len(set(grams)) / len(grams), 4) if grams else 0.0}
+
+
 class CorpusSchemaError(RuntimeError):
     pass
 
@@ -294,6 +325,9 @@ def det_summary(set_name: str, mode: str, rows: list[dict]) -> dict:
             "wer": sorted({r["wer"] for r in ok}), "cer": sorted({r["cer"] for r in ok}),
             "rtf_median": statistics.median(r["rtf"] for r in ok) if ok else None,
             "fallbacks": sorted({r["fallbacks"] for r in ok}),
+            "ins_del": sorted({(r["ops"]["ins"], r["ops"]["del"]) for r in ok}),
+            "max_repeated_4gram_frac": max((r["repetition"]["repeated_4gram_frac"] for r in ok), default=None),
+            "peak_rss_mb": [min(r["peak_rss_mb"] for r in ok), max(r["peak_rss_mb"] for r in ok)] if ok else None,
             "decoding": ok[0]["decoding"] if ok else None}
 
 
@@ -309,13 +343,16 @@ def exp_det(args, sets, out):
                     m = wer_cer(ref, row["text"])
                     row["wer"] = round(m["word_errors"] / max(1, m["ref_words"]), 4)
                     row["cer"] = round(m["char_errors"] / max(1, m["ref_chars"]), 4)
+                    row["ops"] = edit_ops(norm(ref), norm(row["text"]))
+                    row["repetition"] = repetition(row["text"])
                 row = {"exp": "det", "set": set_name, "run": run, **row}
                 rows.append(row)
                 emit(out, row)
             emit(out, det_summary(set_name, mode, rows))
 
 
-def speech_bounds_at(path, db, min_sil=0.15):
+def speech_bounds_at(path, db, min_sil=0.15, legacy=False):
+    """legacy=True: logika LAMA (sebelum a6b8a9c), hanya untuk membandingkan acuan lama vs baru."""
     err = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(path), "-af", f"silencedetect=n={db}dB:d={min_sil}",
                           "-f", "null", "-"], capture_output=True, text=True).stderr
     d = duration(path)
@@ -324,9 +361,9 @@ def speech_bounds_at(path, db, min_sil=0.15):
     begin = ends[0] if starts and starts[0] < 0.05 and ends else 0.0
     # Hening di akhir berkas: FFmpeg mencetak silence_start lalu silence_end tepat di akhir berkas (EOF). Dulu kasus ini
     # dibaca sebagai "tidak ada hening akhir" sehingga akhir ucapan = akhir berkas (salah, P5.5.2 exp gt).
-    trailing = starts and (not ends or starts[-1] > ends[-1] or abs(ends[-1] - d) < 0.05)
+    trailing = starts and (not ends or starts[-1] > ends[-1] or (not legacy and abs(ends[-1] - d) < 0.05))
     end = starts[-1] if trailing else d
-    if end <= begin:          # berkas tanpa suara terdeteksi: tidak ada batas yang bermakna, pakai seluruh berkas
+    if end <= begin and not legacy:          # berkas tanpa suara terdeteksi: tidak ada batas yang bermakna, pakai seluruh berkas
         begin, end = 0.0, d
     return begin, end
 
@@ -344,8 +381,18 @@ def exp_gt(args, sets, out):
                "start_spread_ms_max": max(x["start_spread_ms"] for x in spread),
                "end_spread_ms_median": statistics.median(x["end_spread_ms"] for x in spread),
                "end_spread_ms_max": max(x["end_spread_ms"] for x in spread)})
+    diff = []
+    for it in items:
+        old, new = speech_bounds_at(it["file"], -35, legacy=True), speech_bounds_at(it["file"], -35)
+        diff.append({"start_old_minus_new_ms": round((old[0] - new[0]) * 1000),
+                     "end_old_minus_new_ms": round((old[1] - new[1]) * 1000)})
+    emit(out, {"exp": "gt", "what": "acuan lama vs baru (-35 dB), ucapan tunggal yang sama", "n": len(diff),
+               "start_old_minus_new_ms": [x["start_old_minus_new_ms"] for x in diff],
+               "end_old_minus_new_ms": [x["end_old_minus_new_ms"] for x in diff],
+               "end_changed": sum(x["end_old_minus_new_ms"] != 0 for x in diff),
+               "end_old_minus_new_ms_median": statistics.median(x["end_old_minus_new_ms"] for x in diff)})
     model = args.models.split(",")[0]
-    first, last, failed = [], [], []
+    first, last, last_old, failed = [], [], [], []
     for it in items:
         row = child(args, model, it["file"], "temp0")
         if row["status"] != "ok":          # kegagalan dicatat, tidak dilewati diam-diam
@@ -358,10 +405,13 @@ def exp_gt(args, sets, out):
         b, e = speech_bounds_at(it["file"], -35)
         first.append(round((words[0]["start"] - b) * 1000))
         last.append(round((words[-1]["end"] - e) * 1000))
+        last_old.append(round((words[-1]["end"] - speech_bounds_at(it["file"], -35, legacy=True)[1]) * 1000))
     emit(out, {"exp": "gt", "what": f"kata pertama/terakhir {model} vs awal/akhir suara (-35 dB), ucapan tunggal",
                "n": len(first), "failed": failed, "first_word_minus_onset_ms": first, "last_word_minus_offset_ms": last,
                "first_abs_median_ms": statistics.median(abs(x) for x in first) if first else None,
-               "last_abs_median_ms": statistics.median(abs(x) for x in last) if last else None})
+               "last_abs_median_ms": statistics.median(abs(x) for x in last) if last else None,
+               "last_word_minus_offset_ms_acuan_lama": last_old,
+               "last_abs_median_ms_acuan_lama": statistics.median(abs(x) for x in last_old) if last_old else None})
 
 
 NOISE_VARIANTS = {
