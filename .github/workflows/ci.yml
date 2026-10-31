@@ -26,7 +26,7 @@ on:
         type: string
         default: "3"
       bench_exps:
-        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise"
+        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise, diag"
         type: string
         default: mem,conc,det,gt,noise
 
@@ -274,6 +274,7 @@ jobs:
               "det": {"args": "--models small --sets id_long,id_noisy_snr10,en_clean --runs 3", "docker": small3g},
               "gt": {"args": "--models small", "docker": small3g},
               "noise": {"args": "--models small", "docker": small3g},
+              "diag": {"args": "--models small --sets en_clean,id_clean --windows 30,60", "docker": small3g},
           }
           exps = [e.strip() for e in os.environ["EXPS"].split(",") if e.strip()]
           badx = [e for e in exps if e not in allx]
