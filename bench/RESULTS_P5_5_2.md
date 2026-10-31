@@ -298,3 +298,51 @@ small (W1 ≤ 25 %) — tiny hanya dicatat; (2) **puncak RSS tiny 835 MB pada au
 tiny 700 MB** (`_WHISPER_MEM`) — temuan untuk kriteria W5, belum diubah; (3) RTF noisy lebih rendah karena keluaran
 lebih sedikit (WER naik), bukan lebih efisien; (4) pergantian pembicara/diarization: NOT VERIFIED (fallback);
 (5) revisi model tercatat di artifact (`model_revision`), belum dibaca dari log.
+
+## Whisper base & small ASLI — full (CI #20, `b2d6cc3`, `bench=full, base,small, runs=3`)
+
+https://github.com/aiolaf9/video-editing/actions/runs/41177453255 — job base (12 mnt) & small (25 mnt) sukses, di
+runner terpisah; artifact `bench-whisper-base` (13033608358), `bench-whisper-small` (13033194866). Image produksi,
+CPU int8, cache model base 142 MB, small 464 MB. Korpus sama dengan smoke (fallback `speaker_source=unknown` untuk set
+gabungan). Nilai = **median 3 run** (rentang); n = 3 → "p95" = maksimum. RINGKASAN di log hanya memuat WER run 1,
+sehingga angka di bawah dihitung dari baris per-run.
+
+| Model / set | WER | CER | RTF | Muat (dtk) | Puncak RSS MB | Bahasa |
+|---|---|---|---|---|---|---|
+| **small** id bersih (20 ucapan, 214,7 dtk) | **14,1 %** (14,1–14,1) | 4,5 % | 0,320 (0,308–0,324) | 1,28 (5,14 run 1: unduh) | 911 (maks 1113) | id 20/20 |
+| small id gabungan bersih (268,9 dtk) | 24,1 % (23,1–26,8) | 10,4 % (9,6–13,0) | 0,309 | 1,28 | 1434 | id |
+| small id gabungan + SNR 10 dB | 60,7 % (58,4–61,4) | 48,9 % (45,4–51,9) | 0,221 | 1,27 | 1429 | id |
+| small id panjang (597 dtk) | 30,0 % (21,3–33,8) | 18,6 % (10,4–23,4) | 0,368 (0,326–0,398) | 1,27 | **1521** | id |
+| small en bersih (198,9 dtk) | 8,2 % | 5,1 % | 0,311 | 1,26 | 856 | en 20/20 |
+| **base** id bersih | 28,7 % | 9,0 % | 0,175 | 0,86 (1,68 run 1) | 400 (maks 422) | id 20/20 |
+| base id gabungan bersih | 46,6 % | 26,4 % | 0,139 | 0,86 | 605 | id |
+| base id gabungan + SNR 10 dB | 77,4 % | 60,8 % | 0,053 | 0,86 | 546 | id |
+| base id panjang | 38,0 % (37,8–42,4) | 18,8 % (18,8–23,4) | 0,140 | 0,85 | **862** | id |
+| base en bersih | 10,8 % (10,8–18,5) | 5,7 % (5,7–11,9) | 0,238 | 0,88 | 465 | en 20/20 |
+
+Batas ucapan (run 1; median |selisih| awal/akhir; dalam 300 ms): small gabungan 180/110 ms, 15/24 & 12/24; small
+panjang 197/220 ms, 33/50 & 25/50; small noisy 347/320 ms, 5/24 & 6/24; base gabungan 180/150 ms, 14/24 & 11/24;
+base panjang 172/280 ms, 36/50 & 22/50. Acuan batas = awal/akhir suara per ucapan (silencedetect −35 dB) — perkiraan
+dengan ketidakpastian puluhan ms (napas, jeda dalam ucapan); bukan timestamp kata manual.
+
+**Bersih vs SNR 10 dB (audio sama):** small WER 24,1 % → 60,7 %; base 46,6 % → 77,4 %; tiny 68,4 % → 79,7 %. RTF
+lebih rendah pada noisy karena keluaran lebih sedikit (bukan lebih efisien).
+
+**Temuan:** (1) **tidak deterministik** — WER berbeda antar-run pada set panjang/noisy (small id panjang 21,3–33,8 %)
+dan base en bersih; dugaan: temperature fallback faster-whisper (sampling acak bila ambang kualitas gagal) — NOT
+VERIFIED; (2) **RAM vs perkiraan admission** (`_WHISPER_MEM`): tiny 835 > 700 MB (melebihi), base 862 / 900 MB (96 %),
+small 1521 / 1600 MB (95 %) pada audio 10 menit — RSS naik dengan durasi audio, sehingga video lebih panjang (batas
+analisis aplikasi) dapat melampaui perkiraan; belum diukur > 10 menit; (3) id panjang & gabungan jauh lebih buruk
+daripada ucapan tunggal (14,1 % → 24–30 %).
+
+### Status kriteria Whisper (ambang ditetapkan sebelum hasil)
+
+| # | Kriteria | Status | Bukti |
+|---|---|---|---|
+| W1 | WER id bersih (small) ≤ 25 % | **PASS** | 14,1 % (3/3 run sama); gabungan 24,1 %; panjang 30,0 % (di luar definisi W1) |
+| W2 | RTF small ≤ 0,5 (4 vCPU) | **PASS** | maks 0,398 |
+| W3 | Batas ucapan: median ≤ 300 ms DAN ≥ 80 % dalam 300 ms | **FAIL** | median 110–220 ms (bersih) memenuhi; persentase hanya 50–66 % (bersih), 21–25 % (noisy). Ketidakpastian acuan silencedetect dicatat |
+| W4 | Deteksi bahasa id (small) ≥ 95 % | **PASS** | 20/20 (tiny 19/20, 1 → ms) |
+| W5 | Puncak RAM ≤ perkiraan admission | **FAIL** | tiny 835 > 700 MB; base/small dalam batas tetapi ≥ 95 % |
+| W6 | Hasil deterministik | **FAIL** | WER berbeda antar-run (lihat temuan 1) |
+| – | Pergantian pembicara / diarization | **NOT VERIFIED** | gender FLEURS id seluruhnya "MALE"; set gabungan = fallback `unknown`; aplikasi tidak punya diarization |
