@@ -114,16 +114,17 @@ def run_one(model: str, path: str, mode: str, out_path: str, vad_threshold: str 
     model_obj = transcribe._get_model()
     load_s = time.perf_counter() - t0
     after_load = vm("VmRSS")
-    if mode == "temp0" or vad_threshold:
-        original = model_obj.transcribe
+    original, used = model_obj.transcribe, {}
 
-        def patched(audio, **kw):
-            if mode == "temp0":
-                kw["temperature"] = 0.0
-            if vad_threshold:
-                kw["vad_parameters"] = {"threshold": float(vad_threshold)}
-            return original(audio, **kw)
-        model_obj.transcribe = patched
+    def patched(audio, **kw):
+        if mode == "temp0":
+            kw["temperature"] = 0.0
+        if vad_threshold:
+            kw["vad_parameters"] = {"threshold": float(vad_threshold)}
+        # Parameter decoding yang benar-benar dipakai (selain default library yang tidak dioper aplikasi).
+        used.update({k: (v if k != "initial_prompt" else bool(v)) for k, v in kw.items()})
+        return original(audio, **kw)
+    model_obj.transcribe = patched
     dur = duration(path)
     t1 = time.perf_counter()
     res = transcribe.transcribe(Path(path), dur, None)
@@ -136,7 +137,12 @@ def run_one(model: str, path: str, mode: str, out_path: str, vad_threshold: str 
            "growth_over_load_mb": round(vm("VmHWM") - after_load, 1), "cpu_s": round(ru.ru_utime + ru.ru_stime, 1),
            "fallbacks": len(fallbacks), "fallback_examples": fallbacks[:3], "language": res.get("language"),
            "text_sha": hashlib.sha256(text.encode()).hexdigest()[:16], "text": text,
-           "words": [w for s in res["segments"] for w in s.get("words", [])], "cgroup": cgroup_stats()}
+           "words": [w for s in res["segments"] for w in s.get("words", [])], "cgroup": cgroup_stats(),
+           "decoding": {**{k: v for k, v in used.items() if k in ("temperature", "beam_size", "vad_filter",
+                                                                   "vad_parameters", "word_timestamps", "language",
+                                                                   "initial_prompt")},
+                        "temperature": used.get("temperature", "default library [0.0..1.0]"),
+                        "seed": 1234 if mode == "seed" else None}}
     Path(out_path).write_text(json.dumps(out, ensure_ascii=False))
 
 
@@ -248,18 +254,65 @@ def exp_conc(args, sets, out):
                else ("OK" if all(r["status"] == "ok" for r in rows) else "NOT_OK")})
 
 
+class CorpusSchemaError(RuntimeError):
+    pass
+
+
+def set_audio(name: str, s: dict, work: Path) -> tuple[Path, str]:
+    """Satu berkas audio + teks acuan untuk sebuah set korpus, sesuai skemanya:
+    timeline   : wajib `file` & `bounds` (batas ucapan; teks acuan = gabungan teks bounds)
+    utterances : wajib `items` [{file, text}] (tanpa batas ucapan); digabung jadi satu berkas, jeda 0,4 dtk.
+    Kunci wajib yang hilang = kegagalan eksplisit (bukan dilewati)."""
+    kind = s.get("kind")
+    if kind == "timeline":
+        missing = [k for k in ("file", "bounds") if k not in s]
+        if missing or not s["bounds"]:
+            raise CorpusSchemaError(f"set {name} (timeline): kunci wajib hilang/kosong {missing or ['bounds']}")
+        return Path(s["file"]), " ".join(b["text"] for b in s["bounds"])
+    if kind == "utterances":
+        items = s.get("items") or []
+        bad = [i for i, it in enumerate(items) if "file" not in it or "text" not in it]
+        if not items or bad:
+            raise CorpusSchemaError(f"set {name} (utterances): items kosong atau tanpa file/text di indeks {bad}")
+        joined = work / f"{name}_joined.wav"
+        if not joined.exists():
+            gap = work / "gap04.wav"
+            ffmpeg("-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "0.4", str(gap))
+            lst = work / f"{name}.txt"
+            lst.write_text("\n".join(f"file '{p}'" for it in items for p in (it["file"], gap)))
+            ffmpeg("-f", "concat", "-safe", "0", "-i", str(lst), "-ar", "16000", "-ac", "1", str(joined))
+        return joined, " ".join(it["text"] for it in items)
+    raise CorpusSchemaError(f"set {name}: kind tidak dikenal {kind!r}")
+
+
+def det_summary(set_name: str, mode: str, rows: list[dict]) -> dict:
+    ok = [r for r in rows if r.get("status") == "ok"]
+    return {"exp": "det", "summary": True, "set": set_name, "mode": mode, "runs": len(rows), "ok": len(ok),
+            "failed": [{"run": r["run"], "status": r.get("status")} for r in rows if r.get("status") != "ok"],
+            "distinct_text_sha": sorted({r["text_sha"] for r in ok}),
+            "identical": len(ok) == len(rows) and len({r["text_sha"] for r in ok}) == 1,
+            "wer": sorted({r["wer"] for r in ok}), "cer": sorted({r["cer"] for r in ok}),
+            "rtf_median": statistics.median(r["rtf"] for r in ok) if ok else None,
+            "fallbacks": sorted({r["fallbacks"] for r in ok}),
+            "decoding": ok[0]["decoding"] if ok else None}
+
+
 def exp_det(args, sets, out):
-    for set_name in args.sets.split(","):
-        s = sets[set_name]
-        ref = s["text"] if "text" in s else " ".join(b["text"] for b in s["bounds"])
+    work = Path(tempfile.mkdtemp())
+    resolved = {name: set_audio(name, sets[name], work) for name in args.sets.split(",")}   # skema dicek di awal
+    for set_name, (path, ref) in resolved.items():
         for mode in ("default", "seed", "temp0"):
+            rows = []
             for run in range(1, args.runs + 1):
-                row = child(args, args.models.split(",")[0], s["file"], mode)
-                if "text" in row:
+                row = child(args, args.models.split(",")[0], path, mode)
+                if row.get("status") == "ok":
                     m = wer_cer(ref, row["text"])
                     row["wer"] = round(m["word_errors"] / max(1, m["ref_words"]), 4)
                     row["cer"] = round(m["char_errors"] / max(1, m["ref_chars"]), 4)
-                emit(out, {"exp": "det", "set": set_name, "run": run, **row})
+                row = {"exp": "det", "set": set_name, "run": run, **row}
+                rows.append(row)
+                emit(out, row)
+            emit(out, det_summary(set_name, mode, rows))
 
 
 def speech_bounds_at(path, db, min_sil=0.15):
@@ -273,6 +326,8 @@ def speech_bounds_at(path, db, min_sil=0.15):
     # dibaca sebagai "tidak ada hening akhir" sehingga akhir ucapan = akhir berkas (salah, P5.5.2 exp gt).
     trailing = starts and (not ends or starts[-1] > ends[-1] or abs(ends[-1] - d) < 0.05)
     end = starts[-1] if trailing else d
+    if end <= begin:          # berkas tanpa suara terdeteksi: tidak ada batas yang bermakna, pakai seluruh berkas
+        begin, end = 0.0, d
     return begin, end
 
 

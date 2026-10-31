@@ -93,6 +93,8 @@ def speech_bounds(p) -> tuple[float, float]:
     # dibaca sebagai "tidak ada hening akhir" sehingga akhir ucapan = akhir berkas (salah, P5.5.2 exp gt).
     trailing = starts and (not ends or starts[-1] > ends[-1] or abs(ends[-1] - d) < 0.05)
     end = starts[-1] if trailing else d
+    if end <= begin:          # berkas tanpa suara terdeteksi: tidak ada batas yang bermakna, pakai seluruh berkas
+        begin, end = 0.0, d
     return round(begin, 3), round(end, 3)
 
 
