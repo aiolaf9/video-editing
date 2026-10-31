@@ -51,14 +51,30 @@ def duration(p) -> float:
 
 
 def cgroup_stats():
+    """Memori cgroup container (MiB, sama dengan satuan RSS proses). TERPISAH dari VmHWM proses: cgroup mencakup semua
+    proses di container + page cache; jangan dicampur."""
     cg = Path("/sys/fs/cgroup")
     out = {}
-    for f in ("memory.peak", "memory.max", "memory.current"):
+    for f, key in (("memory.peak", "cgroup_peak_mb"), ("memory.max", "cgroup_limit_mb"),
+                   ("memory.current", "cgroup_current_mb")):
         if (cg / f).exists():
-            out[f] = (cg / f).read_text().strip()
+            raw = (cg / f).read_text().strip()
+            out[key] = raw if raw == "max" else round(int(raw) / 2**20, 1)
     if (cg / "memory.events").exists():
-        out["memory.events"] = dict(line.split() for line in (cg / "memory.events").read_text().splitlines())
+        ev = dict(line.split() for line in (cg / "memory.events").read_text().splitlines())
+        out["cgroup_oom"] = int(ev.get("oom", 0))
+        out["cgroup_oom_kill"] = int(ev.get("oom_kill", 0))
     return out
+
+
+def verify_decode(path) -> dict:
+    """Durasi metadata (ffprobe) vs jumlah sampel hasil decode aplikasi (16 kHz) — dijalankan di proses INDUK, di luar
+    pengukuran memori proses transkripsi."""
+    from app import media
+    meta = duration(path)
+    samples = len(media.decode_audio(Path(path)))
+    return {"meta_s": round(meta, 2), "decoded_s": round(samples / 16000, 2),
+            "decode_ok": abs(samples / 16000 - meta) < 0.5}
 
 
 def repeated(src: Path, minutes: int, work: Path) -> Path:
@@ -124,10 +140,18 @@ def run_one(model: str, path: str, mode: str, out_path: str, vad_threshold: str 
     Path(out_path).write_text(json.dumps(out, ensure_ascii=False))
 
 
+CHILD_TIMEOUT_S = 3600      # batas per proses transkripsi (job 240 mnt / step 210 mnt tetap berlaku di atasnya)
+
+
 def child(args, model, path, mode, vad=""):
     tmp = Path(tempfile.mkstemp(suffix=".json")[1])
     cmd = [sys.executable, __file__, "--one", model, str(path), mode, str(tmp), vad]
-    p = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "HF_HUB_OFFLINE": "0"})
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "HF_HUB_OFFLINE": "0"},
+                           timeout=CHILD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:      # proses anak dibunuh oleh subprocess.run; dicatat, bukan PASS
+        return {"model": model, "mode": mode, "error": f"timeout {CHILD_TIMEOUT_S} dtk", "returncode": None,
+                "status": "timeout"}
     if p.returncode:
         return {"model": model, "mode": mode, "error": p.stderr.strip()[-600:], "returncode": p.returncode}
     return json.loads(tmp.read_text())
@@ -145,29 +169,57 @@ def emit(out: Path, row: dict):
 def exp_mem(args, sets, out):
     work = Path(tempfile.mkdtemp())
     src = Path(sets["id_long"]["file"])
+    from app import config
     for model in args.models.split(","):
         for minutes in [int(m) for m in args.minutes.split(",")]:
-            row = child(args, model, repeated(src, minutes, work), "default")
-            emit(out, {"exp": "mem", "minutes": minutes, **row})
+            path = repeated(src, minutes, work)
+            row = child(args, model, path, "default")
+            row.setdefault("status", "ok" if "error" not in row else
+                           ("oom" if row.get("returncode") == -9 else "error"))
+            # Puncak cgroup di sini KUMULATIF untuk seluruh container (semua run sebelumnya); hanya konteks, bukan
+            # angka per run. Angka per run = peak_rss_mb (VmHWM proses).
+            row["container_cumulative"] = cgroup_stats()
+            emit(out, {"exp": "mem", "minutes": minutes, **verify_decode(path),
+                       "scheduler_estimate_mb": config._WHISPER_MEM.get(model), **row})
 
 
 def exp_conc(args, sets, out):
     """Dua proses transkripsi serentak (dalam container ber-batas memori). Mencatat hasil tiap proses & cgroup."""
+    from app import resources
     work = Path(tempfile.mkdtemp())
     path = repeated(Path(sets["id_long"]["file"]), int(args.minutes.split(",")[0]), work)
-    procs = []
+    os.environ["WHISPER_MODEL"] = args.models.split(",")[0]
+    procs, decisions = [], []
     for i in range(2):
+        # Keputusan admission aplikasi SAAT INI (perkiraan per model, tanpa durasi) sebelum tiap proses dimulai.
+        ok, why = resources.admit_memory("analisis")
+        decisions.append({"process": i, "admit": ok, "reason": why,
+                          "required_mb": resources.required_mb("analisis")})
+        time.sleep(15 if i == 0 else 0)          # proses pertama sempat memuat model sebelum keputusan kedua
         tmp = work / f"conc{i}.json"
         procs.append((tmp, subprocess.Popen([sys.executable, __file__, "--one", args.models.split(",")[0], str(path),
                                               "default", str(tmp), ""], stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, text=True)))
     rows = []
     for tmp, p in procs:
-        _, err = p.communicate()
-        rows.append(json.loads(tmp.read_text()) if p.returncode == 0 and tmp.exists() else
-                    {"error": err.strip()[-400:], "returncode": p.returncode})
-    emit(out, {"exp": "conc", "processes": [{k: r.get(k) for k in ("peak_rss_mb", "rtf", "returncode", "error")}
-                                            for r in rows], "cgroup": cgroup_stats()})
+        try:
+            _, err = p.communicate(timeout=CHILD_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            _, err = p.communicate()
+        if p.returncode == 0 and tmp.exists():
+            r = json.loads(tmp.read_text())
+            r["status"], r["returncode"] = "ok", 0
+        else:
+            r = {"status": "oom" if p.returncode == -9 else "error", "returncode": p.returncode,
+                 "error": err.strip()[-400:]}
+        rows.append(r)
+    cg = cgroup_stats()
+    emit(out, {"exp": "conc", "audio": verify_decode(path), "admission": decisions,
+               "processes": [{k: r.get(k) for k in ("status", "returncode", "peak_rss_mb", "rtf", "error")}
+                             for r in rows], **cg,
+               "result": "OOM" if cg.get("cgroup_oom_kill") or any(r["status"] == "oom" for r in rows)
+               else ("ERROR" if any(r["status"] != "ok" for r in rows) else "OK")})
 
 
 def exp_det(args, sets, out):
