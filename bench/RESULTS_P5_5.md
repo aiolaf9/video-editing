@@ -278,6 +278,37 @@ hubungi admin"), tanpa angka RAM atau nama worker; `/api/admin/metrics` hanya ad
 Regresi lokal (commit lokal): SQLite **331 lolos, 1 dilewati** (advisory lock); PostgreSQL database baru **347 lolos,
 0 dilewati**.
 
+### Run #6 — commit `727e78e` (validasi akhir)
+
+- **CI #10:** https://github.com/aiolaf9/video-editing/actions/runs/41153363607 — success (lint, keamanan & lisensi,
+  migrasi, SQLite, PostgreSQL; tes Whisper asli manual = tidak dijalankan).
+- **Production image #6:** https://github.com/aiolaf9/video-editing/actions/runs/41153363606 — success (artifact
+  ID 13024077099). Image `sha256:09e5e585…4cf8` dari digest resmi; regresi di image **331 lolos, 1 dilewati**
+  (advisory lock PG); isolasi 42/42; e2e fixture 14/14; pihak ketiga 3/3; pemulihan 6/6 (SIGTERM 10,6 %, SIGKILL
+  7,6 %, sha256 `a3720f16…6401` identik); restart stack: 12 job identik; log 916 baris tanpa secret.
+- RAM: worker-io `memory.max` 512 MiB, `memory.peak` 134,0 MiB, terpakai 109 / tersedia 403 MB, job io diterima;
+  worker-render 1500 MiB, peak 110,5 MiB; web tanpa batas, peak 255,3 MiB; `memory.events` oom 0 / oom_kill 0 di
+  ketiganya; event OOM Docker sejak stack dinyalakan: kosong; `OOMKilled` false; worker idle (tidak ada `menunggu`).
+- **Tidak diuji di staging:** skenario starvation (worker kecil/besar, offline, konfigurasi), tampilan kolom
+  kapasitas admin, dan job yang kapasitasnya tidak memadai. Workflow belum punya langkah untuk itu; bukti hanya dari
+  tes unit/integrasi (lokal & CI) → NOT VERIFIED di staging.
+
+Regresi lokal termasuk tes verifikasi akhir (commit lokal `0a2088b`): SQLite **339 lolos, 1 dilewati**; PostgreSQL
+database baru **355 lolos, 0 dilewati**; `tests/test_p55_memory_admission.py` 40/40.
+
+### Keputusan penutupan P5.5.1: **CONDITIONAL PASS**
+
+Fungsi inti terbukti di staging (build dari digest, migrasi, worker healthy, egress, unduhan sha256, pemulihan
+SIGTERM/SIGKILL, RAM container terbaca benar, tanpa OOM, tanpa secret). Yang tersisa:
+
+| Butir | Memblokir P5.5.2? | Catatan |
+|---|---|---|
+| Kriteria 10–12 hanya terbukti lewat tes, belum di staging | Tidak | P5.5.2 menguji media & AI, bukan kapasitas; wajib diuji di staging sebelum deployment produksi |
+| Daftar worker historis (< 1 hari) bukan sumber kebenaran konfigurasi | Tidak | karena itu bawaan tidak pernah gagal permanen; kegagalan permanen opt-in |
+| Atribusi RSS per job dalam satu proses | Tidak | hanya mode tanam multi-job; Docker = satu job per container |
+| Pengukuran memori dengan media sintetis & cgroup v1 lokal | Tidak | diulang dengan media nyata di P5.5.2 |
+| Hardening jangka panjang: pin digest semua image, lockfile berhash, secret/role DB per service | Tidak | P5.5.3 |
+
 ### Tinjauan konfigurasi produksi (F)
 
 | Item | Status di `docker-compose.yml` produksi | Di overlay staging | Rekomendasi |
@@ -298,20 +329,20 @@ Strategi build yang dapat diulang (rekomendasi, belum diterapkan):
 3. Paket Debian (FFmpeg 7.1.5-0+deb13u1) mengikuti digest image dasar; catat `ffmpeg -version` di setiap rilis.
 4. Simpan image hasil build yang lolos di registry dengan digest; deploy berdasarkan digest, bukan tag.
 
-### Status kriteria penerimaan P5.5.1 (setelah run #5, `121f335`, dan commit lokal audit C/D/E/F)
+### Status kriteria penerimaan P5.5.1 (setelah run #6, `727e78e`)
 
 | # | Kriteria | Status | Bukti |
 |---|---|---|---|
-| 1 | CI umum sukses | PASS | CI #9: semua job sukses; SQLite 317/1 dilewati (PG-only), PostgreSQL 333/0 |
-| 2 | Production Image workflow sukses | PASS | run #5 success, semua langkah |
+| 1 | CI umum sukses | PASS | CI #10 (727e78e): semua job sukses |
+| 2 | Production Image workflow sukses | PASS | run #6 success, semua langkah |
 | 3 | Image dari digest resmi | PASS | `python@sha256:aa943ce4…d159`, `debian@sha256:13e0a2e7…8b04` |
 | 4 | Migrasi, startup, health | PASS | migrate exit 0, `0006_uploads`, tanpa drift, health langsung & via Caddy |
-| 5 | Regresi media dalam image | PASS | 317 lolos (read-only, tanpa capability); 1 dilewati = advisory lock PG, lolos di CI PG |
+| 5 | Regresi media dalam image | PASS | 331 lolos (read-only, tanpa capability); 1 dilewati = advisory lock PG, lolos di CI PG |
 | 6 | Egress & unduhan end-to-end | PASS | 42/42, 14/14, sha256 identik, bukti squid |
 | 7 | SIGTERM/SIGKILL recovery | PASS | 6/6, sha256 identik, 1 job unduhan, 0 tertinggal `jalan` |
-| 8 | RAM host/container tervalidasi | PASS | angka cgroup v2 staging (tabel run #5) + cgroup v1 nyata lokal |
+| 8 | RAM host/container tervalidasi | PASS | angka cgroup v2 staging run #5 & #6 + cgroup v1 nyata lokal |
 | 9 | Tidak ada OOM pada skenario yang diuji | PASS | staging: event OOM kosong, OOMKilled false, `oom_kill 0`; lokal: 6 workload `oom_kill 0` |
-| 10 | Concurrent admission aman | PASS (tes + pengukuran lokal); staging: NOT VERIFIED | kelemahan jendela 60 dtk ditemukan & diperbaiki di commit lokal; Docker: satu job per container |
-| 11 | Starvation punya monitoring jelas | PASS (tes); tampilan admin baru: NOT VERIFIED di staging | metrik, admin, healthcheck |
-| 12 | Tidak digagalkan permanen karena worker sementara offline | PASS (tes, commit lokal) | aturan `121f335` gagal kriteria ini; diperbaiki, bawaan tidak pernah gagal permanen |
-| 13 | Tidak ada kebocoran secret | PASS | image, log staging 917 baris, pemindaian secret file & riwayat git di CI #9 |
+| 10 | Concurrent admission aman | PASS (tes + pengukuran nyata lokal); staging: NOT VERIFIED | jendela 60 dtk diganti reservasi sepanjang hidup job (727e78e); Docker: satu job per container |
+| 11 | Starvation punya monitoring jelas | PASS (tes); staging: NOT VERIFIED | metrik, kolom kapasitas admin, healthcheck |
+| 12 | Tidak digagalkan permanen karena worker sementara offline | PASS (tes); staging: NOT VERIFIED | `121f335` gagal kriteria ini; diperbaiki di `727e78e` |
+| 13 | Tidak ada kebocoran secret | PASS | image, log staging 916 baris, pemindaian secret file & riwayat git di CI #10 |
