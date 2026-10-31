@@ -346,3 +346,56 @@ daripada ucapan tunggal (14,1 % → 24–30 %).
 | W5 | Puncak RAM ≤ perkiraan admission | **FAIL** | tiny 835 > 700 MB; base/small dalam batas tetapi ≥ 95 % |
 | W6 | Hasil deterministik | **FAIL** | WER berbeda antar-run (lihat temuan 1) |
 | – | Pergantian pembicara / diarization | **NOT VERIFIED** | gender FLEURS id seluruhnya "MALE"; set gabungan = fallback `unknown`; aplikasi tidak punya diarization |
+
+## Media full di image produksi (CI #20, `b2d6cc3`, `bench=full, runs=3`)
+
+https://github.com/aiolaf9/video-editing/actions/runs/41177453255 — job "Benchmark preview & render (full)" sukses
+(95 mnt), artifact `bench-media` (13036276009). Runner `ubuntu-24.04`, FFmpeg image produksi (digest run #6), pengukur
+kualitas versi `b2d6cc3` (diselaraskan per waktu). **30 skenario × 3 run = 90/90, 0 error.** Median waktu (dtk) / RTF;
+puncak RSS FFmpeg maks (MB).
+
+| Aset | Preview | Render 9:16 + subtitle | Render original (SSIM / PSNR dB) |
+|---|---|---|---|
+| MP4 1080p30 (acuan) | 6,11 / 0,102 / 183 MB | 9,01 / 0,300 / 380 MB | 6,45 / 0,215 / 369 MB (0,99966 / 55,3) |
+| MOV 1080p30 | 6,13 / 0,102 | 9,01 / 0,300 | 6,50 / 0,217 (0,99966 / 55,3) |
+| 1080×1920 9:16 | 3,95 / 0,066 | 6,61 / 0,220 | 6,56 / 0,219 (0,99967 / 55,3) |
+| 720p25 mono 44,1 kHz | 0,16 / 0,003 (copy) | 7,04 / 0,235 | 2,52 / 0,084 (0,99969 / 55,5) |
+| 1080p 23,976 | 4,98 / 0,083 | 7,39 / 0,246 | 5,59 / 0,186 (0,99965 / 55,2) |
+| 1080p60 | 11,76 / **0,196** | 16,09 / **0,536** / 398 MB | 11,85 / 0,395 (0,99958 / 54,3) |
+| HEVC 1080p30 | 6,73 / 0,112 | 9,61 / 0,320 | 6,78 / 0,226 / **467 MB** (0,99934 / 53,4) |
+| WebM VP9/Opus 720p | 4,09 / 0,068 | 8,50 / 0,283 | 3,01 / 0,100 (**0,99940 / 53,0**) |
+| VFR (36 fps rata-rata) | 0,16 / 0,003 (copy) | 9,49 / 0,317 (keluaran 36 fps) | 3,47 / 0,116 (0,99954 / 54,3) |
+| 720p 30 menit (klip 1700–1730 dtk) | 0,60 / 0,0003 (copy) | 8,43 / 0,281 | 3,01 / 0,100 (0,99971 / 55,6) |
+
+- Sinkronisasi: semua penanda berpasangan (preview 30/30; 30 menit 900/900; render 15/15). Perubahan offset A/V oleh
+  pipeline (relatif sumber): 0 ms untuk 8 aset; WebM +6/+8 ms; 23,976 fps 0 (preview) / 10 ms (render). Tidak ada
+  drift setelah 28 menit. Semua < 1 frame.
+- Subtitle: 30 render 9:16, 450/450 kata, 0 onset palsu, 0 frame terang di luar jendela tampil, maks 33,3 ms
+  (30 fps) / 20,5 ms (23,976) / 16,7 ms (60 fps) = ≤ 1 frame.
+- Variasi antar-run waktu ≤ 2 % (n = 3; "p95" = maksimum).
+- Lokal (FFmpeg 6.1.1, sandbox Xeon 2,1 GHz 4 vCPU) vs runner image: sinkronisasi, subtitle & SSIM sama; waktu berbeda
+  karena hardware & versi FFmpeg berbeda — bukan bukti optimasi. Perbedaan perilaku: render VFR = 36 fps (7.1.5) vs
+  CFR 60 fps (6.1.1); RSS render image 326–467 MB vs lokal 289–342 MB.
+
+## Status akhir kriteria P5.5.2
+
+| # | Kriteria | Status | Bukti |
+|---|---|---|---|
+| W1 | WER id bersih small ≤ 25 % | **PASS** | 14,1 % |
+| W2 | RTF small ≤ 0,5 | **PASS** | maks 0,398 |
+| W3 | Batas ucapan ≥ 80 % dalam 300 ms | **FAIL** | 50–66 % (median 110–220 ms) |
+| W4 | Deteksi bahasa id ≥ 95 % (small) | **PASS** | 20/20 |
+| W5 | Puncak RAM ≤ perkiraan admission | **FAIL** | tiny 835 > 700 MB; base/small ≥ 95 % dari perkiraan |
+| W6 | Deterministik | **FAIL** | WER berbeda antar-run pada set panjang/noisy |
+| – | Diarization / dua pembicara | **NOT VERIFIED** | metadata gender FLEURS id tidak informatif; fitur tidak ada |
+| M1 | Semua format diproses | **PASS** | 90/90 di image produksi |
+| M2 | A/V ≤ 1 frame | **PASS** | ≤ 10 ms relatif sumber |
+| M3 | Drift 30 menit ≤ 1 frame | **PASS** | 0 ms |
+| M4 | Subtitle ≥ 95 %, ≤ 1 frame, tanpa FP | **PASS** | 450/450, 0 FP |
+| M5 | SSIM render original ≥ 0,98 | **PASS** | min 0,99934 |
+| M6 | Render RTF ≤ 1,0; preview RTF ≤ 0,2 | **PASS** | 0,536 / 0,196 (preview 1080p60 mendekati batas) |
+| M7 | RAM render ≤ 700 MB | **PASS** | maks 467 MB |
+| M8 | Properti keluaran | **PASS** | resolusi/fps/48 kHz sesuai; VFR antar-versi berbeda (backlog fps_mode) |
+| U1–U5 | Upload & siklus media | **PASS (lokal)** | jaringan nyata & UI jeda: NOT VERIFIED |
+| – | Kualitas visual konten nyata | **NOT VERIFIED** | hanya media sintetis |
+| – | Alur Field-to-Final & target 30 menit | **NOT VERIFIED** | tidak tersedia (bukan cakupan P5.5.2) |
