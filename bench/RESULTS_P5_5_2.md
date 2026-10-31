@@ -577,3 +577,40 @@ small, container 3 GiB, satu runner, 3 run per mode; tanpa OOM/timeout (`oom_kil
 - Sensitivitas ambang (-30..-45 dB): sebaran awal median 442 ms (maks 1445), akhir median 852 ms (maks 3053).
 - Kata pertama vs awal suara: median |selisih| 394 ms.
 - Timestamp kata: NOT VERIFIED (tidak ada anotasi waktu kata).
+
+## Diagnostik kehilangan teks — CI #32 (`6847a64`, `bench_exps=diag`)
+
+Run: https://github.com/aiolaf9/video-editing/actions/runs/41222238069 — hanya job `diag` (+ regresi hijau); 14/14
+mode `ok`, `oom_kill` 0; timeline acuan↔audio valid (en 206,88 dtk, id 222,74 dtk = jumlah ucapan + jeda).
+small, satu model untuk semua mode, decoding sama kecuali satu variabel per mode.
+
+| Set | Mode | WER | sub / ins / del | Ucapan hilang | Lompatan seek 3000 (30 dtk penuh) |
+|---|---|---|---|---|---|
+| en_clean | per_utt | 8,6% | 27 / 6 / 4 | 0 | — |
+| en_clean | joined | **52,3%** | 18 / 0 / **206** | **8** (2,5,9,12,14,15,16,17) | **3** |
+| en_clean | joined_novad | 20,1% | 21 / 16 / 49 | 2 | 0 |
+| en_clean | joined_nocond | 23,1% | 28 / 5 / 66 | 3 | 1 |
+| en_clean | joined_noprompt | 41,4% | 16 / 0 / 161 | 6 | 3 |
+| en_clean | win30 | 31,3% | 14 / 1 / 119 | 5 | 0 |
+| en_clean | win60 | 16,8% | 17 / 6 / 49 | 1 | 0 |
+| id_clean | per_utt | 13,6% | 37 / 8 / 5 | 0 | — |
+| id_clean | joined | 26,3% | 48 / 12 / 37 | 2 (2, 12) | 0 |
+| id_clean | joined_novad | 18,2% | 40 / 11 / 16 | 1 | 0 |
+| id_clean | joined_nocond | 23,6% | 43 / 13 / 31 | 2 | 0 |
+| id_clean | joined_noprompt | 20,3% | 31 / 9 / 35 | 2 | 0 |
+| id_clean | win30 | 13,3% | 31 / 7 / 11 | 1 | 0 |
+| id_clean | win60 | 17,6% | 34 / 12 / 19 | 1 | 0 |
+
+Temuan:
+- Pemetaan acuan: valid; tidak ada ucapan yang hipotesisnya lebih cocok dengan teks tetangga.
+- **Korpus berisi kalimat kembar berurutan** (FLEURS merekam kalimat yang sama oleh beberapa pembicara): en 2=3,
+  8=9, 12=13, 14=15, 16=17; id 2=3, 5=6=7, 17=18=19. 7 dari 8 ucapan yang hilang di en joined termasuk kelompok kembar.
+  Audio nyata jarang mengulang kalimat yang sama berturut-turut → angka 52,3% memperbesar masalah.
+- VAD mendeteksi ucapan yang hilang (cakupan 0,92–1,0 untuk 7 dari 8; satu 0,49) → bukan VAD-drop.
+- en joined: tiga kali seek maju tepat satu jendela penuh (3000 = 30 dtk) di blok ucapan 12–17 yang hilang; tanpa
+  VAD tidak ada lompatan penuh dan hanya 2 ucapan hilang. Cabang pemicunya (akhiran satu timestamp vs lainnya)
+  TIDAK terekam: `single_ts_end` null karena bug instrumen (diperbaiki lokal setelah run).
+- no_speech skip faster-whisper butuh avg_logprob < -1; segmen di sekitar celah -0,1 s.d. -0,45 → kemungkinan
+  kecil sebagai pemicu (NOT VERIFIED).
+- Konteks: condition_on_previous_text=False menurunkan en 52,3% → 23,1% (8 → 3 hilang).
+- Bahasa: id jauh lebih ringan (2 hilang, tanpa lompatan penuh) meski juga berisi kalimat kembar.
