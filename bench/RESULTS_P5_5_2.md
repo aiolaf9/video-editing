@@ -77,3 +77,101 @@ bawah; versi awal dengan luma rata-rata tidak mendeteksi teks kecil — diperbai
 Statistik: n = 3 per skenario (median; "p95" = nearest-rank, dengan n = 3 sama dengan nilai maksimum — bukan
 estimasi persentil yang andal). Waktu antre tidak diukur di benchmark ini (fungsi dipanggil langsung); analisis
 (Whisper) & render diukur terpisah.
+
+## P5.5.2-B — Whisper asli
+
+| Butir | Status | Bukti |
+|---|---|---|
+| Akses model di runner GitHub | PASS | CI #13 (dispatch `heavy=true`, ref `v2/phase-1` @ `429920a`): https://github.com/aiolaf9/video-editing/actions/runs/41171196141 — job "Tes khusus Whisper asli (manual)": **2 passed**, 0 dilewati (340 tes lain di luar `-m heavy`). Model tiny diunduh dari Hugging Face & dimuat sebagai `faster_whisper.WhisperModel` (tes memeriksa tipe objek — bukan tiruan); transkripsi end-to-end berjalan. faster-whisper 1.2.1, CTranslate2 4.8.4, huggingface-hub 2.4.0 (log pip) |
+| Waktu unduh/muat, durasi transkripsi, CPU, RAM tiny | NOT VERIFIED | job ini hanya mencatat total pytest 5,36 dtk (2 tes); rincian diukur `whisper_quality.py` |
+| WER/CER, RTF, timestamp, bahasa, SNR 10 dB (tiny/base/small) | **BLOCKED** | job `bench-*` di `ci.yml` (commit lokal `805e4ca`) menunggu persetujuan push; sandbox tidak dapat mengunduh model/dataset (403 kebijakan) |
+| Revisi model | NOT VERIFIED | dicatat otomatis oleh `whisper_quality.py` (`model_revision`) saat benchmark berjalan |
+
+## P5.5.2-B — Media (SINTETIS, lokal)
+
+Lingkungan: sandbox pengembangan, Intel Xeon @ 2,10 GHz, 4 vCPU, 16 GB RAM, tanpa GPU, **FFmpeg 6.1.1-3ubuntu5**
+(BUKAN FFmpeg 7.1.5 image produksi), venv produksi (requirements.txt). Tidak ada proses benchmark lain selama run
+(upload/lifecycle dijalankan sesudahnya). `media_bench.py` mode full: 10 aset × 3 operasi × 3 run = **90 baris, exit 0,
+0 error**. n = 3 per skenario: "p95" = nearest-rank = nilai maksimum. Media sintetis (testsrc2 + flash + beep): hasil
+ini membuktikan sinkronisasi, timing, properti keluaran & stabilitas pipeline, **bukan** kualitas visual konten nyata.
+
+| Aset | Preview: waktu median/p95 (dtk), RTF, mode | Render 9:16 + subtitle: median/p95, RTF | Render original: median/p95, RTF, SSIM | Puncak RSS FFmpeg (MB) |
+|---|---|---|---|---|
+| MP4 H.264/AAC 1080p30 16:9 (acuan) | 5,11 / 5,13; 0,085; transcode | 8,74 / 8,85; 0,29 | 6,56 / 6,69; 0,22; 0,99966 | 152 / 327 / 316 |
+| MOV H.264/AAC 1080p30 | 5,17 / 5,25; 0,086; transcode | 8,56 / 8,78; 0,29 | 6,11 / 6,75; 0,20; 0,99966 | 152 / 327 / 316 |
+| 1080×1920 9:16 | 3,70 / 4,08; 0,062; transcode | 6,53 / 6,73; 0,22 | 6,47 / 6,54; 0,22; 0,99967 | 125 / 327 / 316 |
+| 720p25 mono 44,1 kHz | 0,17 / 0,22; 0,003; copy | 7,15 / 7,22; 0,24 | 2,67 / 3,01; 0,09; 0,99969 | 72 / 304 / 182 |
+| 1080p 23,976 | 4,36 / 4,51; 0,073; transcode | 7,23 / 7,41; 0,24 | 5,56 / 5,69; 0,19; 0,99964 | 152 / 328 / 317 |
+| 1080p60 | 9,95 / 10,03; 0,166; transcode | 14,42 / 14,87; 0,48 | 10,93 / 11,20; 0,36; 0,99958 | 148 / 327 / 316 |
+| HEVC/AAC 1080p30 | 5,88 / 6,03; 0,098; transcode | 9,36 / 9,41; 0,31 | 6,69 / 7,08; 0,22; 0,99932 | 171 / 342 / 330 |
+| WebM VP9/Opus 720p30 | 7,62 / 7,74; 0,127; transcode | 9,75 / 9,82; 0,33 | 4,61 / 4,85; 0,15; 0,98858 | 115 / 289 / 167 |
+| VFR (rata-rata 36 fps) | 0,20 / 0,21; 0,003; copy | 12,79 / 13,28; 0,43 | 4,93 / 5,10; 0,16; 0,99226 | 72 / 304 / 183 |
+| 720p30 30 menit (klip 1700–1730 dtk) | 2,81 / 3,00; 0,0016; copy | 8,48 / 8,68; 0,28 | 2,97 / 3,08; 0,10; 0,99971 | 72 / 305 / 186 |
+
+RTF render = waktu render / durasi klip (30 dtk); RTF preview = waktu / durasi sumber. Waktu = fungsi aplikasi
+dipanggil langsung (tanpa antrean). Puncak RSS = proses FFmpeg (RUSAGE_CHILDREN), per operasi preview/9:16/original.
+
+**Sinkronisasi A/V** (flash 1 frame & beep 40 ms tiap 2 dtk; resolusi deteksi: 1 frame video, 2 ms audio):
+- Semua 30 skenario: semua penanda berpasangan (preview 30/30; aset 30 menit 900/900; render 15/15).
+- Offset absolut 0 ms untuk 8 dari 10 aset (preview & render). WebM VP9/Opus: +6 ms (preview) / +8 ms (render)
+  konstan, kemungkinan pre-skip Opus saat dikodekan ulang ke AAC — < 1 frame. 1080p 23,976: offset absolut 10–40 ms
+  dengan pola gergaji pada **sumbernya sendiri** (flash jatuh pada frame pertama setelah batas 2 dtk karena 2 dtk
+  bukan kelipatan frame); dibandingkan per penanda dengan sumber, pipeline menggeser 0 ms (preview) dan 10 ms
+  (render, efek trim di tengah frame) — < 1 frame (41,7 ms). Angka "drift 59,94 ms/mnt" dari ringkasan absolut adalah
+  kemiringan pola gergaji aset, bukan drift pipeline. `media_bench.py` kini juga melaporkan `sync_vs_source`.
+- Aset 30 menit, klip di 1700–1730 dtk: offset 0 ms → tidak ada drift setelah 28 menit.
+- Kontrol positif detektor: audio digeser +100 ms → terdeteksi +98 ms; −40 ms → −40 ms.
+
+**Subtitle** (kata disuntikkan ke transkrip dengan waktu diketahui; menguji timing subtitle & render, BUKAN Whisper):
+33 render 9:16, **495/495 kata terdeteksi** (0 false negative), **0 onset palsu**, **0 frame terang** di luar jendela
+tampil aplikasi (awal kata → akhir kata + 0,25 dtk, toleransi 1 frame). Selisih maks 33,3 ms @30 fps, 20,5 ms
+@23,976, 16,7 ms @60 = ≤ 1 frame. Versi awal detektor (luma rata-rata) tidak mendeteksi teks kecil, dan jendela FP
+awal (+0,7 dtk) lebih pendek dari aturan tampil aplikasi (0,75 dtk) — keduanya diperbaiki sebelum angka di atas.
+
+**Trim:** durasi keluaran = 30,0 dtk (23,976: 30,03 = pembulatan frame). Timecode bawaan testsrc pada frame detik ke-5
+keluaran menunjukkan 00:00:15.000 = sumber 10 + 5 dtk. **Concat beberapa rentang: feature gap.**
+
+**Properti keluaran:** resolusi sesuai aspect (9:16 → 1080×1920; original = sumber); fps CFR = sumber; audio render
+AAC 48 kHz. Perilaku yang dicatat: VFR → keluaran CFR 60 fps (r_frame_rate sumber), sehingga render 9:16 VFR lebih
+lambat (RTF 0,43); sumber mono tetap mono di render; preview mode copy mempertahankan audio sumber (44,1 kHz).
+
+**Inspeksi visual terbatas** (6 frame: 9:16 dari 16:9, HEVC, VFR, WebM; original 9:16 & 16:9): crop di tengah,
+subtitle di posisi bawah, tanpa artefak blok/warna/komposisi yang terlihat. Pola uji sintetis — kualitas konten nyata
+(wajah, teks halus, gerak cepat) BELUM dinilai.
+
+## P5.5.2-C — Upload & siklus media (lokal)
+
+`lifecycle_check.py`, server uvicorn sungguhan (SQLite, `EMBEDDED_WORKERS=0`), berkas video NYATA hasil encode
+1080p 10 menit, 612.232.338 byte (sha256 `f6e25a28…`), loopback lokal (throughput tidak mewakili jaringan nyata):
+
+| Skenario | Hasil |
+|---|---|
+| Socket diputus di ±27 % (di tengah potongan 16 MB) | server menyimpan 8,35 MB dari potongan itu; lanjut dari offset server (176.124.602) |
+| Server SIGKILL di ±62 %, lalu dinyalakan ulang | offset server tetap 377.451.194; lanjut tanpa kehilangan data |
+| Hasil | state `selesai`, 583,9 MB terkirim, **0 MB dikirim ulang**, **sha256 identik**, ffprobe 600,0 dtk, 7,4 dtk (78,6 MB/dtk loopback) |
+| Batal (DELETE) di tengah upload | 204; HEAD sesudahnya 410; berkas `.part` 1 → 0 |
+| Kuota unit 100 MB | ditolak saat dibuat (507) sebelum data dikirim. Catatan UX: pesan "0 dari 105 MB" (kuota MiB ditampilkan MB desimal) & tidak menyebut ukuran berkas (612 MB) |
+| Lease/job aktif & TTL (`lifecycle.sweep(now = +30 hari)`, jam terkendali di lingkungan uji) | job analisis masih antre → media **tidak dihapus**; setelah job selesai → `expired: 1`, media terhapus |
+| Folder yatim (umur 7 hari, tanpa proyek) | dihapus (1 folder, 1 MB) |
+
+Jeda/lanjut di UI tidak diuji ulang (P4.3). Upload lewat jaringan nyata (latensi, putus Wi-Fi) belum diukur.
+
+## Status kriteria (saat ini)
+
+| # | Status | Catatan |
+|---|---|---|
+| W1–W6 | **BLOCKED** | menunggu push `805e4ca` & dispatch `bench=smoke` (tiny) lalu `full` (base, small) |
+| M1 | PASS (sintetis, FFmpeg 6.1.1) | 10 aset × 3 operasi, 90/90 run |
+| M2 | PASS (sintetis) | ≤ 8 ms absolut; ≤ 10 ms relatif sumber (23,976) |
+| M3 | PASS (sintetis) | 0 ms di 1700–1730 dtk |
+| M4 | PASS (sintetis) | 495/495, 0 FP, ≤ 1 frame |
+| M5 | PASS (sintetis) | SSIM min 0,9886 (WebM) |
+| M6 | PASS (sintetis, 4 vCPU) | render RTF maks 0,48 (1080p60 9:16); preview RTF maks 0,166 |
+| M7 | PASS | puncak RSS FFmpeg maks 342 MB |
+| M8 | PASS dengan catatan | VFR → CFR 60 fps; mono tetap mono |
+| M1–M8 di image produksi (FFmpeg 7.1.5) | NOT VERIFIED | job `bench-media` |
+| U1–U5 | PASS (lokal) | jaringan nyata & UI jeda: NOT VERIFIED |
+| Kualitas visual konten nyata | NOT VERIFIED | belum ada korpus video nyata berlisensi |
+
+### Feature gap (bukan kegagalan validasi)
+Concat beberapa rentang/klip; voiceover terpisah; watermark/logo (tidak ada sama sekali — overlay yang ada hanya animasi rencana: zoom, keyword, card, chips, checklist).

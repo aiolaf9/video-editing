@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 SMOKE = ("mp4_h264_aac_1080p30_16x9_stereo", "mp4_h264_1080x1920_30_9x16", "mp4_h264_vfr", "webm_vp9_opus_720p30")
 CLIP = (10.0, 40.0)
 LONG_CLIP = (1700.0, 1730.0)
-WORD_T = 0.8          # kata ke-k pada 2k + 0.8 dtk (di antara flash), durasi 0.5 dtk
+WORD_T = 0.8          # kata ke-k pada 2k + 0.8 dtk (di antara flash)
+WORD_DUR = 0.5
 
 
 class FakeJob:
@@ -85,6 +86,27 @@ def beeps(path):
     return _onsets(list(zip(times, lv)), -30)
 
 
+def marker_offsets(path, shift=0.0):
+    """{waktu penanda (dtk, pada timeline sumber): offset audio-video (ms)}."""
+    f, b = flashes(path), beeps(path)
+    out = {}
+    for t in f:
+        near = min(b, key=lambda x: abs(x - t), default=None)
+        if near is not None and abs(near - t) < 0.5:
+            out[round(t + shift, 1)] = (near - t) * 1000
+    return out
+
+
+def av_vs_source(out_path, src_path, shift):
+    """Perubahan offset A/V oleh pipeline: |offset keluaran - offset sumber| per penanda yang sama. Mengoreksi aset
+    yang penandanya sendiri tidak jatuh tepat di batas frame (mis. 23,976 fps)."""
+    src, out = marker_offsets(src_path), marker_offsets(out_path, shift)
+    common = sorted(set(src) & set(out))
+    diffs = [out[k] - src[k] for k in common]
+    return {"markers": len(common), "max_abs_ms": round(max((abs(d) for d in diffs), default=0), 1),
+            "median_ms": round(statistics.median(diffs), 1) if diffs else None}
+
+
 def av_offsets(path):
     """Offset audio - video (ms, positif = audio terlambat) untuk tiap flash yang punya beep terdekat (< 0,5 dtk)."""
     f, b = flashes(path), beeps(path)
@@ -119,8 +141,10 @@ def subtitle_errors(path, words_rel):
             errs.append(round((near - w) * 1000, 1))
             matched.add(near)
     # False positive: munculnya teks di pita bawah yang tidak cocok dengan kata mana pun, dan frame "terang" pada
-    # waktu yang seharusnya tanpa subtitle (di luar [awal kata, akhir kata + 0,2 dtk]).
-    bright_outside = sum(1 for t, v in clean if v > 100 and not any(w - 0.05 <= t <= w + 0.7 for w in words_rel))
+    # waktu yang seharusnya tanpa subtitle. Jendela tampil = aturan aplikasi (subtitles.build_ass): awal kata sampai
+    # akhir kata + 0,25 dtk (kata uji 0,5 dtk), ditambah toleransi 1 frame (0,05 dtk) di kedua sisi.
+    shown = WORD_DUR + 0.25 + 0.05
+    bright_outside = sum(1 for t, v in clean if v > 100 and not any(w - 0.05 <= t <= w + shown for w in words_rel))
     return {"words": len(words_rel), "detected": len(errs), "err_ms": errs,
             "err_ms_max_abs": max((abs(e) for e in errs), default=None),
             "false_onsets": len([t for t in on if t not in matched]), "bright_frames_outside_words": bright_outside}
@@ -165,7 +189,7 @@ def one(asset_path: Path, op: str, out_json: Path):
         out = folder / "preview.mp4"
     else:
         # Transkrip DISUNTIKKAN (waktu kata diketahui) untuk menguji timing subtitle, bukan keluaran Whisper.
-        words = [{"start": round(k * 2 + WORD_T, 3), "end": round(k * 2 + WORD_T + 0.5, 3), "word": f"KATA{k}"}
+        words = [{"start": round(k * 2 + WORD_T, 3), "end": round(k * 2 + WORD_T + WORD_DUR, 3), "word": f"KATA{k}"}
                  for k in range(int(start // 2), int(end // 2))]
         storage.write_data(pid, "transcript", {"language": "id", "segments": [
             {"start": w["start"], "end": w["end"], "text": w["word"], "words": [w]} for w in words]})
@@ -191,6 +215,8 @@ def one(asset_path: Path, op: str, out_json: Path):
     res["ffmpeg_cpu_s"] = round(ru.ru_utime + ru.ru_stime, 2)
     res["ffmpeg_peak_rss_mb"] = round(ru.ru_maxrss / 1024, 1)
     res["sync"] = av_offsets(out)
+    res["sync_vs_source"] = av_vs_source(out, folder / f"source{asset_path.suffix}",
+                                         0.0 if op == "preview" else start)
     out_json.write_text(json.dumps(res))
 
 

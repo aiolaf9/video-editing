@@ -35,9 +35,15 @@ def main():
             s["drift_ms_per_min_max_abs"] = max(abs(x["drift_ms_per_min"]) for x in sync)
         else:
             s["sync"] = rs[0].get("sync")
+        rel = [r["sync_vs_source"] for r in rs if r.get("sync_vs_source", {}).get("markers")]
+        if rel:
+            s["av_vs_source_ms_max_abs"] = max(x["max_abs_ms"] for x in rel)
         if "subtitles" in rs[0]:
             sub = rs[0]["subtitles"]
             s["subtitles"] = f'{sub["detected"]}/{sub["words"]}, maks {sub["err_ms_max_abs"]} ms'
+            if "false_onsets" in sub:
+                s["subtitle_false_onsets"] = sub["false_onsets"]
+                s["subtitle_bright_frames_outside"] = sub["bright_frames_outside_words"]
         if "quality" in rs[0]:
             s["ssim"] = rs[0]["quality"]["ssim"]
             s["psnr"] = rs[0]["quality"]["psnr"]
