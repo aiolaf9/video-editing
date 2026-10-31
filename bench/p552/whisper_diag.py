@@ -17,11 +17,13 @@ Artifact terbatas: hanya cuplikan (<= 120 karakter) untuk ucapan bermasalah, tan
 """
 import json
 import os
+import traceback
 import statistics
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional
 
 GAP = 0.4
 EXCERPT = 120
@@ -70,13 +72,42 @@ def windows_at_gaps(timeline: list[dict], target: float) -> list[tuple[float, fl
     return out
 
 
+def oom_kill_count():
+    """Penghitung oom_kill cgroup container (None bila tidak tersedia)."""
+    ev = Path("/sys/fs/cgroup/memory.events")
+    if not ev.exists():
+        return None
+    return int(dict(line.split() for line in ev.read_text().splitlines()).get("oom_kill", 0))
+
+
+def verify_timeline(joined: Path, timeline: list[dict], items: list[dict]) -> dict:
+    """Pemetaan acuan -> audio: durasi gabungan = jumlah durasi ucapan + jeda; durasi tiap ucapan = korpus."""
+    joined_s = _dur(joined)
+    expected = timeline[-1]["end"] + GAP
+    bad = [i for i, (u, it) in enumerate(zip(timeline, items))
+           if it.get("duration") and abs((u["end"] - u["start"]) - it["duration"]) > 0.05]
+    ok = abs(joined_s - expected) < 0.05 and not bad and all(u["text"].strip() for u in timeline)
+    return {"timeline_ok": ok, "joined_s": round(joined_s, 3), "expected_s": round(expected, 3),
+            "duration_mismatch_idx": bad}
+
+
 class Recorder:
-    """Membungkus model.transcribe: menerapkan varian kwargs & merekam segmen mentah faster-whisper."""
+    """Membungkus model.transcribe: menerapkan varian kwargs & merekam segmen mentah faster-whisper.
+    Tidak mengubah inferensi: kwargs aplikasi diteruskan apa adanya (varian kosong untuk mode pembanding) dan objek
+    segmen yang sama diteruskan ke aplikasi; hanya atribut yang dibaca."""
 
     def __init__(self, model):
         self.model, self.original = model, model.transcribe
         self.variant, self.segments, self.kwargs = {}, [], {}
+        tok = getattr(model, "hf_tokenizer", None)
+        self.ts_begin = tok.token_to_id("<|0.00|>") if tok is not None else None
         model.transcribe = self
+
+    def single_ts_end(self, tokens) -> Optional[bool]:
+        """Segmen diakhiri SATU token timestamp (token sebelumnya teks): pemicu `seek += segment_size`."""
+        if self.ts_begin is None or not tokens or len(tokens) < 2:
+            return None
+        return tokens[-1] >= self.ts_begin and tokens[-2] < self.ts_begin
 
     def __call__(self, audio, **kw):
         kw.update(self.variant)
@@ -89,7 +120,8 @@ class Recorder:
                                       "end": round(s.end, 2), "no_speech_prob": round(s.no_speech_prob, 3),
                                       "avg_logprob": round(s.avg_logprob, 3),
                                       "compression_ratio": round(s.compression_ratio, 2),
-                                      "temperature": getattr(s, "temperature", None), "n_words": len(s.words or [])})
+                                      "temperature": getattr(s, "temperature", None), "n_words": len(s.words or []),
+                                      "single_ts_end": self.single_ts_end(list(getattr(s, "tokens", []) or []))})
                 yield s
         return gen(), info
 
@@ -167,15 +199,24 @@ def run_diag(corpus: Path, out: Path, set_names: list[str], model_name: str, win
         m = wer_cer(ref, hyp)
         return round(m["word_errors"] / max(1, m["ref_words"]), 4)
 
+    results = []
     for name in set_names:
-        s = sets[name]
-        if s.get("kind") != "utterances" or not s.get("items"):
-            raise RuntimeError(f"diag butuh set utterances: {name}")
-        joined, timeline = build_joined(s["items"], work, name)
-        audio = media.decode_audio(joined)
-        vad_opts, n_chunks, cov = vad_coverage(audio, timeline)
-        emit(out, {"exp": "diag", "set": name, "what": "audio", "utterances": len(timeline),
-                   "joined_s": round(_dur(joined), 2), "timeline_end_s": timeline[-1]["end"],
+        try:
+            s = sets[name]
+            if s.get("kind") != "utterances" or not s.get("items"):
+                raise RuntimeError(f"diag butuh set utterances: {name}")
+            joined, timeline = build_joined(s["items"], work, name)
+            check = verify_timeline(joined, timeline, s["items"])
+            if not check["timeline_ok"]:
+                raise RuntimeError(f"pemetaan acuan->audio tidak valid: {check}")
+            audio = media.decode_audio(joined)
+            vad_opts, n_chunks, cov = vad_coverage(audio, timeline)
+        except Exception as exc:  # set gagal disiapkan: dicatat eksplisit, bukan dilewati
+            emit(out, {"exp": "diag", "set": name, "what": "audio", "status": "error",
+                       "error": f"{type(exc).__name__}: {exc}"[:400]})
+            results.append({"set": name, "mode": "*", "status": "error"})
+            continue
+        emit(out, {"exp": "diag", "set": name, "what": "audio", "status": "ok", **check, "utterances": len(timeline),
                    "vad_options": vad_opts, "vad_chunks": n_chunks,
                    "vad_coverage_min": min(cov.values()), "vad_coverage_lt_50pct": [k for k, v in cov.items() if v < 0.5]})
         modes = [("per_utt", None, {}), ("joined", None, {}), ("joined_novad", None, {"vad_filter": False}),
@@ -183,62 +224,87 @@ def run_diag(corpus: Path, out: Path, set_names: list[str], model_name: str, win
                  ("joined_noprompt", None, {"initial_prompt": None})]
         modes += [(f"win{int(w)}", w, {}) for w in win_targets]
         for mode, win, variant in modes:
-            rec.variant, rec.segments = variant, []
-            t1 = time.perf_counter()
-            words_all, langs, seg_all = [], [], []
-            if mode == "per_utt":
-                hyp_by = {}
-                for u in timeline:
-                    r = transcribe.transcribe(Path(u["file"]), u["end"] - u["start"], None)
-                    langs.append(r["language"])
-                    hyp_by[u["idx"]] = [w["word"] for sg in r["segments"] for w in sg["words"]]
-                stray = 0
-            else:
-                pieces = [(0.0, timeline[-1]["end"] + GAP, [u["idx"] for u in timeline])] if win is None \
-                    else windows_at_gaps(timeline, win)
-                for a, b, _ in pieces:
-                    path = joined
-                    if win is not None:
-                        path = work / f"{name}_{mode}_{a:.1f}.wav"
-                        _ff("-i", str(joined), "-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-c:a", "pcm_s16le", str(path))
-                    rec.segments = []
-                    r = transcribe.transcribe(path, b - a, None)
-                    langs.append(r["language"])
-                    words_all += [{**w, "start": w["start"] + a, "end": w["end"] + a}
-                                  for sg in r["segments"] for w in sg["words"]]
-                    seg_all += [{**sg, "start": round(sg["start"] + a, 2), "end": round(sg["end"] + a, 2)}
-                                for sg in rec.segments]
-                hyp_by, stray = assign_words(timeline, words_all)
-            elapsed = time.perf_counter() - t1
-            rows = utterance_rows(timeline, hyp_by, ops_fn, wer_fn)
-            ref_all = " ".join(u["text"] for u in timeline)
-            hyp_all = " ".join(" ".join(hyp_by[u["idx"]]) for u in timeline)
-            tot = edit_ops(norm(ref_all), norm(hyp_all))
-            missing = [r for r in rows if r["status"] == "missing"]
-            partial = [r for r in rows if r["status"] == "partial"]
-            # Salah penyelarasan: hipotesis ucapan lebih cocok dengan teks ucapan tetangga daripada ucapannya sendiri.
-            misaligned = []
-            for r in rows:
-                if r["hyp_words"] == 0:
-                    continue
-                own = r["wer"]
-                for j in (r["idx"] - 1, r["idx"] + 1):
-                    if 0 <= j < len(timeline) and wer_fn(timeline[j]["text"], r["_hyp"]) + 0.2 < own:
-                        misaligned.append(r["idx"])
-                        break
-            worst = sorted([r for r in rows if r["status"] != "ok" or r["wer"] > 0.3], key=lambda r: -r["wer"])
-            examples = [{"idx": r["idx"], "status": r["status"], "wer": r["wer"], "vad_coverage": cov[r["idx"]],
-                         "ref": r["_ref"][:EXCERPT], "hyp": r["_hyp"][:EXCERPT],
-                         **({"evidence": missing_evidence(r, seg_all)} if r["status"] == "missing" and seg_all else {})}
-                        for r in worst[:MAX_EXAMPLES]]
-            emit(out, {"exp": "diag", "set": name, "mode": mode, "variant": {k: v for k, v in variant.items()},
-                       "decoding": rec.kwargs, "languages": sorted({x for x in langs if x}),
-                       "seconds": round(elapsed, 1), "wer": round((tot["sub"] + tot["ins"] + tot["del"])
-                                                                 / max(1, tot["ref_words"]), 4), "ops": tot,
-                       "utt_missing": len(missing), "utt_partial": len(partial), "stray_words": stray,
-                       "misaligned_utts": misaligned,
-                       "missing_vad_coverage": [cov[r["idx"]] for r in missing],
-                       "utt_wer_median": statistics.median(r["wer"] for r in rows),
-                       "segments": len(seg_all) if mode != "per_utt" else None,
-                       "seek_values": sorted({sg["seek"] for sg in seg_all if sg.get("seek") is not None})[:60],
-                       "per_utt_status": [r["status"][0] for r in rows], "examples": examples})
+            # Penanda mulai: bila proses mati (OOM/timeout job), mode terakhir yang "started" tanpa hasil terlihat di log.
+            emit(out, {"exp": "diag", "set": name, "mode": mode, "status": "started"})
+            oom_before = oom_kill_count()
+            try:
+                row = _run_mode(name, mode, win, variant, timeline, joined, work, cov, rec, transcribe,
+                                ops_fn, wer_fn, edit_ops, norm)
+                status = "ok"
+            except Exception as exc:
+                row, status = {"error": f"{type(exc).__name__}: {exc}"[:400],
+                               "trace": traceback.format_exc(limit=3)[-600:]}, "error"
+            oom_after = oom_kill_count()
+            delta = None if oom_before is None or oom_after is None else oom_after - oom_before
+            if delta:
+                status = "oom"
+            emit(out, {"exp": "diag", "set": name, "mode": mode, "variant": dict(variant), "status": status,
+                       "oom_kill_delta": delta, **row})
+            results.append({"set": name, "mode": mode, "status": status})
+    failed = [r for r in results if r["status"] != "ok"]
+    emit(out, {"exp": "diag", "what": "ringkasan", "modes": len(results), "failed": failed,
+               "result": "OK" if not failed else "NOT_OK"})
+    if failed:
+        raise SystemExit(f"diag: {len(failed)} mode/set gagal: {failed}")
+
+
+def _run_mode(name, mode, win, variant, timeline, joined, work, cov, rec, transcribe, ops_fn, wer_fn, edit_ops, norm):
+    rec.variant, rec.segments = variant, []
+    t1 = time.perf_counter()
+    words_all, langs, seg_all = [], [], []
+    if mode == "per_utt":
+        hyp_by = {}
+        for u in timeline:
+            r = transcribe.transcribe(Path(u["file"]), u["end"] - u["start"], None)
+            langs.append(r["language"])
+            hyp_by[u["idx"]] = [w["word"] for sg in r["segments"] for w in sg["words"]]
+        stray = 0
+    else:
+        pieces = [(0.0, timeline[-1]["end"] + GAP, [u["idx"] for u in timeline])] if win is None \
+            else windows_at_gaps(timeline, win)
+        for a, b, _ in pieces:
+            path = joined
+            if win is not None:
+                path = work / f"{name}_{mode}_{a:.1f}.wav"
+                _ff("-i", str(joined), "-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-c:a", "pcm_s16le", str(path))
+            rec.segments = []
+            r = transcribe.transcribe(path, b - a, None)
+            langs.append(r["language"])
+            words_all += [{**w, "start": w["start"] + a, "end": w["end"] + a}
+                          for sg in r["segments"] for w in sg["words"]]
+            seg_all += [{**sg, "start": round(sg["start"] + a, 2), "end": round(sg["end"] + a, 2)}
+                        for sg in rec.segments]
+        hyp_by, stray = assign_words(timeline, words_all)
+    elapsed = time.perf_counter() - t1
+    rows = utterance_rows(timeline, hyp_by, ops_fn, wer_fn)
+    ref_all = " ".join(u["text"] for u in timeline)
+    hyp_all = " ".join(" ".join(hyp_by[u["idx"]]) for u in timeline)
+    tot = edit_ops(norm(ref_all), norm(hyp_all))
+    missing = [r for r in rows if r["status"] == "missing"]
+    partial = [r for r in rows if r["status"] == "partial"]
+    # Salah penyelarasan: hipotesis ucapan lebih cocok dengan teks ucapan tetangga daripada ucapannya sendiri.
+    misaligned = []
+    for r in rows:
+        if r["hyp_words"] == 0:
+            continue
+        own = r["wer"]
+        for j in (r["idx"] - 1, r["idx"] + 1):
+            if 0 <= j < len(timeline) and wer_fn(timeline[j]["text"], r["_hyp"]) + 0.2 < own:
+                misaligned.append(r["idx"])
+                break
+    worst = sorted([r for r in rows if r["status"] != "ok" or r["wer"] > 0.3], key=lambda r: -r["wer"])
+    examples = [{"idx": r["idx"], "status": r["status"], "wer": r["wer"], "vad_coverage": cov[r["idx"]],
+                 "ref": r["_ref"][:EXCERPT], "hyp": r["_hyp"][:EXCERPT],
+                 **({"evidence": missing_evidence(r, seg_all)} if r["status"] == "missing" and seg_all else {})}
+                for r in worst[:MAX_EXAMPLES]]
+    return {"decoding": rec.kwargs, "languages": sorted({x for x in langs if x}),
+               "seconds": round(elapsed, 1), "wer": round((tot["sub"] + tot["ins"] + tot["del"])
+                                                         / max(1, tot["ref_words"]), 4), "ops": tot,
+               "utt_missing": len(missing), "utt_partial": len(partial), "stray_words": stray,
+               "misaligned_utts": misaligned,
+               "missing_vad_coverage": [cov[r["idx"]] for r in missing],
+               "utt_wer_median": statistics.median(r["wer"] for r in rows),
+               "segments": len(seg_all) if mode != "per_utt" else None,
+               "seek_values": sorted({sg["seek"] for sg in seg_all if sg.get("seek") is not None})[:60],
+               "single_ts_end_segments": sum(1 for sg in seg_all if sg.get("single_ts_end")),
+               "per_utt_status": [r["status"][0] for r in rows], "examples": examples}
