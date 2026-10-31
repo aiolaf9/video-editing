@@ -143,18 +143,42 @@ def run_one(model: str, path: str, mode: str, out_path: str, vad_threshold: str 
 CHILD_TIMEOUT_S = 3600      # batas per proses transkripsi (job 240 mnt / step 210 mnt tetap berlaku di atasnya)
 
 
+def oom_kills():
+    """Penghitung oom_kill cgroup container (None bila tidak tersedia)."""
+    return cgroup_stats().get("cgroup_oom_kill")
+
+
+def classify(returncode, timed_out: bool, oom_before, oom_after) -> dict:
+    """Status eksplisit. OOM HANYA bila penghitung oom_kill cgroup bertambah (bukti), bukan dari exit code 137/-9.
+    Dibunuh tanpa bukti OOM -> killed_unverified. Selain ok, tidak ada status yang dihitung PASS."""
+    delta = None if oom_before is None or oom_after is None else oom_after - oom_before
+    if timed_out:
+        status = "timeout"
+    elif returncode == 0:
+        status = "ok"
+    elif delta:
+        status = "oom"
+    elif returncode in (-9, 137):
+        status = "killed_unverified"
+    else:
+        status = "error"
+    return {"status": status, "returncode": returncode, "oom_kill_delta": delta}
+
+
 def child(args, model, path, mode, vad=""):
     tmp = Path(tempfile.mkstemp(suffix=".json")[1])
     cmd = [sys.executable, __file__, "--one", model, str(path), mode, str(tmp), vad]
+    before, timed_out, rc, err = oom_kills(), False, None, ""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "HF_HUB_OFFLINE": "0"},
                            timeout=CHILD_TIMEOUT_S)
+        rc, err = p.returncode, p.stderr
     except subprocess.TimeoutExpired:      # proses anak dibunuh oleh subprocess.run; dicatat, bukan PASS
-        return {"model": model, "mode": mode, "error": f"timeout {CHILD_TIMEOUT_S} dtk", "returncode": None,
-                "status": "timeout"}
-    if p.returncode:
-        return {"model": model, "mode": mode, "error": p.stderr.strip()[-600:], "returncode": p.returncode}
-    return json.loads(tmp.read_text())
+        timed_out, err = True, f"timeout {CHILD_TIMEOUT_S} dtk"
+    st = classify(rc, timed_out, before, oom_kills())
+    if st["status"] != "ok":
+        return {"model": model, "mode": mode, "error": err.strip()[-600:], **st}
+    return {**json.loads(tmp.read_text()), **st}
 
 
 def emit(out: Path, row: dict):
@@ -174,8 +198,6 @@ def exp_mem(args, sets, out):
         for minutes in [int(m) for m in args.minutes.split(",")]:
             path = repeated(src, minutes, work)
             row = child(args, model, path, "default")
-            row.setdefault("status", "ok" if "error" not in row else
-                           ("oom" if row.get("returncode") == -9 else "error"))
             # Puncak cgroup di sini KUMULATIF untuk seluruh container (semua run sebelumnya); hanya konteks, bukan
             # angka per run. Angka per run = peak_rss_mb (VmHWM proses).
             row["container_cumulative"] = cgroup_stats()
@@ -189,7 +211,7 @@ def exp_conc(args, sets, out):
     work = Path(tempfile.mkdtemp())
     path = repeated(Path(sets["id_long"]["file"]), int(args.minutes.split(",")[0]), work)
     os.environ["WHISPER_MODEL"] = args.models.split(",")[0]
-    procs, decisions = [], []
+    procs, decisions, oom_before = [], [], oom_kills()
     for i in range(2):
         # Keputusan admission aplikasi SAAT INI (perkiraan per model, tanpa durasi) sebelum tiap proses dimulai.
         ok, why = resources.admit_memory("analisis")
@@ -200,26 +222,30 @@ def exp_conc(args, sets, out):
         procs.append((tmp, subprocess.Popen([sys.executable, __file__, "--one", args.models.split(",")[0], str(path),
                                               "default", str(tmp), ""], stdout=subprocess.PIPE,
                                              stderr=subprocess.PIPE, text=True)))
-    rows = []
+    done = []
     for tmp, p in procs:
+        timed_out = False
         try:
             _, err = p.communicate(timeout=CHILD_TIMEOUT_S)
         except subprocess.TimeoutExpired:
+            timed_out = True
             p.kill()
             _, err = p.communicate()
-        if p.returncode == 0 and tmp.exists():
-            r = json.loads(tmp.read_text())
-            r["status"], r["returncode"] = "ok", 0
-        else:
-            r = {"status": "oom" if p.returncode == -9 else "error", "returncode": p.returncode,
-                 "error": err.strip()[-400:]}
+        done.append((tmp, p, timed_out, err))
+    # Kedua proses berbagi satu cgroup: bukti OOM (oom_kill bertambah) berlaku untuk proses yang dibunuh SIGKILL.
+    oom_after, rows = oom_kills(), []
+    for tmp, p, timed_out, err in done:
+        st = classify(p.returncode, timed_out, oom_before, oom_after)
+        r = {**json.loads(tmp.read_text()), **st} if st["status"] == "ok" and tmp.exists() else \
+            {**st, "error": err.strip()[-400:]}
         rows.append(r)
     cg = cgroup_stats()
     emit(out, {"exp": "conc", "audio": verify_decode(path), "admission": decisions,
                "processes": [{k: r.get(k) for k in ("status", "returncode", "peak_rss_mb", "rtf", "error")}
                              for r in rows], **cg,
-               "result": "OOM" if cg.get("cgroup_oom_kill") or any(r["status"] == "oom" for r in rows)
-               else ("ERROR" if any(r["status"] != "ok" for r in rows) else "OK")})
+               "oom_kill_delta": None if oom_before is None or oom_after is None else oom_after - oom_before,
+               "result": "OOM" if any(r["status"] == "oom" for r in rows)
+               else ("OK" if all(r["status"] == "ok" for r in rows) else "NOT_OK")})
 
 
 def exp_det(args, sets, out):
@@ -261,17 +287,21 @@ def exp_gt(args, sets, out):
                "end_spread_ms_median": statistics.median(x["end_spread_ms"] for x in spread),
                "end_spread_ms_max": max(x["end_spread_ms"] for x in spread)})
     model = args.models.split(",")[0]
-    first, last = [], []
+    first, last, failed = [], [], []
     for it in items:
         row = child(args, model, it["file"], "temp0")
+        if row["status"] != "ok":          # kegagalan dicatat, tidak dilewati diam-diam
+            failed.append({"file": Path(it["file"]).name, "status": row["status"]})
+            continue
         words = row.get("words") or []
         if not words:
+            failed.append({"file": Path(it["file"]).name, "status": "no_words"})
             continue
         b, e = speech_bounds_at(it["file"], -35)
         first.append(round((words[0]["start"] - b) * 1000))
         last.append(round((words[-1]["end"] - e) * 1000))
     emit(out, {"exp": "gt", "what": f"kata pertama/terakhir {model} vs awal/akhir suara (-35 dB), ucapan tunggal",
-               "n": len(first), "first_word_minus_onset_ms": first, "last_word_minus_offset_ms": last,
+               "n": len(first), "failed": failed, "first_word_minus_onset_ms": first, "last_word_minus_offset_ms": last,
                "first_abs_median_ms": statistics.median(abs(x) for x in first) if first else None,
                "last_abs_median_ms": statistics.median(abs(x) for x in last) if last else None})
 

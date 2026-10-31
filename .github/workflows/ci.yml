@@ -372,21 +372,22 @@ jobs:
       max-parallel: 3
       matrix:
         include:
+          # Batas eksplisit: mem 12g (mengukur pertumbuhan hingga 60 mnt; runner 16 GB), lainnya 3g = worker-analisis.
           - exp: mem
             args: --models tiny,base,small --minutes 10,30,60
-            docker: ""
+            docker: --cpus=4 --memory=12g --memory-swap=12g
           - exp: conc
             args: --models small --minutes 10
-            docker: --memory=3g --memory-swap=3g
+            docker: --cpus=4 --memory=3g --memory-swap=3g
           - exp: det
             args: --models small --sets id_long,id_noisy_snr10,en_clean --runs 3
-            docker: ""
+            docker: --cpus=4 --memory=3g --memory-swap=3g
           - exp: gt
             args: --models small
-            docker: ""
+            docker: --cpus=4 --memory=3g --memory-swap=3g
           - exp: noise
             args: --models small
-            docker: ""
+            docker: --cpus=4 --memory=3g --memory-swap=3g
     env:
       PY_DIGEST: python@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
       HF_HUB_OFFLINE: "0"
@@ -409,18 +410,18 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/hf" "$RUNNER_TEMP/xout"
           chmod 777 "$RUNNER_TEMP/hf" "$RUNNER_TEMP/xout" "$RUNNER_TEMP/corpus"
-          docker run --rm --init --name "bench-${{ matrix.exp }}" ${{ matrix.docker }} -e HF_HOME=/hf -e HF_HUB_OFFLINE=0 -e WHISPER_DEVICE=cpu \
+          docker run --rm --init --name "bench-${{ matrix.exp }}-${{ github.run_id }}-${{ github.run_attempt }}" ${{ matrix.docker }} -e HF_HOME=/hf -e HF_HUB_OFFLINE=0 -e WHISPER_DEVICE=cpu \
             -e VIDEO_APP_DATA=/tmp/data -v "$PWD:/src:ro" -v "$RUNNER_TEMP/corpus:$RUNNER_TEMP/corpus" \
             -v "$RUNNER_TEMP/hf:/hf" -v "$RUNNER_TEMP/xout:/out" -w /src --entrypoint python video-editing:bench \
             bench/p552/whisper_experiments.py "$RUNNER_TEMP/corpus" /out/exp-${{ matrix.exp }}.jsonl \
             --exp ${{ matrix.exp }} ${{ matrix.args }} | tee exp-log.txt
           cp "$RUNNER_TEMP/xout/exp-${{ matrix.exp }}.jsonl" .
-          if grep -q '"result": "OOM"\|"status": "oom"' "exp-${{ matrix.exp }}.jsonl"; then
-            echo "::warning::OOM tercatat pada eksperimen ${{ matrix.exp }} (lihat exp-${{ matrix.exp }}.jsonl)"
+          if grep -q '"status": "\(oom\|timeout\|killed_unverified\|error\)"\|"result": "\(OOM\|NOT_OK\)"' "exp-${{ matrix.exp }}.jsonl"; then
+            echo "::warning::OOM/timeout/kegagalan proses tercatat pada eksperimen ${{ matrix.exp }} (lihat exp-${{ matrix.exp }}.jsonl)"
           fi
       - name: Hentikan container eksperimen (selesai/gagal/dibatalkan)
         if: always()
-        run: docker rm -f "bench-${{ matrix.exp }}" 2>/dev/null || true
+        run: docker rm -f "bench-${{ matrix.exp }}-${{ github.run_id }}-${{ github.run_attempt }}" 2>/dev/null || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         if: always()
         with:
