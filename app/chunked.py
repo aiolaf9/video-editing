@@ -30,9 +30,13 @@ from . import config, jobcontrol, media
 
 log = logging.getLogger("video-editing.chunked")
 RATE = 16000
-# Segmen dari interval non-VAD dibuang bila Whisper menilainya bukan ucapan (lebih ketat dari ambang skip bawaan).
+# Segmen dari interval non-VAD (VAD sudah menilai bukan ucapan) dibuang bila Whisper juga menilainya bukan ucapan.
+# CI #41 (model small asli): halusinasi di interval ini ("Terima kasih.", "Thank you for watching!") ber-no_speech_prob
+# 0,88-0,97 tetapi avg_logprob -0,56..-0,92, sehingga aturan lama (no_speech > 0,5 DAN logprob < -1,0) tidak pernah
+# menangkapnya; ucapan nyata yang hanya terselamatkan lewat interval ini ber-no_speech_prob 0,195.
 GAP_NO_SPEECH_PROB = 0.5
 GAP_MIN_LOGPROB = -1.0
+GAP_NO_SPEECH_DROP = 0.6          # VAD negatif + Whisper no_speech >= ini = dua sinyal independen -> dibuang
 
 
 # ------------------------------------------------------------------ audio bertahap
@@ -185,7 +189,8 @@ def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset:
     out = []
     for seg in segments:
         jobcontrol.check()   # titik batal/timeout per segmen
-        if kind == "gap" and seg.no_speech_prob > GAP_NO_SPEECH_PROB and seg.avg_logprob < GAP_MIN_LOGPROB:
+        if kind == "gap" and (seg.no_speech_prob >= GAP_NO_SPEECH_DROP
+                              or (seg.no_speech_prob > GAP_NO_SPEECH_PROB and seg.avg_logprob < GAP_MIN_LOGPROB)):
             continue
         if config.WHISPER_SEGMENT_FILTER and _low_quality(seg, len(audio) / RATE):
             continue

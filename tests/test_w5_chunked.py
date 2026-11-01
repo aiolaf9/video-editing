@@ -209,6 +209,26 @@ def test_gap_segments_rejected_when_whisper_says_no_speech(monkeypatch):
     assert segs and segs[0]["start"] == 10.0                     # ucapan VAD tidak difilter tambahan
 
 
+# Nilai terukur CI #41 (faster-whisper small asli) untuk segmen di interval non-VAD.
+@pytest.mark.parametrize("text,nsp,lp,kept", [
+    ("Terima kasih.", 0.965, -0.692, False),                     # halusinasi id (9 dari 9 di id_nodup)
+    ("Terima kasih.", 0.943, -0.563, False),
+    ("Terima kasih kerana menonton!", 0.955, -0.796, False),
+    ("Thank you for watching!", 0.881, -0.922, False),          # halusinasi en
+    ("Four skiers in the women's sitting group failed", 0.195, -0.26, True),   # ucapan nyata: harus tetap
+])
+def test_gap_filter_on_measured_whisper_scores(text, nsp, lp, kept):
+    class Model:
+        def transcribe(self, audio, **kw):
+            seg = NS(start=0.0, end=1.0, text=" " + text, words=[NS(start=0, end=1, word=" " + text.split()[0])],
+                     no_speech_prob=nsp, avg_logprob=lp)
+            return iter([seg]), NS(language="id")
+    segs, _ = chunked._transcribe_piece(Model(), np.zeros(RATE, np.float32), "id", 0.0, "gap")
+    assert bool(segs) is kept
+    segs, _ = chunked._transcribe_piece(Model(), np.zeros(RATE, np.float32), "id", 0.0, "speech")
+    assert segs                                                  # potongan ucapan VAD tidak terkena aturan gap
+
+
 @pytest.mark.parametrize("fmt", ["aac", "ts"])
 def test_compressed_and_unindexed_files_stream(tone, tmp_path, fmt):
     path = tmp_path / f"e.{'m4a' if fmt == 'aac' else 'ts'}"
