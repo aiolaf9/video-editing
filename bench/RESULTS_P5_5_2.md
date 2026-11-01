@@ -662,3 +662,45 @@ Kesimpulan:
 - Keterbatasan: 20 ucapan per set; set kembar & tanpa kembar berisi ucapan berbeda (pemilihan sampel ≠); satu run,
   satu runner, model small, ucapan bacaan (FLEURS) bukan percakapan alami; satu ucapan per set Inggris tak
   terdeteksi VAD (cakupan < 50%: en_nodup #16, en_clean #14).
+
+## W5 — validasi model asli, CI #38 (`3267835`, `bench_exps=w5q,w5m`, container 3 GiB, small)
+
+Run: https://github.com/aiolaf9/video-editing/actions/runs/41286212937 — success (regresi hijau; hanya job w5q & w5m).
+WHISPER_CHUNKED bawaan tetap OFF; mode chunked hanya diaktifkan di proses benchmark.
+
+### Kualitas (w5q) — WER / CER / cakupan ucapan / del / ins / RTF
+
+| Set | legacy | chunked (jendela 300) | chunked_w60 | per_utt (pembanding) |
+|---|---|---|---|---|
+| en_clean | 52,3 / 48,0 / 60% / 206 / 0 / 0,11 | 13,3 / 9,5 / 100% / 25 / 6 / 0,40 | 21,3 / 16,3 / 95% / 43 / 11 / 0,49 | 8,6 / 5,2 / 100% / 4 / 6 / 0,34 |
+| en_nodup | 69,8 / 65,8 / 50% / 293 / 4 / 0,10 | 13,7 / 8,1 / 100% / 6 / 19 / 0,35 | 22,8 / 17,4 / 95% / 34 / 24 / 0,34 | 6,5 / 3,7 / 100% / 3 / 4 / 0,35 |
+| id_clean | 26,3 / 21,9 / 80% / 73 / 3 / 0,47 | 19,5 / 8,7 / 100% / 11 / 19 / 0,30 | 17,9 / 8,0 / 100% / 7 / 17 / 0,28 | 13,6 / 4,1 / 100% / 5 / 8 / 0,33 |
+| id_nodup | 17,5 / 5,9 / 100% / 14 / 8 / 0,17 | 23,7 / 10,1 / 100% / 10 / 27 / 0,29 | 22,0 / 9,3 / 100% / 8 / 28 / 0,28 | 17,7 / 5,1 / 100% / 8 / 7 / 0,30 |
+| id_long (597 dtk) | 24,5 / 12,1 / 96% / 69 / 30 / 0,38 | 21,7 / 9,5 / 98% / 12 / 51 / 0,32 | 22,5 / 10,3 / 98% / 11 / 63 / 0,30 | — |
+
+- Cakupan: chunked >= legacy di semua set, 100% di 4 set ucapan; delesi turun tajam (en 206 -> 25, 293 -> 6).
+- Insersi naik (id_nodup 8 -> 27, id_long 30 -> 51); contoh "Terima kasih.", "Tidak! Tidak!" (pola halusinasi Whisper
+  pada potongan pendek/hening). WER chunked lebih buruk dari per_utt 4,7-7,2 poin di keempat set ucapan, dan lebih
+  buruk dari legacy di id_nodup (+6,2). Penyebab insersi: NOT VERIFIED (potongan tidak direkam per potongan).
+- chunked_w60: 1 ucapan hilang di en_clean (#19) & en_nodup (#10), bukan ucapan yang melintasi batas jendela;
+  penyebab tidak terjelaskan -> FAIL untuk konfigurasi jendela 60 dtk. Ucapan yang melintasi batas jendela
+  (3-9 per set) tidak ada yang hilang.
+- id_long #49 hilang di SEMUA mode termasuk legacy (bukan akibat chunking). Indikator "teks ganda" id_long tidak andal:
+  id_long berisi kalimat FLEURS kembar (#42 = #44) dan timeline-nya dari batas silencedetect; NOT VERIFIED.
+- Pembatalan saat model memproses potongan (id_long, chunked): berhenti 0,95 dtk setelah batal.
+
+### Memori (w5m) — container 3 GiB
+
+| Durasi | Mode | Status | RSS puncak | cgroup puncak* | Estimasi admission | Waktu | RTF |
+|---|---|---|---|---|---|---|---|
+| 30 mnt | chunked | ok | 1331 | 1801 | 1427 | 827 dtk | 0,46 |
+| 30 mnt | legacy | ok | 1933 | 2422 | 2783 | 571 dtk | 0,32 |
+| 60 mnt | chunked | ok | 1153 | <= 2422 (kumulatif) | 1427 | 1658 dtk | 0,46 |
+| 60 mnt | legacy | **OOM** (oom_kill +1, exit -9) | — | 3072 = batas | 4433 (admission menolak) | — | — |
+
+\* memory.peak container kumulatif (termasuk proses induk benchmark & page cache); angka 1801 milik run pertama.
+- Chunked: RSS tidak tumbuh dengan durasi (60 mnt < 30 mnt); 60 mnt selesai di 3 GiB. Legacy 60 mnt OOM sungguhan
+  (di produksi lapisan 1 menolaknya lebih dulu: 4433 > 3008).
+- Estimasi legacy terlalu konservatif: 30 mnt diestimasi 2783 vs RSS 1933 (cgroup 2422). Ambang tolak small di 3 GiB
+  ±33 mnt, padahal legacy 30 mnt hanya memakai ±79% batas cgroup.
+- Estimasi chunked 1427 menutup RSS (1331) tetapi di bawah cgroup puncak run pertama (1801, termasuk induk).
