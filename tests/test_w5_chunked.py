@@ -260,3 +260,44 @@ def test_admission_need_follows_flag(monkeypatch):
     assert config.analysis_need_mb(6 * 3600, "small") == config.analysis_need_mb(600, "small")
     monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
     assert config.analysis_need_mb(6 * 3600, "small") > config.analysis_need_mb(600, "small")
+
+
+def _ffmpeg_children(path):
+    """Decoder FFmpeg milik tes ini saja (worker tanam dari tes lain bisa menjalankan FFmpeg lain bersamaan)."""
+    import os
+    out = subprocess.run(["ps", "-ww", "-o", "pid=,args=", "--ppid", str(os.getpid())], capture_output=True,
+                         text=True).stdout                     # -ww: argumen tidak dipotong lebar kolom
+    return [ln for ln in out.splitlines() if "ffmpeg" in ln and str(path) in ln]
+
+
+def test_decoder_stopped_when_model_fails_midway(tone, tmp_path, monkeypatch):
+    """W5 review: dulu FFmpeg tetap hidup selama exception masih dirujuk pemanggil (generator tidak ditutup)."""
+    path = tmp_path / "g.wav"
+    plan = []
+    for i in range(40):
+        plan += [(3.0, 300 + 10 * i), (1.5, 0)]
+    _tones(path, plan)
+    calls = []
+
+    def boom(audio, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("model gagal")
+        return iter([]), NS(language="id")
+    monkeypatch.setattr(tone, "transcribe", boom)
+    kept = []
+    try:
+        transcribe.transcribe(path, 180.0, "id")
+    except RuntimeError as exc:
+        kept.append(exc)                                         # traceback masih hidup
+    assert kept and _ffmpeg_children(path) == []
+
+
+def test_chunked_path_never_decodes_whole_audio(tone, tmp_path, monkeypatch):
+    def forbidden(*a, **k):
+        raise AssertionError("decode seluruh audio dipanggil di jalur potongan")
+    monkeypatch.setattr(media, "decode_audio", forbidden)
+    path = tmp_path / "h.wav"
+    audio = _tones(path, [(3.0, 400), (1.5, 0), (3.0, 500)])
+    res = transcribe.transcribe(path, len(audio) / RATE, None)
+    assert {w for _, _, w in _words(res)} == {"f400", "f500"}

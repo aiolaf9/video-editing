@@ -199,33 +199,38 @@ def transcribe_chunked(model, path: Path, duration: float, language: Optional[st
     lang = language
     prev_piece, prev_end = None, None                 # potongan terakhir (bisa lintas putaran buffer: overlap)
     stream = stream_audio(path, block)
-    nxt = next(stream, None)
-    while nxt is not None:
-        buf = np.concatenate([buf, nxt]) if buf.size else nxt
+    # Generator ditutup eksplisit: bila model/rencana gagal di tengah jalan, FFmpeg langsung dihentikan (finally di
+    # stream_audio), tidak menunggu traceback dibebaskan pemanggil (W5 review: proses FFmpeg tertinggal).
+    try:
         nxt = next(stream, None)
-        final = nxt is None
-        chunks, consumed = plan(buf, final)
-        if lang is None and chunks:
-            speech = [buf[s:e] for s, e, k in chunks if k == "speech"][:4]
-            if speech:
-                lang = _detect_language(model, np.concatenate(speech)[: RATE * 30])
-        for s, e, kind in chunks:
-            jobcontrol.check()
-            offset = buf_start + s / RATE
-            piece, detected = _transcribe_piece(model, buf[s:e], lang, offset, kind)
-            lang = lang or detected
-            if prev_piece is not None and prev_end is not None and offset < prev_end:   # overlap potongan terkendali
-                cut = (offset + prev_end) / 2
-                kept_prev, piece = _reconcile(prev_piece, piece, cut)
-                segments[len(segments) - len(prev_piece):] = kept_prev
-            segments += piece
-            prev_piece, prev_end = piece, buf_start + e / RATE
-            if progress and duration > 0:
-                progress(min(1.0, prev_end / duration))
-        carry_overlap = 0 if final else consumed
-        buf_start += carry_overlap / RATE
-        buf = buf[carry_overlap:].copy() if not final else np.empty(0, dtype=np.float32)
-        if final:
-            break
+        while nxt is not None:
+            buf = np.concatenate([buf, nxt]) if buf.size else nxt
+            nxt = next(stream, None)
+            final = nxt is None
+            chunks, consumed = plan(buf, final)
+            if lang is None and chunks:
+                speech = [buf[s:e] for s, e, k in chunks if k == "speech"][:4]
+                if speech:
+                    lang = _detect_language(model, np.concatenate(speech)[: RATE * 30])
+            for s, e, kind in chunks:
+                jobcontrol.check()
+                offset = buf_start + s / RATE
+                piece, detected = _transcribe_piece(model, buf[s:e], lang, offset, kind)
+                lang = lang or detected
+                if prev_piece is not None and prev_end is not None and offset < prev_end:   # overlap potongan terkendali
+                    cut = (offset + prev_end) / 2
+                    kept_prev, piece = _reconcile(prev_piece, piece, cut)
+                    segments[len(segments) - len(prev_piece):] = kept_prev
+                segments += piece
+                prev_piece, prev_end = piece, buf_start + e / RATE
+                if progress and duration > 0:
+                    progress(min(1.0, prev_end / duration))
+            carry_overlap = 0 if final else consumed
+            buf_start += carry_overlap / RATE
+            buf = buf[carry_overlap:].copy() if not final else np.empty(0, dtype=np.float32)
+            if final:
+                break
+    finally:
+        stream.close()
     segments.sort(key=lambda sg: sg["start"])
     return {"language": lang, "segments": segments}
