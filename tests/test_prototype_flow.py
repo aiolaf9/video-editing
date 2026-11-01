@@ -100,3 +100,66 @@ def test_video_longer_than_limit_fails_with_clear_message(sample_video, fake_tra
 
 def test_no_limit_by_default():
     assert config.MAX_VIDEO_SECONDS == 0.0
+
+
+def test_transcript_edit_is_unit_isolated_and_blocked_during_analysis(sample_video, fake_transcript, monkeypatch, client):
+    from app import jobs
+    from tests.conftest import login_client
+    monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: copy.deepcopy(fake_transcript))
+    a = client.post("/api/admin/units", json={"name": f"Unit A {time.time()}"}).json()
+    b = client.post("/api/admin/units", json={"name": f"Unit B {time.time()}"}).json()
+    users = {}
+    for key, unit in (("a", a), ("b", b)):
+        email = f"{key}{time.time()}@uji.local"
+        r = client.post("/api/admin/users", json={"email": email, "name": key, "password": "password-123",
+                                                  "role": "editor", "unit_id": unit["id"]})
+        assert r.status_code == 200, r.text
+        users[key] = login_client(email, "password-123")
+    pid, jid = _upload(users["a"], sample_video)
+    assert _wait(users["a"], jid)["status"] == "selesai"
+    body = {"segments": [{"index": 0, "text": "Teks dari unit lain"}]}
+    assert users["b"].put(f"/api/projects/{pid}/transcript", json=body).status_code == 404    # unit lain: tak terlihat
+    assert users["a"].get(f"/api/projects/{pid}/transcript").json()["segments"][0]["text"] != "Teks dari unit lain"
+    assert users["a"].put(f"/api/projects/{pid}/transcript", json={"segments": [{"index": 0, "text": "x" * 2001}]}
+                          ).status_code == 422                                                  # validasi panjang
+    held = jobs.submit("analyze", "analisis", pid, {"language": None}, "Analisis ulang", queue="uji-proto-blok")
+    assert users["a"].put(f"/api/projects/{pid}/transcript", json=body).status_code == 409    # analisis berjalan
+    jobs.request_cancel(held["id"])
+    assert users["a"].put(f"/api/projects/{pid}/transcript", json=body).status_code == 200
+    users["a"].delete(f"/api/projects/{pid}")
+
+
+def _events(ass: str) -> list[tuple[float, float, str]]:
+    def sec(t):
+        h, m, s = t.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    out = []
+    for line in ass.splitlines():
+        if line.startswith("Dialogue:"):
+            parts = line.split(",", 9)
+            out.append((sec(parts[1]), sec(parts[2]), parts[9]))
+    return out
+
+
+def test_overlapping_segments_give_ordered_non_overlapping_subtitles():
+    # Batas potongan transkripsi: segmen A berakhir setelah segmen B mulai (seperti 95,4-115,4 vs 114,4-134,4).
+    w = lambda s, e, t: {"start": s, "end": e, "word": t}   # noqa: E731
+    t = {"segments": [
+        {"start": 0.0, "end": 3.0, "text": "satu dua tiga", "words": [w(0.0, 1.0, "satu"), w(1.0, 2.0, "dua"), w(2.0, 3.0, "tiga")]},
+        {"start": 2.4, "end": 5.0, "text": "empat lima", "words": [w(2.4, 3.6, "empat"), w(3.6, 5.0, "lima")]},
+    ]}
+    for style in ("simple", "karaoke", "word"):
+        ev = _events(build_ass(t, 0.0, 5.0, 1080, 1920, SubtitleOptions(style=style, words_per_line=2)))
+        assert ev and all(e > s for s, e, _ in ev)
+        for (s1, e1, _), (s2, e2, _) in zip(ev, ev[1:]):
+            assert s2 >= s1 and e1 <= s2 + 1e-6, (style, ev)              # urut waktu, tidak bertumpuk
+    words = __import__("app.subtitles", fromlist=["collect_words"]).collect_words(t, 0.0, 5.0)
+    assert [x["word"] for x in words] == ["satu", "dua", "tiga", "empat", "lima"]
+
+
+def test_redistributed_words_stay_inside_segment():
+    t = {"segments": [{"start": 10.0, "end": 14.0, "text": "a b",
+                       "words": [{"start": 9.2, "end": 11.0, "word": "a"}, {"start": 11.0, "end": 15.3, "word": "b"}]}]}
+    transcript_edit.apply_edits(t, [{"index": 0, "text": "satu dua tiga empat"}])
+    ws = t["segments"][0]["words"]
+    assert len(ws) == 4 and ws[0]["start"] >= 10.0 and ws[-1]["end"] <= 14.0 + 1e-6

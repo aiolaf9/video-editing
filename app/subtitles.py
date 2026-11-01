@@ -75,7 +75,17 @@ def collect_words(transcript: dict, clip_start: float, clip_end: float, speed: f
             e = (min(w["end"], clip_end) - clip_start) / speed
             if e > s:
                 out.append({"start": s, "end": e, "word": w["word"]})
-    return out
+    # Segmen bersebelahan bisa tumpang tindih (mis. batas potongan transkripsi): urutkan menurut waktu dan geser awal
+    # kata agar tidak mendahului akhir kata sebelumnya, supaya baris subtitle tidak bertumpuk. Kata yang habis
+    # tertutup kata sebelumnya dibuang.
+    out.sort(key=lambda w: (w["start"], w["end"]))
+    clean, last_end = [], 0.0
+    for w in out:
+        s = max(w["start"], last_end)
+        if w["end"] - s > 0.01:
+            clean.append({**w, "start": s})
+            last_end = w["end"]
+    return clean
 
 
 def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, height: int,

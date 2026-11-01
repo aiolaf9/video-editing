@@ -1,7 +1,7 @@
 """Koreksi teks transkrip oleh pengguna (dipakai juga sebagai sumber subtitle saat render).
 
 Waktu tidak diubah per segmen: bila jumlah kata sama, tiap kata baru memakai waktu kata lama di posisinya; bila
-berbeda, kata dibagi rata di rentang waktu segmen. Teks kosong = segmen tanpa subtitle.
+berbeda, kata dibagi rata di dalam rentang [start, end] segmen (tidak pernah keluar). Teks kosong = tanpa subtitle.
 """
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ def apply_edits(transcript: dict, edits: list[dict]) -> dict:
         old = [w for w in (seg.get("words") or []) if str(w.get("word", "")).strip()]
         tokens = text.split()
         start, end = float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
-        if old:
-            start, end = min(start, float(old[0]["start"])), max(end, float(old[-1]["end"]))
+        if end <= start and old:   # segmen tanpa rentang yang sah: pakai rentang kata lama
+            start, end = float(old[0]["start"]), float(old[-1]["end"])
         if len(tokens) == len(old):
             words = [{**w, "word": t} for w, t in zip(old, tokens)]
         else:

@@ -263,3 +263,14 @@ table.grid td select, table.grid td input { padding: 4px 6px; }
 .transcript .seg:hover .seg-edit, .transcript .seg-edit:focus { opacity: 1; }
 .transcript .seg-text { flex: 1 1 100%; width: 100%; font: inherit; padding: 6px; }
 .transcript .seg-actions { display: flex; gap: 6px; }
+/* HP: header proyek membungkus (tombol tidak menimpa badge), target sentuh minimum 36 px */
+@media (max-width: 760px) {
+  .project-head { flex-wrap: wrap; align-items: flex-start; }
+  .project-head .title-wrap { min-width: 0; flex: 1 1 100%; }
+  .media-badge { white-space: normal; }
+}
+@media (pointer: coarse) {
+  button.ghost, .transcript .seg-edit, .transcript .seg-actions button { min-height: 36px; padding-top: 6px; padding-bottom: 6px; }
+  .transcript .seg-edit { opacity: 1; }
+}
+#clipList li.notice { list-style: none; padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--accent-2); border-radius: 8px; color: var(--text); font-size: 13px; }

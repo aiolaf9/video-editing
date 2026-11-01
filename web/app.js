@@ -156,7 +156,7 @@ async function refreshProjects() {
     <li data-id="${p.id}" class="${state.project && state.project.id === p.id ? "active" : ""}${p.thumb ? " has-thumb" : ""}">
       ${p.thumb ? `<img class="thumb" src="/api/projects/${p.id}/thumb" alt="" loading="lazy">` : ""}
       <span class="name">${esc(p.name)}</span>
-      <span class="meta">${esc(p.status)}${p.duration ? " · " + fmt(p.duration) : ""}${p.render_count ? " · " + p.render_count + " klip" : ""}${p.owner_name ? " · " + esc(p.owner_name) : ""}${state.me && state.me.role === "admin" && p.unit_name ? " · " + esc(p.unit_name) : ""}${mediaListLabel(p.media)}</span>
+      <span class="meta">${esc(p.status)}${p.duration ? " · " + fmt(p.duration) : ""}${p.render_count ? " · " + p.render_count + " hasil render" : ""}${p.owner_name ? " · " + esc(p.owner_name) : ""}${state.me && state.me.role === "admin" && p.unit_name ? " · " + esc(p.unit_name) : ""}${mediaListLabel(p.media)}</span>
     </li>`).join("") || '<li class="muted">Belum ada proyek.</li>';
 }
 
@@ -261,8 +261,11 @@ function startPolling() {
     try {
       const wasReady = p.status === "siap";
       state.project = await api(`/api/projects/${p.id}`);
-      if (!wasReady && state.project.status === "siap") toast("Analisis selesai! Pilih klip favorit Anda.");
       await refreshProjectData();
+      if (!wasReady && state.project.status === "siap") {
+        toast((state.transcript.segments || []).length ? "Analisis selesai! Pilih klip favorit Anda."
+          : "Analisis selesai, tetapi tidak ada ucapan yang terdeteksi.", !(state.transcript.segments || []).length);
+      }
       if (!state.project.jobs.some(isActive)) refreshProjects();
     } catch { /* coba lagi di putaran berikutnya */ }
   }, 1500);
@@ -276,7 +279,10 @@ function renderClips() {
     renderTimeline();
     return;
   }
-  list.innerHTML = state.clips.map((c, i) => `
+  const noSpeech = !(state.transcript.segments || []).length;
+  list.innerHTML = (noSpeech ? `<li class="notice">Tidak ada ucapan yang terdeteksi di video ini, jadi tidak ada subtitle.
+    Kandidat di bawah hanya dipilih dari energi audio. Pastikan video bersuara, atau pilih rentang secara manual.</li>` : "") +
+    state.clips.map((c, i) => `
     <li class="clip ${i === state.activeClip ? "active" : ""}" data-i="${i}">
       <input type="checkbox" ${state.checked.has(i) ? "checked" : ""} title="Centang untuk render massal">
       <div>
