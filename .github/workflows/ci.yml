@@ -281,11 +281,11 @@ jobs:
               "w5m": {"args": "--models small --minutes 30,60", "docker": small3g},
               # Review CI #38: diagnostik per potongan + kandidat koreksi; memori satu skenario per container;
               # konkurensi dua job lewat worker aplikasi.
+              # Validasi akhir (setelah 689141c): chunked = aturan gap baru; no-gap sebagai pembanding; per ucapan.
               "w5d_id": {"args": "--models small --sets id_nodup,id_clean,id_long --variants "
-                                 "chunked,chunked_merge,chunked_nogap,chunked_filter,chunked_combo,per_utt,legacy",
-                         "docker": small3g},
+                                 "chunked,chunked_nogap,per_utt", "docker": small3g},
               "w5d_en": {"args": "--models small --sets en_clean,en_nodup --variants "
-                                 "chunked,chunked_combo,chunked_w60,per_utt", "docker": small3g},
+                                 "chunked,chunked_nogap,chunked_w60,per_utt", "docker": small3g},
               "w5mem_l30": {"args": "30 legacy", "docker": small3g, "isolated": True},
               "w5mem_l40": {"args": "40 legacy", "docker": small3g, "isolated": True},
               "w5mem_l45": {"args": "45 legacy", "docker": small3g, "isolated": True},

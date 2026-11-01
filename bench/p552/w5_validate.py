@@ -122,7 +122,7 @@ def utterance_timeline(name: str, s: dict, work: Path):
     return Path(s["file"]), tl, False
 
 
-def score(tl: list, words: list, window_s, norm, edit_ops, wer_cer) -> dict:
+def score(tl: list, words: list, window_s, norm, edit_ops, wer_cer, per_utterance: bool = False) -> dict:
     from whisper_diag import assign_words
     from whisper_experiments import repetition
     by, stray = assign_words(tl, words)
@@ -140,7 +140,12 @@ def score(tl: list, words: list, window_s, norm, edit_ops, wer_cer) -> dict:
     tot, wc = edit_ops(norm(ref_all), norm(hyp_all)), wer_cer(ref_all, hyp_all)
     cross = [r for r in rows if r["crosses_window"]]
     bad = [r for r in rows if r["status"] != "ok" or r["doubled"]]
-    return {"wer": round((tot["sub"] + tot["ins"] + tot["del"]) / max(1, tot["ref_words"]), 4),
+    extra = {}
+    if per_utterance:   # korpus uji publik (FLEURS) saja: teks hipotesis per ucapan untuk memeriksa sisipan di dalamnya
+        extra["per_utterance"] = [{k: r[k] for k in ("idx", "status", "doubled", "ref_words", "hyp_words", "sub", "ins",
+                                                     "del")} | {"ref": r["ref"][:300], "hyp": r["hyp"][:300]}
+                                  for r in rows]
+    return {**extra, "wer": round((tot["sub"] + tot["ins"] + tot["del"]) / max(1, tot["ref_words"]), 4),
             "cer": round(wc["char_errors"] / max(1, wc["ref_chars"]), 4), "ops": tot,
             "utterances": len(rows), "missing": sum(r["status"] == "missing" for r in rows),
             "partial": sum(r["status"] == "partial" for r in rows), "doubled": sum(r["doubled"] for r in rows),

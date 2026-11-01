@@ -206,7 +206,8 @@ def exp_w5d(args, sets, out, emit, norm, edit_ops, wer_cer):
                 for i, segs in enumerate(r["segments"]):
                     off = tl[i]["start"] if mode == "per_utt" else 0.0
                     words += [{**w, "start": w["start"] + off, "end": w["end"] + off} for s in segs for w in s["words"]]
-                sc = score(tl, words, 60.0 if mode == "chunked_w60" else 300.0, norm, edit_ops, wer_cer)
+                sc = score(tl, words, 60.0 if mode == "chunked_w60" else 300.0, norm, edit_ops, wer_cer,
+                           per_utterance=True)
                 row.update(sc)
                 row["rtf"] = round(r["transcribe_s"] / dur, 4)
                 if r.get("diag"):
