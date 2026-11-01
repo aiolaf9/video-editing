@@ -25,6 +25,7 @@ def _container(monkeypatch, limit_mb, state):
     monkeypatch.setattr(resources, "_own_base", None)
     monkeypatch.setattr(resources, "_model_loaded", lambda: False)
     monkeypatch.setattr(worker, "_holds", {})
+    monkeypatch.setattr(worker, "_backoff", {})
 
 
 def _analyze_job(name, duration, queue):
@@ -113,7 +114,7 @@ def test_hold_expires_so_queue_is_not_blocked_forever(client, monkeypatch):
     monkeypatch.setattr(worker, "_run_task", lambda job: ran.append(job.id) or {})
     big, _ = _analyze_job("30-menit-b", 1800, "uji-w5-exp")
     assert worker.run_one(("uji-w5-exp",), "w") is False
-    worker._holds["uji-w5-exp"] = (big, time.time() - 1)             # masa penahanan habis
+    worker._holds["uji-w5-exp"] = (big, time.time() - 1, 2783)       # masa penahanan habis
     small = jobs.submit("render", "render", storage.create_project("kecil-b")["id"], {"request": {}}, "Render",
                         queue="uji-w5-exp", priority=0)["id"]
     assert worker.run_one(("uji-w5-exp",), "w") is True
@@ -231,3 +232,44 @@ def test_concurrent_workers_admit_only_what_fits(client, monkeypatch):
     assert statuses == ["antre", "selesai"] and resources._inflight == {}
     for j in (a, b):
         jobs.request_cancel(j)
+
+
+# ------------------------------------------------------------------ review CI #38: klaim berulang & "mustahil global"
+
+def test_held_job_not_reclaimed_while_memory_short(client, monkeypatch):
+    """Selama job ditahan dan RAM belum cukup, worker tidak menulis ke DB (dulu klaim+antre ulang tiap ±1 dtk)."""
+    state = {"used": 2000 * MB}
+    _container(monkeypatch, 3072, state)
+    monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
+    monkeypatch.setattr(worker, "_run_task", lambda job: {})
+    big, _ = _analyze_job("tahan-db", 1800, "uji-w5-db")
+    assert worker.run_one(("uji-w5-db",), "w") is False                  # klaim pertama -> antre + ditahan
+    claims = []
+    real = jobs.claim_id
+    monkeypatch.setattr(jobs, "claim_id", lambda *a, **k: claims.append(a) or real(*a, **k))
+    for _ in range(5):
+        assert worker.run_one(("uji-w5-db",), "w") is False
+    assert claims == []                                                 # tidak ada klaim selama RAM kurang
+    state["used"] = 100 * MB
+    assert worker.run_one(("uji-w5-db",), "w") is True and len(claims) == 1
+
+
+def test_too_large_here_but_capable_worker_elsewhere_is_not_failed(client, monkeypatch):
+    from app import monitor
+    _container(monkeypatch, 3072, {"used": 100 * MB})
+    monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
+    ran = []
+    monkeypatch.setattr(worker, "_run_task", lambda job: ran.append(job.id) or {})
+    big_worker = {"name": "worker-besar", "queues": "uji-w5-else", "system": {"mem_total": 16 * 2**30}}
+    monkeypatch.setattr(monitor, "list_workers", lambda now=None: [big_worker])
+    jid, pid = _analyze_job("60-menit-lain", 3600, "uji-w5-else")
+    assert worker.run_one(("uji-w5-else",), "kecil") is False
+    job = jobs.get(jid)
+    assert ran == [] and job["status"] == "antre" and job["message"] == worker.WAIT_CONFIG
+    assert storage.load_project(pid)["status"] != "gagal"
+    assert worker.run_one(("uji-w5-else",), "kecil") is False           # antrean dijauhi sementara: tanpa klaim
+    assert jobs.get(jid)["status"] == "antre"
+    monkeypatch.setattr(monitor, "list_workers", lambda now=None: [])   # tidak ada worker lain yang mampu
+    worker._backoff.clear()
+    assert worker.run_one(("uji-w5-else",), "kecil") is True
+    assert jobs.get(jid)["status"] == "gagal" and jobs.get(jid)["error"] == worker.FAIL_TOO_LARGE

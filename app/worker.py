@@ -137,7 +137,21 @@ def _report(name: str, state: str, **kw) -> None:
 def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
             meter: Optional[resources.UsageMeter] = None) -> bool:
     """Jalankan satu pekerjaan bila ada. Mengembalikan False bila antrean kosong."""
-    held = _held_job(queues)
+    queues = _without_backoff(queues)
+    if not queues:
+        return False
+    hold = _held_job(queues)
+    held = hold[0] if hold else None
+    if hold:
+        # Job besar sedang ditahan: periksa RAM lebih dulu TANPA menulis ke DB; klaim hanya bila kemungkinan muat
+        # (dulu: klaim + kembalikan ke antrean tiap ±1 dtk selama penahanan).
+        with resources.ADMISSION_LOCK:
+            ok, _ = resources.admit_memory(hold[2], need_mb=hold[1])
+        if not ok:
+            current = jobs.get(held)              # hanya membaca: job yang dibatalkan/diambil lain melepas penahanan
+            if current is None or current["status"] != "antre":
+                _clear_hold(held)
+            return False
     data = jobs.claim_id(held, name) if held else jobs.claim(queues, name)
     if data is None:
         if held:  # job yang ditahan sudah dibatalkan/diambil worker lain: buka lagi antreannya
@@ -154,11 +168,20 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
         if ok:
             resources.reserve(data["id"], data["queue"], need)
     if never:
+        other = _capable_elsewhere(data["queue"], need, name)
+        if other:
+            # Worker lain yang dikenal punya RAM cukup: bukan mustahil secara global. Kembalikan ke antrean & jauhi
+            # antrean ini sebentar agar worker lain sempat mengambilnya (tanpa klaim berulang dari sini).
+            jobs.requeue(data["id"], message=WAIT_CONFIG)
+            _set_backoff(data["queue"])
+            log.warning("[%s] %s terlalu besar di sini (%s); worker %s mampu, job dikembalikan ke antrean.", name,
+                        data["id"], never, other)
+            return False
         _fail_too_large(data, name, never)
         return True
     if not ok:
         jobs.requeue(data["id"], message=WAIT_TEMPORARY)
-        _set_hold(data)
+        _set_hold(data, need)
         log.info("[%s] %s dikembalikan ke antrean (butuh %d MB): %s", name, data["id"], need, why)
         return False
     _clear_hold(data["id"])
@@ -270,11 +293,42 @@ def incapable_queues(queues: tuple[str, ...], known: Optional[dict] = None) -> d
 # Penahanan antrean (anti-starvation): job yang dikembalikan karena RAM ditahan untuk antreannya selama
 # ADMISSION_HOLD_SECONDS; selama itu worker di proses ini hanya mencoba job tersebut. Berlaku per proses (semua thread
 # worker tanam), bukan lintas proses worker terpisah.
-_holds: dict = {}            # antrean -> (job_id, berlaku_sampai)
+_holds: dict = {}            # antrean -> (job_id, berlaku_sampai, kebutuhan MB)
 _holds_lock = threading.Lock()
+_backoff: dict = {}          # antrean -> dijauhi sampai (job terlalu besar untuk worker ini, worker lain mampu)
+BACKOFF_SECONDS = 60.0
 
 
-def _held_job(queues: tuple[str, ...]) -> Optional[str]:
+def _without_backoff(queues: tuple[str, ...]) -> tuple[str, ...]:
+    now = time.time()
+    with _holds_lock:
+        return tuple(q for q in queues if _backoff.get(q, 0) <= now)
+
+
+def _set_backoff(queue: str) -> None:
+    with _holds_lock:
+        _backoff[queue] = time.time() + BACKOFF_SECONDS
+
+
+def _capable_elsewhere(queue: str, need: int, me: str) -> Optional[str]:
+    """Nama worker lain (hidup atau offline < 1 hari) untuk antrean ini yang melaporkan RAM total (batas container bila
+    ada) cukup untuk `need` MB + ruang aman. None bila tidak ada: job memang tidak muat di worker mana pun yang dikenal."""
+    from .config import CONTAINER_MEM_HEADROOM_MB
+    try:
+        workers = monitor.list_workers()
+    except Exception:
+        return None
+    for w in workers:
+        if w["name"] == me or queue not in (w.get("queues") or "").split(","):
+            continue
+        total = (w.get("system") or {}).get("mem_total")
+        if total and total >= (need + CONTAINER_MEM_HEADROOM_MB) * 2**20:
+            return w["name"]
+    return None
+
+
+def _held_job(queues: tuple[str, ...]) -> Optional[tuple]:
+    """(job_id, kebutuhan MB, antrean) job yang sedang ditahan, atau None."""
     now = time.time()
     with _holds_lock:
         for q in queues:
@@ -282,19 +336,20 @@ def _held_job(queues: tuple[str, ...]) -> Optional[str]:
             if h is None:
                 continue
             if h[1] > now:
-                return h[0]
+                return h[0], h[2], q
             del _holds[q]
             log.warning("Penahanan antrean %s untuk job %s berakhir (lewat %.0f dtk); antrean dibuka lagi.", q, h[0],
                         ADMISSION_HOLD_SECONDS)
     return None
 
 
-def _set_hold(data: dict) -> None:
+def _set_hold(data: dict, need: Optional[int] = None) -> None:
     if ADMISSION_HOLD_SECONDS <= 0:
         return
     with _holds_lock:
         if data["queue"] not in _holds:
-            _holds[data["queue"]] = (data["id"], time.time() + ADMISSION_HOLD_SECONDS)
+            _holds[data["queue"]] = (data["id"], time.time() + ADMISSION_HOLD_SECONDS,
+                                     need if need is not None else resources.job_need_mb(data))
 
 
 def _clear_hold(job_id: str) -> None:
