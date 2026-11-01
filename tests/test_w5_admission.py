@@ -4,6 +4,7 @@ Antrean khusus tes ("uji-w5-*") dipakai agar worker bawaan (mode tanam) tidak ik
 """
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -246,7 +247,8 @@ def test_held_job_not_reclaimed_while_memory_short(client, monkeypatch):
     assert worker.run_one(("uji-w5-db",), "w") is False                  # klaim pertama -> antre + ditahan
     claims = []
     real = jobs.claim_id
-    monkeypatch.setattr(jobs, "claim_id", lambda *a, **k: claims.append(a) or real(*a, **k))
+    # Hanya klaim untuk job ini: worker tanam (thread lain di proses tes) juga memanggil fungsi yang sama.
+    monkeypatch.setattr(jobs, "claim_id", lambda *a, **k: (claims.append(a) if a[0] == big else None) or real(*a, **k))
     for _ in range(5):
         assert worker.run_one(("uji-w5-db",), "w") is False
     assert claims == []                                                 # tidak ada klaim selama RAM kurang
@@ -313,20 +315,23 @@ def test_too_large_job_does_not_cycle_forever(client, monkeypatch):
     _container(monkeypatch, 3072, {"used": 100 * MB})
     monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
     monkeypatch.setattr(worker, "_run_task", lambda job: {})
-    big = {"name": "besar", "queues": "uji-w5-loop", "alive": True, "system": {"mem_total": 16 * 2**30}}
+    q = f"uji-w5l-{uuid.uuid4().hex[:8]}"   # unik per run: sisa job di DB PostgreSQL yang dipakai ulang tidak ikut
+    big = {"name": "besar", "queues": q, "alive": True, "system": {"mem_total": 16 * 2**30}}
     monkeypatch.setattr(monitor, "list_workers", lambda now=None: [big])
     claims = []
     real = jobs.claim
-    monkeypatch.setattr(jobs, "claim", lambda *a, **k: claims.append(1) or real(*a, **k))
-    jid, _ = _analyze_job("60-menit-loop", 3600, "uji-w5-loop")
+    # Hanya klaim untuk antrean ini: worker tanam (thread lain, antrean analisis/render) memanggil jobs.claim yang sama
+    # (CI #41 PostgreSQL: satu panggilan thread lokal-analisis-1 ikut terhitung -> 3 bukan 2).
+    monkeypatch.setattr(jobs, "claim", lambda *a, **k: (claims.append(a[0]) if q in a[0] else None) or real(*a, **k))
+    jid, _ = _analyze_job("60-menit-loop", 3600, q)
     for _ in range(20):                                           # 20 putaran poll dalam jendela backoff
-        assert worker.run_one(("uji-w5-loop",), "kecil") is False
+        assert worker.run_one((q,), "kecil") is False
     assert len(claims) == 1 and jobs.get(jid)["status"] == "antre"
-    worker._backoff["uji-w5-loop"] = time.time() - 1             # jendela 60 dtk lewat
-    assert worker.run_one(("uji-w5-loop",), "kecil") is False and len(claims) == 2
+    worker._backoff[q] = time.time() - 1             # jendela 60 dtk lewat
+    assert worker.run_one((q,), "kecil") is False and len(claims) == 2
     big["alive"] = False                                          # worker besar mati / heartbeat basi
-    worker._backoff["uji-w5-loop"] = time.time() - 1
-    assert worker.run_one(("uji-w5-loop",), "kecil") is True and len(claims) == 3
+    worker._backoff[q] = time.time() - 1
+    assert worker.run_one((q,), "kecil") is True and len(claims) == 3
     assert jobs.get(jid)["status"] == "gagal" and jobs.get(jid)["error"] == worker.FAIL_TOO_LARGE
 
 
@@ -337,12 +342,13 @@ def test_cancel_of_held_job_frees_queue_immediately(client, monkeypatch):
     monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
     ran = []
     monkeypatch.setattr(worker, "_run_task", lambda job: ran.append(job.id) or {})
-    held, _ = _analyze_job("30-menit-tahan", 1800, "uji-w5-cbatal")
-    assert worker.run_one(("uji-w5-cbatal",), "w") is False and worker._holds   # ditahan, RAM kurang
-    small, _ = _analyze_job("1-menit", 60, "uji-w5-cbatal")
-    assert worker.run_one(("uji-w5-cbatal",), "w") is False and ran == []       # antrean ditahan untuk job besar
+    q = f"uji-w5c-{uuid.uuid4().hex[:8]}"
+    held, _ = _analyze_job("30-menit-tahan", 1800, q)
+    assert worker.run_one((q,), "w") is False and worker._holds   # ditahan, RAM kurang
+    small, _ = _analyze_job("1-menit", 60, q)
+    assert worker.run_one((q,), "w") is False and ran == []       # antrean ditahan untuk job besar
     t0 = time.time()
     assert jobs.request_cancel(held) == "batal"
-    assert worker.run_one(("uji-w5-cbatal",), "w") is False and worker._holds == {}   # penahanan dilepas
-    assert worker.run_one(("uji-w5-cbatal",), "w") is True and ran == [small]
+    assert worker.run_one((q,), "w") is False and worker._holds == {}   # penahanan dilepas
+    assert worker.run_one((q,), "w") is True and ran == [small]
     assert time.time() - t0 < 5 and jobs.get(held)["status"] == "batal"
