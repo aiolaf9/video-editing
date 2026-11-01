@@ -345,13 +345,46 @@ function renderTranscript() {
     return;
   }
   let idx = 0;
-  box.innerHTML = segs.map((s) => {
+  box.innerHTML = segs.map((s, si) => {
     const words = s.words && s.words.length
       ? s.words.map((w) => `<span class="w" data-i="${idx++}" data-t="${w.start}">${esc(w.word)}</span>`).join(" ")
       : `<span class="w" data-t="${s.start}">${esc(s.text)}</span>`;
-    return `<div class="seg"><span class="ts">${fmt(s.start)}</span>${words}</div>`;
+    return `<div class="seg" data-s="${si}"><span class="ts">${fmt(s.start)}</span>${words}` +
+      ` <button type="button" class="seg-edit" data-s="${si}" title="Koreksi teks segmen ini (dipakai untuk subtitle)">Koreksi</button></div>`;
   }).join("");
   highlightTranscriptRange();
+}
+
+// Koreksi transkrip: teks segmen disimpan ke server dan dipakai sebagai subtitle saat render berikutnya.
+function editSegment(si) {
+  const seg = state.transcript.segments[si];
+  const row = document.querySelector(`#transcriptBox .seg[data-s="${si}"]`);
+  if (!seg || !row || row.querySelector("textarea")) return;
+  const current = seg.words && seg.words.length ? seg.words.map((w) => w.word).join(" ") : seg.text || "";
+  row.innerHTML = `<span class="ts">${fmt(seg.start)}</span>` +
+    `<textarea class="seg-text" rows="2" maxlength="2000">${esc(current)}</textarea>` +
+    `<span class="seg-actions"><button type="button" class="seg-save primary">Simpan</button>` +
+    `<button type="button" class="seg-cancel">Batal</button></span>`;
+  const ta = row.querySelector("textarea");
+  ta.focus();
+  row.querySelector(".seg-cancel").addEventListener("click", renderTranscript);
+  row.querySelector(".seg-save").addEventListener("click", async () => {
+    const btn = row.querySelector(".seg-save");
+    btn.disabled = true;
+    try {
+      state.transcript = await api(`/api/projects/${state.project.id}/transcript`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segments: [{ index: si, text: ta.value }] }),
+      });
+      state.words = state.transcript.segments.flatMap((s) => s.words && s.words.length ? s.words : []);
+      renderTranscript();
+      updateCaptionPreview();
+      toast("Koreksi disimpan. Subtitle render berikutnya memakai teks ini.");
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message, true);
+    }
+  });
 }
 
 function highlightTranscriptRange() {
@@ -801,9 +834,31 @@ function pumpUploads() {
     .forEach((u) => u.run());
 }
 
-function uploadFiles(files) {
+// Durasi video menurut browser (null bila browser tidak bisa membaca formatnya; server tetap memeriksa).
+function videoDuration(file) {
+  return new Promise((resolve) => {
+    const v = document.createElement("video");
+    const url = URL.createObjectURL(file);
+    const done = (d) => { URL.revokeObjectURL(url); resolve(d); };
+    v.preload = "metadata";
+    v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : null);
+    v.onerror = () => done(null);
+    setTimeout(() => done(null), 10000);
+    v.src = url;
+  });
+}
+
+async function uploadFiles(files) {
+  const maxSec = state.me && state.me.max_video_seconds;
   for (const file of files) {
     if (uploadCfg.maxMb && file.size > uploadCfg.maxMb * MB) { toast(`${file.name}: terlalu besar (maks ${uploadCfg.maxMb} MB).`, true); continue; }
+    if (maxSec) {
+      const d = await videoDuration(file);
+      if (d && d > maxSec) {
+        toast(`${file.name}: durasi ${(d / 60).toFixed(1)} menit melebihi batas ${Math.round(maxSec / 60)} menit. Potong videonya dulu.`, true);
+        continue;
+      }
+    }
     const pending = serverUploads.find((s) => s.filename === file.name && s.size === file.size);
     uploads.push(new Upload(file, pending ? `/api/uploads/${pending.id}` : null));
     if (pending) serverUploads = serverUploads.filter((s) => s !== pending);
@@ -1003,6 +1058,9 @@ function bind() {
   });
 
   $("transcriptBox").addEventListener("click", (e) => {
+    const ed = e.target.closest(".seg-edit");
+    if (ed) { editSegment(+ed.dataset.s); return; }
+    if (e.target.closest("textarea, .seg-actions")) return;
     const w = e.target.closest(".w");
     if (w) { player.currentTime = +w.dataset.t; }
   });

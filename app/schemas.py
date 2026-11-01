@@ -56,6 +56,15 @@ class UrlImport(BaseModel):
     language: Optional[str] = None
 
 
+class SegmentEdit(BaseModel):
+    index: int = Field(ge=0)
+    text: str = Field(max_length=2000)
+
+
+class TranscriptEdit(BaseModel):
+    segments: list[SegmentEdit] = Field(min_length=1, max_length=500)
+
+
 class SuggestRequest(BaseModel):
     target: float = Field(30, ge=5, le=180)
     top_n: int = Field(8, ge=1, le=30)

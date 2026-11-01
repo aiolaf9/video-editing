@@ -25,7 +25,8 @@ from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPRO
                      METRICS_TOKEN, UPLOAD_CHUNK_MB, UPLOAD_RESUME_HOURS, UPLOAD_TMP_DIR,
                      WEB_DIR, WHISPER_MODEL)
 from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
-                      RenderRequest, Settings, SuggestRequest, UnitIn, UrlImport, UserCreate, UserUpdate)
+                      RenderRequest, Settings, SuggestRequest, TranscriptEdit, UnitIn, UrlImport, UserCreate,
+                      UserUpdate)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("video-editing")
@@ -348,6 +349,8 @@ def me(user: dict = CurrentUser):
     data["url_import"] = ALLOW_URL_IMPORT == "all" or (ALLOW_URL_IMPORT == "admins" and user["role"] != "editor")
     data["media_policy"] = {"lifecycle": MEDIA_LIFECYCLE, "retention_hours": MEDIA_RETENTION_HOURS,
                             "max_hours": MEDIA_MAX_HOURS}
+    from . import config
+    data["max_video_seconds"] = config.MAX_VIDEO_SECONDS or None
     return data
 
 
@@ -639,6 +642,25 @@ def reanalyze(pid: str, language: Optional[str] = None, user: dict = CurrentUser
 def get_transcript(pid: str, user: dict = CurrentUser):
     _project_for(pid, user)
     return storage.read_data(pid, "transcript", {"language": None, "segments": []})
+
+
+@app.put("/api/projects/{pid}/transcript")
+def edit_transcript(pid: str, body: TranscriptEdit, user: dict = CurrentUser):
+    """Koreksi teks segmen transkrip; render berikutnya memakai teks ini untuk subtitle."""
+    from . import transcript_edit
+    _project_for(pid, user)
+    if any(j["status"] in jobs.ACTIVE and j["kind"] == "analisis" for j in jobs.for_project(pid)):
+        raise HTTPException(409, "Analisis sedang berjalan. Tunggu sampai selesai sebelum mengoreksi transkrip.")
+    transcript = storage.read_data(pid, "transcript")
+    if transcript is None:
+        raise HTTPException(409, "Video belum selesai dianalisis.")
+    try:
+        transcript = transcript_edit.apply_edits(transcript, [e.model_dump() for e in body.segments])
+    except transcript_edit.EditError as exc:
+        raise HTTPException(422, str(exc))
+    storage.write_data(pid, "transcript", transcript)
+    lifecycle.touch(pid)
+    return transcript
 
 
 @app.get("/api/projects/{pid}/clips")

@@ -215,6 +215,7 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     job.update(0, "Membaca info video...")
     info = media.probe(src)
     storage.update_project(pid, **info)
+    check_duration(info.get("duration") or 0)
     _limit_analysis_time(info["duration"])
     if info.get("has_audio"):
         # Durasi kini diketahui (probe ffprobe, tanpa decode audio): sesuaikan reservasi RAM job sebelum langkah berat.
@@ -260,6 +261,18 @@ def track_faces(pid: str, progress=None) -> list:
         data = []
     storage.write_data(pid, "faces", data)
     return data
+
+
+class VideoTooLong(RuntimeError):
+    """Video melebihi MAX_VIDEO_SECONDS: ditolak sebelum langkah berat (pesan langsung tampil ke pengguna)."""
+
+
+def check_duration(duration: float) -> None:
+    from . import config
+    limit = config.MAX_VIDEO_SECONDS
+    if limit > 0 and duration > limit:
+        raise VideoTooLong(f"Video berdurasi {duration / 60:.1f} menit melebihi batas {limit / 60:.0f} menit. "
+                           "Potong videonya menjadi bagian yang lebih pendek, lalu unggah ulang.")
 
 
 def _limit_analysis_time(duration: float) -> None:

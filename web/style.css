@@ -258,3 +258,8 @@ table.grid td select, table.grid td input { padding: 4px 6px; }
 .upload-item .row button { padding: 4px 10px; font-size: 12px; }
 .project-list li.has-thumb { display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 8px; }
 .project-list li .thumb { grid-row: span 2; width: 56px; height: 32px; object-fit: cover; border-radius: 4px; margin-top: 2px; background: #000; }
+/* Koreksi transkrip */
+.transcript .seg-edit { padding: 1px 6px; font-size: 11px; opacity: .55; }
+.transcript .seg:hover .seg-edit, .transcript .seg-edit:focus { opacity: 1; }
+.transcript .seg-text { flex: 1 1 100%; width: 100%; font: inherit; padding: 6px; }
+.transcript .seg-actions { display: flex; gap: 6px; }

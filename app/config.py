@@ -44,6 +44,8 @@ JOB_WORKERS = int(os.environ.get("JOB_WORKERS", "1"))
 
 # Batas waktu pekerjaan (detik). Dihitung dari ukuran pekerjaan agar video panjang tetap muat,
 # tetapi job yang macet pasti berhenti. Server CPU tanpa GPU: nilai bawaan sudah longgar.
+# Batas durasi video yang dianalisis (detik). 0 = tanpa batas (bawaan). Lingkungan demo memakai 900 (15 menit).
+MAX_VIDEO_SECONDS = float(os.environ.get("MAX_VIDEO_SECONDS", "0"))
 ANALYZE_TIMEOUT_BASE = float(os.environ.get("ANALYZE_TIMEOUT_BASE", "900"))        # 15 menit
 ANALYZE_TIMEOUT_PER_MIN = float(os.environ.get("ANALYZE_TIMEOUT_PER_MIN", "180"))  # +3 menit per menit video
 RENDER_TIMEOUT_BASE = float(os.environ.get("RENDER_TIMEOUT_BASE", "300"))          # 5 menit
