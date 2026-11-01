@@ -16,7 +16,9 @@ VAD-drop, segmen terlewat (seek melompat), kata hilang dalam segmen, dan salah p
 Artifact terbatas: hanya cuplikan (<= 120 karakter) untuk ucapan bermasalah, tanpa transkrip penuh. Data: FLEURS CC-BY.
 """
 import json
+import logging
 import os
+import re
 import traceback
 import statistics
 import subprocess
@@ -91,6 +93,17 @@ def verify_timeline(joined: Path, timeline: list[dict], items: list[dict]) -> di
             "duration_mismatch_idx": bad}
 
 
+class _LogBuffer(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        msg = record.getMessage()
+        if msg.startswith(("Processing segment at", "No speech threshold is met")):
+            self.records.append(msg)
+
+
 class Recorder:
     """Membungkus model.transcribe: menerapkan varian kwargs & merekam segmen mentah faster-whisper.
     Tidak mengubah inferensi: kwargs aplikasi diteruskan apa adanya (varian kosong untuk mode pembanding) dan objek
@@ -104,6 +117,11 @@ class Recorder:
         # memakai token_to_id("<|0.00|>") yang tidak ada di kosakata -> single_ts_end selalu null.
         nots = tok.token_to_id("<|notimestamps|>") if tok is not None else None
         self.ts_begin = nots + 1 if nots is not None else None
+        self.windows, self.call_offset, self.time_map, self._seg_start = [], 0.0, None, 0
+        self.log = _LogBuffer()
+        lg = logging.getLogger("faster_whisper")
+        lg.setLevel(logging.DEBUG)
+        lg.addHandler(self.log)
         model.transcribe = self
 
     def single_ts_end(self, tokens) -> Optional[bool]:
@@ -112,21 +130,79 @@ class Recorder:
             return None
         return tokens[-1] >= self.ts_begin and tokens[-2] < self.ts_begin
 
+    def token_tail(self, tokens, n=3) -> list:
+        """Jenis token terakhir: 'ts:<detik relatif jendela>' untuk timestamp, 'txt' untuk teks."""
+        if self.ts_begin is None:
+            return []
+        return [f"ts:{(t - self.ts_begin) * 0.02:.2f}" if t >= self.ts_begin else "txt" for t in tokens[-n:]]
+
     def __call__(self, audio, **kw):
         kw.update(self.variant)
         self.kwargs = {k: (bool(v) if k == "initial_prompt" else v) for k, v in kw.items()}
+        # Peta waktu VAD (audio yang dipadatkan) -> waktu asli berkas, untuk menafsirkan offset jendela 30 dtk.
+        self.time_map = None
+        if kw.get("vad_filter"):
+            from faster_whisper.vad import SpeechTimestampsMap, VadOptions, get_speech_timestamps
+            vp = kw.get("vad_parameters")
+            opts = VadOptions(**vp) if isinstance(vp, dict) else (vp or VadOptions())
+            chunks = get_speech_timestamps(audio, opts)
+            self.time_map = SpeechTimestampsMap(chunks, 16000) if chunks else None
+        self.log.records.clear()
+        self._seg_start = len(self.segments)
         segs, info = self.original(audio, **kw)
 
         def gen():
             for s in segs:
+                toks = list(getattr(s, "tokens", []) or [])
                 self.segments.append({"seek": getattr(s, "seek", None), "start": round(s.start, 2),
                                       "end": round(s.end, 2), "no_speech_prob": round(s.no_speech_prob, 3),
                                       "avg_logprob": round(s.avg_logprob, 3),
                                       "compression_ratio": round(s.compression_ratio, 2),
                                       "temperature": getattr(s, "temperature", None), "n_words": len(s.words or []),
-                                      "single_ts_end": self.single_ts_end(list(getattr(s, "tokens", []) or []))})
+                                      "single_ts_end": self.single_ts_end(toks), "token_tail": self.token_tail(toks)})
                 yield s
+            self.windows += self.window_decisions(self.call_offset)
         return gen(), info
+
+    def window_decisions(self, offset: float) -> list:
+        """Keputusan seek per jendela 30 dtk, dari log debug faster-whisper (bukti langsung) + segmen jendela itu.
+        start_s/next_s dalam waktu audio yang diproses Whisper (setelah VAD bila VAD aktif); *_orig_s = waktu asli."""
+        events = []
+        for r in self.log.records:
+            m = re.match(r"Processing segment at (?:(\d+):)?(\d+):(\d+)\.(\d+)", r)
+            if m:   # format_timestamp faster-whisper: [HH:]MM:SS.mmm
+                events.append(["win", int(m[1] or 0) * 3600 + int(m[2]) * 60 + int(m[3]) + int(m[4]) / 1000])
+            elif r.startswith("No speech threshold is met") and events:
+                events[-1].append("no_speech_skip:" + r.split("(")[1].split(")")[0])
+        out = []
+        for i, ev in enumerate(events):
+            t = ev[1]
+            nxt = events[i + 1][1] if i + 1 < len(events) else None
+            segs = [sg for sg in self.segments[self._seg_start:]
+                    if sg.get("seek") is not None and abs(sg["seek"] / 100 - t) < 0.011]
+            last = segs[-1] if segs else None
+            skip = next((x for x in ev[2:] if x.startswith("no_speech_skip")), None)
+            if skip:
+                cause = skip
+            elif last is None:
+                cause = "tanpa segmen"
+            elif last.get("single_ts_end"):
+                cause = "single_ts_end"
+            else:
+                cause = "seek ke timestamp terakhir"
+
+            def orig(x):
+                if x is None:
+                    return None
+                return round((self.time_map.get_original_time(x) if self.time_map else x) + offset, 2)
+            out.append({"start_s": round(t, 2), "next_s": nxt and round(nxt, 2),
+                        "advance_s": nxt and round(nxt - t, 2), "full_window": bool(nxt and abs(nxt - t - 30) < 0.02),
+                        "start_orig_s": orig(t), "next_orig_s": orig(nxt), "segments": len(segs), "cause": cause,
+                        "last_end_orig_s": last and round(last["end"] + offset, 2),
+                        "last_token_tail": last and last.get("token_tail"),
+                        "last_no_speech_prob": last and last["no_speech_prob"],
+                        "last_avg_logprob": last and last["avg_logprob"]})
+        return out
 
 
 def assign_words(timeline, words, pad=0.25):
@@ -175,8 +251,22 @@ def missing_evidence(u, segments):
             "gap_s": round((nxt["start"] if nxt else u["end"]) - (prev["end"] if prev else u["start"]), 2)}
 
 
+DEFAULT_MODES = ("per_utt", "joined", "joined_nocond", "joined_novad")
+
+
+def tokenizer_check(model, rec) -> dict:
+    """Verifikasi timestamp_begin instrumen terhadap Tokenizer faster-whisper yang benar-benar dipakai."""
+    try:
+        from faster_whisper.tokenizer import Tokenizer
+        tk = Tokenizer(model.hf_tokenizer, model.model.is_multilingual, task="transcribe", language="en")
+        return {"ts_begin_instrumen": rec.ts_begin, "ts_begin_faster_whisper": tk.timestamp_begin,
+                "cocok": rec.ts_begin == tk.timestamp_begin, "no_timestamps": tk.no_timestamps, "eot": tk.eot}
+    except Exception as exc:
+        return {"cocok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
 def run_diag(corpus: Path, out: Path, set_names: list[str], model_name: str, win_targets: list[float], emit, norm,
-             edit_ops, wer_cer):
+             edit_ops, wer_cer, modes_wanted=DEFAULT_MODES):
     os.environ["WHISPER_MODEL"] = model_name
     import ctranslate2
     import faster_whisper
@@ -193,7 +283,10 @@ def run_diag(corpus: Path, out: Path, set_names: list[str], model_name: str, win
                "device": transcribe._model_device, "threads": transcribe.WHISPER_THREADS or os.cpu_count(),
                "compute_type": "int8" if transcribe._model_device == "cpu" else "default",
                "model_path": str(getattr(getattr(model, "model", None), "model_path", "") or ""),
-               "corpus_revision": json.loads((corpus / "corpus.json").read_text()).get("revision")})
+               "corpus_revision": json.loads((corpus / "corpus.json").read_text()).get("revision"),
+               "tokenizer": tokenizer_check(model, rec)})
+    if not tokenizer_check(model, rec).get("cocok"):
+        raise SystemExit("diag: timestamp_begin instrumen tidak cocok dengan tokenizer faster-whisper")
 
     def ops_fn(ref, hyp):
         return edit_ops(norm(ref), norm(hyp))
@@ -225,6 +318,7 @@ def run_diag(corpus: Path, out: Path, set_names: list[str], model_name: str, win
         modes = [("per_utt", None, {}), ("joined", None, {}), ("joined_novad", None, {"vad_filter": False}),
                  ("joined_nocond", None, {"condition_on_previous_text": False}),
                  ("joined_noprompt", None, {"initial_prompt": None})]
+        modes = [m for m in modes if m[0] in modes_wanted]
         modes += [(f"win{int(w)}", w, {}) for w in win_targets]
         for mode, win, variant in modes:
             # Penanda mulai: bila proses mati (OOM/timeout job), mode terakhir yang "started" tanpa hasil terlihat di log.
@@ -252,12 +346,13 @@ def run_diag(corpus: Path, out: Path, set_names: list[str], model_name: str, win
 
 
 def _run_mode(name, mode, win, variant, timeline, joined, work, cov, rec, transcribe, ops_fn, wer_fn, edit_ops, norm):
-    rec.variant, rec.segments = variant, []
+    rec.variant, rec.segments, rec.windows = variant, [], []
     t1 = time.perf_counter()
     words_all, langs, seg_all = [], [], []
     if mode == "per_utt":
         hyp_by = {}
         for u in timeline:
+            rec.call_offset = u["start"]
             r = transcribe.transcribe(Path(u["file"]), u["end"] - u["start"], None)
             langs.append(r["language"])
             hyp_by[u["idx"]] = [w["word"] for sg in r["segments"] for w in sg["words"]]
@@ -270,7 +365,7 @@ def _run_mode(name, mode, win, variant, timeline, joined, work, cov, rec, transc
             if win is not None:
                 path = work / f"{name}_{mode}_{a:.1f}.wav"
                 _ff("-i", str(joined), "-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-c:a", "pcm_s16le", str(path))
-            rec.segments = []
+            rec.segments, rec.call_offset = [], a
             r = transcribe.transcribe(path, b - a, None)
             langs.append(r["language"])
             words_all += [{**w, "start": w["start"] + a, "end": w["end"] + a}
@@ -300,7 +395,11 @@ def _run_mode(name, mode, win, variant, timeline, joined, work, cov, rec, transc
                  "ref": r["_ref"][:EXCERPT], "hyp": r["_hyp"][:EXCERPT],
                  **({"evidence": missing_evidence(r, seg_all)} if r["status"] == "missing" and seg_all else {})}
                 for r in worst[:MAX_EXAMPLES]]
-    return {"decoding": rec.kwargs, "languages": sorted({x for x in langs if x}),
+    seek_summary = seek_decisions(rec.windows, timeline)
+    gaps = uncovered_gaps(seg_all, timeline) if mode != "per_utt" else []
+    dups = duplicate_groups(timeline, rows, norm)
+    return {"seek": seek_summary, "uncovered_gaps": gaps, "duplicate_groups": dups,
+            "decoding": rec.kwargs, "languages": sorted({x for x in langs if x}),
                "seconds": round(elapsed, 1), "wer": round((tot["sub"] + tot["ins"] + tot["del"])
                                                          / max(1, tot["ref_words"]), 4), "ops": tot,
                "utt_missing": len(missing), "utt_partial": len(partial), "stray_words": stray,
@@ -311,3 +410,61 @@ def _run_mode(name, mode, win, variant, timeline, joined, work, cov, rec, transc
                "seek_values": sorted({sg["seek"] for sg in seg_all if sg.get("seek") is not None})[:60],
                "single_ts_end_segments": sum(1 for sg in seg_all if sg.get("single_ts_end")),
                "per_utt_status": [r["status"][0] for r in rows], "examples": examples}
+
+
+def seek_decisions(windows: list, timeline: list) -> dict:
+    """Ringkasan keputusan seek. Bukti langsung: offset jendela & lompatan dari log faster-whisper, token akhir &
+    no_speech_prob/avg_logprob segmen terakhir jendela. Ucapan 'terlewati' = seluruhnya berada di antara akhir segmen
+    terakhir jendela dan awal jendela berikutnya (interpretasi, bukan log)."""
+    full = [w for w in windows if w["full_window"]]
+    causes = {}
+    for w in windows:
+        causes[w["cause"]] = causes.get(w["cause"], 0) + 1
+    detail = []
+    for w in full[:20]:
+        lo = w["last_end_orig_s"] if w["last_end_orig_s"] is not None else w["start_orig_s"]
+        hi = w["next_orig_s"]
+        skipped = [u["idx"] for u in timeline if lo is not None and hi is not None and u["start"] >= lo - 0.3
+                   and u["end"] <= hi + 0.3]
+        detail.append({**w, "utts_in_skipped_span": skipped})
+    return {"windows": len(windows), "full_window_advances": len(full), "causes": causes, "full_windows": detail}
+
+
+def uncovered_gaps(segments: list, timeline: list, min_gap=1.0) -> list:
+    """Interval timeline asli tanpa segmen transkripsi yang memuat ucapan acuan (bukti langsung dari segmen)."""
+    segs = sorted(segments, key=lambda s: s["start"])
+    edges, prev_end = [], 0.0
+    for sg in segs:
+        if sg["start"] - prev_end >= min_gap:
+            edges.append((prev_end, sg["start"]))
+        prev_end = max(prev_end, sg["end"])
+    end_all = timeline[-1]["end"]
+    if end_all - prev_end >= min_gap:
+        edges.append((prev_end, end_all))
+    out = []
+    for a, b in edges:
+        utts = [u["idx"] for u in timeline if min(b, u["end"]) - max(a, u["start"]) > 0.5 * (u["end"] - u["start"])]
+        if utts:
+            out.append({"start": round(a, 2), "end": round(b, 2), "utts": utts})
+    return out[:20]
+
+
+def duplicate_groups(timeline: list, rows: list, norm) -> list:
+    """Kelompok ucapan BERURUTAN dengan teks acuan identik (dua rekaman nyata kalimat yang sama, bukan galat dataset).
+    Per kelompok: salinan di audio, salinan yang tertranskripsi (ok/partial), dan indikasi satu ucapan memuat teks dua
+    kali (hipotesis >= 1,7x panjang acuan)."""
+    groups, cur = [], [timeline[0]["idx"]] if timeline else []
+    for prev, u in zip(timeline, timeline[1:]):
+        if norm(prev["text"]) == norm(u["text"]):
+            cur.append(u["idx"])
+        else:
+            if len(cur) > 1:
+                groups.append(cur)
+            cur = [u["idx"]]
+    if len(cur) > 1:
+        groups.append(cur)
+    by = {r["idx"]: r for r in rows}
+    return [{"utts": g, "copies_audio": len(g),
+             "copies_transcribed": sum(by[i]["status"] != "missing" for i in g),
+             "doubled_in_one": [i for i in g if by[i]["hyp_words"] >= 1.7 * max(1, by[i]["ref_words"])]}
+            for g in groups]

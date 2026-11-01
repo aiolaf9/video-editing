@@ -456,6 +456,8 @@ def main():
     ap.add_argument("out", nargs="?")
     ap.add_argument("--exp", choices=("mem", "conc", "det", "gt", "noise", "diag"))
     ap.add_argument("--windows", default="30,60", help="diag: target jendela (dtk), dipisah koma")
+    ap.add_argument("--diag-modes", default="per_utt,joined,joined_nocond,joined_novad",
+                    help="diag: mode non-jendela (per_utt, joined, joined_nocond, joined_novad, joined_noprompt)")
     ap.add_argument("--models", default="small")
     ap.add_argument("--minutes", default="10,30,60")
     ap.add_argument("--sets", default="id_long,id_noisy_snr10")
@@ -469,7 +471,8 @@ def main():
     if a.exp == "diag":
         from whisper_diag import run_diag
         run_diag(Path(a.corpus), out, a.sets.split(","), a.models.split(",")[0],
-                 [float(w) for w in a.windows.split(",") if w], emit, norm, edit_ops, wer_cer)
+                 [float(w) for w in a.windows.split(",") if w], emit, norm, edit_ops, wer_cer,
+                 tuple(m for m in a.diag_modes.split(",") if m))
         return
     sets = json.loads((Path(a.corpus) / "corpus.json").read_text())["sets"]
     {"mem": exp_mem, "conc": exp_conc, "det": exp_det, "gt": exp_gt, "noise": exp_noise}[a.exp](a, sets, out)

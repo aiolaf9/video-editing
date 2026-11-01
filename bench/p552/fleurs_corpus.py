@@ -142,6 +142,20 @@ def main():
             ffmpeg("-i", u["file"], "-ar", str(RATE), "-ac", "1", str(dst))
             items.append({"file": str(dst), "text": u["text"], "duration": duration(dst)})
         sets[f"{short}_clean"] = {"kind": "utterances", "lang": short, "items": items}
+        # Set pembanding TANPA kalimat kembar (FLEURS merekam kalimat yang sama oleh beberapa pembicara; di *_clean
+        # rekaman itu berurutan). Teks unik di seluruh set; ucapan, bahasa & kualitas audio asli, cara scoring sama.
+        nodup, seen = [], set()
+        for u in utts:
+            key = " ".join(re.sub(r"[^\w\s]", " ", u["text"].lower()).split())
+            if key in seen:
+                continue
+            seen.add(key)
+            dst = clean / f"nodup_{len(nodup):03d}.wav"
+            ffmpeg("-i", u["file"], "-ar", str(RATE), "-ac", "1", str(dst))
+            nodup.append({"file": str(dst), "text": u["text"], "duration": duration(dst)})
+            if len(nodup) >= a.clean:
+                break
+        sets[f"{short}_nodup"] = {"kind": "utterances", "lang": short, "items": nodup, "unique_texts": True}
         if short != "id":
             continue
         male = [u for u in utts[a.clean:] if u["gender"] == "MALE"]
