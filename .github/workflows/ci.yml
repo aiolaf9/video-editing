@@ -26,7 +26,7 @@ on:
         type: string
         default: "3"
       bench_exps:
-        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise, diag"
+        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise, diag, w5q, w5m"
         type: string
         default: mem,conc,det,gt,noise
 
@@ -276,6 +276,9 @@ jobs:
               "noise": {"args": "--models small", "docker": small3g},
               "diag": {"args": "--models small --sets en_nodup,id_nodup,en_clean,id_clean --windows 30,60",
                        "docker": small3g},
+              # W5 (P5.5.2): pipeline lama vs per potongan lewat jalur aplikasi; memori 30/60 mnt di container 3 GiB.
+              "w5q": {"args": "--models small --sets en_clean,en_nodup,id_clean,id_nodup,id_long", "docker": small3g},
+              "w5m": {"args": "--models small --minutes 30,60", "docker": small3g},
           }
           exps = [e.strip() for e in os.environ["EXPS"].split(",") if e.strip()]
           badx = [e for e in exps if e not in allx]

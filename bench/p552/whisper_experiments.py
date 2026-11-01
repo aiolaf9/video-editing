@@ -454,7 +454,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("corpus", nargs="?")
     ap.add_argument("out", nargs="?")
-    ap.add_argument("--exp", choices=("mem", "conc", "det", "gt", "noise", "diag"))
+    ap.add_argument("--exp", choices=("mem", "conc", "det", "gt", "noise", "diag", "w5q", "w5m"))
     ap.add_argument("--windows", default="30,60", help="diag: target jendela (dtk), dipisah koma")
     ap.add_argument("--diag-modes", default="per_utt,joined,joined_nocond,joined_novad",
                     help="diag: mode non-jendela (per_utt, joined, joined_nocond, joined_novad, joined_noprompt)")
@@ -468,6 +468,15 @@ def main():
         run_one(*a.one)
         return
     out = Path(a.out)
+    if a.exp in ("w5q", "w5m"):
+        import w5_validate
+        os.environ["WHISPER_MODEL"] = a.models.split(",")[0]
+        sets = json.loads((Path(a.corpus) / "corpus.json").read_text())["sets"]
+        if a.exp == "w5q":
+            w5_validate.exp_w5q(a, sets, out, emit, norm, edit_ops, wer_cer)
+        else:
+            w5_validate.exp_w5m(a, sets, out, emit)
+        return
     if a.exp == "diag":
         from whisper_diag import run_diag
         run_diag(Path(a.corpus), out, a.sets.split(","), a.models.split(",")[0],
