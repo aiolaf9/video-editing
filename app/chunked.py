@@ -1,0 +1,231 @@
+"""Transkripsi per potongan ucapan (P5.5.2 W5 lapisan 2). BAWAAN NONAKTIF (config.WHISPER_CHUNKED).
+
+Masalah yang diatasi (P5.5.2 CI #32/#35, model asli): pada pipeline lama Whisper memproses jendela 30 dtk berisi
+banyak ucapan; bila model menutup jendela dengan satu token timestamp terlalu dini, faster-whisper melompati sisa
+jendela (`seek += segment_size`) beserta ucapannya. Transkripsi per ucapan mencakup 100% ucapan di semua set uji.
+Selain itu pipeline lama memuat seluruh audio sekaligus (RAM ±50 MiB per menit).
+
+Alur:
+  1. FFmpeg men-stream PCM 16 kHz mono; dibaca per blok WHISPER_DECODE_WINDOW_SECONDS (tanpa seek: aman untuk berkas
+     tanpa indeks; RAM dibatasi oleh blok + sisa tertunda, bukan durasi video).
+  2. VAD (Silero, jeda minimum WHISPER_VAD_MIN_SILENCE_MS) pada buffer hanya sebagai PETUNJUK batas ucapan.
+     Ucapan yang mungkin terpotong di ujung buffer ditunda ke putaran berikutnya (kecuali blok terakhir).
+  3. Ucapan > WHISPER_CHUNK_MAX_SECONDS tanpa jeda: dipotong terkendali dengan overlap; kata di overlap
+     direkonsiliasi di titik tengah overlap (tidak ganda, tidak hilang).
+  4. Interval tanpa ucapan menurut VAD yang panjang DAN keras tetap ditranskripsi (VAD bisa meleset); segmen dari
+     interval ini dibuang bila Whisper sendiri menilainya bukan ucapan (no_speech tinggi & logprob rendah).
+  5. Tiap potongan ditranskripsi independen (tanpa teks potongan sebelumnya), bahasa ditetapkan sekali, prompt tanda
+     baca sama dengan pipeline lama. Timestamp = posisi potongan pada berkas sumber.
+Hasil (format sama dengan pipeline lama) baru dikembalikan setelah SELURUH audio selesai; pembatalan/timeout di
+tengah jalan tidak pernah menghasilkan transkrip parsial yang dianggap final.
+"""
+import logging
+import subprocess
+from pathlib import Path
+from typing import Callable, Iterator, Optional
+
+import numpy as np
+
+from . import config, jobcontrol, media
+
+log = logging.getLogger("video-editing.chunked")
+RATE = 16000
+# Segmen dari interval non-VAD dibuang bila Whisper menilainya bukan ucapan (lebih ketat dari ambang skip bawaan).
+GAP_NO_SPEECH_PROB = 0.5
+GAP_MIN_LOGPROB = -1.0
+
+
+# ------------------------------------------------------------------ audio bertahap
+
+def stream_audio(src: Path, block_seconds: float) -> Iterator[np.ndarray]:
+    """Audio mono float32 16 kHz per blok `block_seconds` dari SATU proses FFmpeg (bisa dibatalkan)."""
+    cmd = [config.FFMPEG, "-v", "error", *media.INPUT_PROTOCOLS, "-i", str(src), "-vn", "-ac", "1", "-ar", str(RATE),
+           "-f", "f32le", "-"]
+    jobcontrol.check()
+    proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    block_bytes = max(1, int(block_seconds * RATE)) * 4
+    try:
+        while True:
+            jobcontrol.check()
+            raw = _read_exact(proc.stdout, block_bytes)
+            if raw:
+                yield np.frombuffer(raw[: len(raw) // 4 * 4], dtype=np.float32).copy()
+            if len(raw) < block_bytes:
+                break
+        err = proc.stderr.read()
+        proc.wait()
+        jobcontrol.check()
+        if proc.returncode != 0:
+            raise media.MediaError(f"Gagal membaca audio: {err.decode(errors='replace').strip()[-400:]}")
+    finally:
+        if proc.poll() is None:
+            jobcontrol.terminate(proc)
+        for f in (proc.stdout, proc.stderr):
+            if f:
+                f.close()
+        jobcontrol.release(proc)
+
+
+def _read_exact(f, n: int) -> bytes:
+    parts, got = [], 0
+    while got < n:
+        b = f.read(n - got)
+        if not b:
+            break
+        parts.append(b)
+        got += len(b)
+    return b"".join(parts)
+
+
+# ------------------------------------------------------------------ rencana potongan
+
+def _speech_regions(audio: np.ndarray) -> list[tuple[int, int]]:
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+    opts = VadOptions(min_silence_duration_ms=config.WHISPER_VAD_MIN_SILENCE_MS, speech_pad_ms=config.WHISPER_VAD_PAD_MS)
+    return [(r["start"], r["end"]) for r in get_speech_timestamps(audio, opts)]
+
+
+def _split(start: int, end: int, kind: str) -> list[tuple[int, int, str]]:
+    """Potong [start, end) menjadi potongan <= CHUNK_MAX dengan overlap CHUNK_OVERLAP (kata direkonsiliasi nanti)."""
+    size = int(config.WHISPER_CHUNK_MAX_SECONDS * RATE)
+    overlap = min(int(config.WHISPER_CHUNK_OVERLAP_SECONDS * RATE), size // 2)
+    if end - start <= size:
+        return [(start, end, kind)]
+    out, s = [], start
+    while True:
+        e = min(s + size, end)
+        out.append((s, e, kind))
+        if e >= end:
+            return out
+        s = e - overlap
+
+
+def _loud(audio: np.ndarray) -> bool:
+    if audio.size == 0:
+        return False
+    rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+    return 20 * np.log10(max(rms, 1e-9)) >= config.WHISPER_GAP_FALLBACK_DBFS
+
+
+def plan(buf: np.ndarray, final: bool) -> tuple[list[tuple[int, int, str]], int]:
+    """(potongan [(awal, akhir, jenis)] dalam sampel buffer, jumlah sampel buffer yang selesai diproses).
+    jenis: "speech" (ucapan menurut VAD) atau "gap" (interval non-VAD yang keras)."""
+    regions = _speech_regions(buf)
+    n = len(buf)
+    limit = n if final else max(0, n - int(config.WHISPER_CHUNK_MAX_SECONDS * RATE))
+    done, deferred_at = [], None
+    for s, e in regions:
+        if not final and e > limit:
+            deferred_at = s
+            break
+        done.append((s, e))
+    if final:
+        consumed = n
+    elif deferred_at is None:
+        consumed = limit
+    elif deferred_at > 0:
+        consumed = deferred_at
+    else:
+        # Ucapan tanpa jeda sejak awal buffer melewati batas: proses bagian yang sudah pasti (potong terkendali),
+        # sisakan overlap untuk putaran berikutnya agar kata di batas tidak hilang.
+        s, e = regions[0]
+        pieces = _split(s, limit, "speech")
+        overlap = min(int(config.WHISPER_CHUNK_OVERLAP_SECONDS * RATE), int(config.WHISPER_CHUNK_MAX_SECONDS * RATE) // 2)
+        consumed = max(1, limit - overlap)
+        return pieces, consumed
+    chunks: list[tuple[int, int, str]] = []
+    gap_min = int(config.WHISPER_GAP_FALLBACK_SECONDS * RATE)
+    prev_end = 0
+    for s, e in done + [(consumed, consumed)]:
+        if s - prev_end >= gap_min and _loud(buf[prev_end:s]):
+            chunks += _split(prev_end, s, "gap")
+        if e > s:
+            chunks += _split(s, e, "speech")
+        prev_end = max(prev_end, e)
+    return chunks, consumed
+
+
+# ------------------------------------------------------------------ transkripsi
+
+def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset: float, kind: str) -> tuple[list, str]:
+    from .transcribe import PUNCTUATION_PROMPTS
+
+    segments, info = model.transcribe(
+        audio, language=language or None, initial_prompt=PUNCTUATION_PROMPTS.get(language or ""),
+        word_timestamps=True, vad_filter=False, condition_on_previous_text=False, beam_size=5)
+    out = []
+    for seg in segments:
+        jobcontrol.check()   # titik batal/timeout per segmen
+        if kind == "gap" and seg.no_speech_prob > GAP_NO_SPEECH_PROB and seg.avg_logprob < GAP_MIN_LOGPROB:
+            continue
+        words = [{"start": round(w.start + offset, 3), "end": round(w.end + offset, 3), "word": w.word.strip()}
+                 for w in (seg.words or []) if w.word.strip()]
+        out.append({"start": round(seg.start + offset, 3), "end": round(seg.end + offset, 3),
+                    "text": seg.text.strip(), "words": words})
+    return out, getattr(info, "language", None) or language
+
+
+def _reconcile(prev: list, cur: list, cut: float) -> tuple[list, list]:
+    """Overlap dua potongan berurutan dari satu ucapan: kata dengan titik tengah < cut milik potongan sebelumnya,
+    >= cut milik potongan berikutnya. Segmen yang kehilangan kata disusun ulang dari kata yang tersisa."""
+    def keep(segs, pred):
+        out = []
+        for sg in segs:
+            if not sg["words"]:
+                mid = (sg["start"] + sg["end"]) / 2
+                if pred(mid):
+                    out.append(sg)
+                continue
+            words = [w for w in sg["words"] if pred((w["start"] + w["end"]) / 2)]
+            if not words:
+                continue
+            if len(words) == len(sg["words"]):
+                out.append(sg)
+            else:
+                out.append({"start": words[0]["start"], "end": words[-1]["end"],
+                            "text": " ".join(w["word"] for w in words), "words": words})
+        return out
+    return keep(prev, lambda m: m < cut), keep(cur, lambda m: m >= cut)
+
+
+def transcribe_chunked(model, path: Path, duration: float, language: Optional[str],
+                       progress: Optional[Callable[[float], None]]) -> dict:
+    from .transcribe import _detect_language
+
+    block = config.WHISPER_DECODE_WINDOW_SECONDS
+    buf = np.empty(0, dtype=np.float32)
+    buf_start = 0.0                                   # detik sumber untuk buf[0]
+    segments: list = []
+    lang = language
+    prev_piece, prev_end = None, None                 # potongan terakhir (bisa lintas putaran buffer: overlap)
+    stream = stream_audio(path, block)
+    nxt = next(stream, None)
+    while nxt is not None:
+        buf = np.concatenate([buf, nxt]) if buf.size else nxt
+        nxt = next(stream, None)
+        final = nxt is None
+        chunks, consumed = plan(buf, final)
+        if lang is None and chunks:
+            speech = [buf[s:e] for s, e, k in chunks if k == "speech"][:4]
+            if speech:
+                lang = _detect_language(model, np.concatenate(speech)[: RATE * 30])
+        for s, e, kind in chunks:
+            jobcontrol.check()
+            offset = buf_start + s / RATE
+            piece, detected = _transcribe_piece(model, buf[s:e], lang, offset, kind)
+            lang = lang or detected
+            if prev_piece is not None and prev_end is not None and offset < prev_end:   # overlap potongan terkendali
+                cut = (offset + prev_end) / 2
+                kept_prev, piece = _reconcile(prev_piece, piece, cut)
+                segments[len(segments) - len(prev_piece):] = kept_prev
+            segments += piece
+            prev_piece, prev_end = piece, buf_start + e / RATE
+            if progress and duration > 0:
+                progress(min(1.0, prev_end / duration))
+        carry_overlap = 0 if final else consumed
+        buf_start += carry_overlap / RATE
+        buf = buf[carry_overlap:].copy() if not final else np.empty(0, dtype=np.float32)
+        if final:
+            break
+    segments.sort(key=lambda sg: sg["start"])
+    return {"language": lang, "segments": segments}

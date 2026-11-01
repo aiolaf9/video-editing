@@ -261,21 +261,42 @@ def make_thumbnail(preview: Path, dst: Path, duration: float) -> None:
 
 
 def audio_energy(src: Path) -> list[float]:
-    """Kenyaringan audio (dBFS) per ENERGY_STEP detik. Dipakai untuk menilai momen 'ramai'."""
+    """Kenyaringan audio (dBFS) per ENERGY_STEP detik. Dipakai untuk menilai momen 'ramai'.
+    Audio dibaca bertahap (±5 menit per blok) agar RAM tidak tumbuh dengan durasi video (P5.5.2 W5: versi lama memuat
+    seluruh audio, ±5,6 MiB per menit). Hasil identik dengan perhitungan atas seluruh audio sekaligus."""
     rate = 8000
-    cmd = [FFMPEG, "-v", "error", *INPUT_PROTOCOLS, "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
-    proc = jobcontrol.run_capture(cmd)
-    if proc.returncode != 0 or not proc.stdout:
-        return []
-    samples = np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
     block = int(rate * ENERGY_STEP)
-    count = len(samples) // block
-    if count == 0:
+    chunk_bytes = block * 600 * 2                  # 600 langkah ENERGY_STEP per bacaan, int16
+    cmd = [FFMPEG, "-v", "error", *INPUT_PROTOCOLS, "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
+    jobcontrol.check()
+    proc = jobcontrol.popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    out: list[float] = []
+    rest = b""
+    try:
+        while True:
+            jobcontrol.check()
+            raw = proc.stdout.read(chunk_bytes)
+            if not raw:
+                break
+            data = rest + raw
+            usable = len(data) // (block * 2) * (block * 2)
+            rest = data[usable:]
+            if not usable:
+                continue
+            samples = np.frombuffer(data[:usable], dtype=np.int16).astype(np.float32) / 32768.0
+            blocks = samples.reshape(-1, block)
+            rms = np.sqrt(np.mean(blocks ** 2, axis=1))
+            out += [round(float(v), 2) for v in 20 * np.log10(np.maximum(rms, 1e-5))]
+        proc.wait()
+    finally:
+        if proc.poll() is None:
+            jobcontrol.terminate(proc)
+        proc.stdout.close()
+        jobcontrol.release(proc)
+    jobcontrol.check()
+    if proc.returncode != 0:
         return []
-    blocks = samples[: count * block].reshape(count, block)
-    rms = np.sqrt(np.mean(blocks ** 2, axis=1))
-    db = 20 * np.log10(np.maximum(rms, 1e-5))
-    return [round(float(v), 2) for v in db]
+    return out
 
 
 def decode_audio(src: Path, rate: int = 16000) -> np.ndarray:

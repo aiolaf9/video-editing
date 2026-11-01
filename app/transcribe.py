@@ -102,6 +102,9 @@ def _run(model, audio, duration: float, language: Optional[str], progress) -> di
 
 def transcribe(path: Path, duration: float, language: Optional[str] = None,
                progress: Optional[Callable[[float], None]] = None) -> dict:
+    from . import config
+    if config.WHISPER_CHUNKED:   # W5 lapisan 2 (bawaan nonaktif): per potongan ucapan, audio dibaca bertahap
+        return _transcribe_chunked(path, duration, language, progress)
     # Audio di-decode sendiri dengan FFmpeg: lebih tahan terhadap format aneh dan
     # tidak bergantung pada PyAV (versi barunya tidak cocok dengan faster-whisper).
     audio = media.decode_audio(path)
@@ -117,3 +120,16 @@ def transcribe(path: Path, duration: float, language: Optional[str] = None,
                 raise
             log.warning("Whisper GPU gagal (%s), mengulang di CPU.", exc)
             return _run(_get_model(force_cpu=True), audio, duration, language, progress)
+
+
+def _transcribe_chunked(path: Path, duration: float, language: Optional[str], progress) -> dict:
+    from .chunked import transcribe_chunked
+    with _lock:
+        model = _get_model()
+        try:
+            return transcribe_chunked(model, path, duration, language, progress)
+        except RuntimeError as exc:
+            if _model_device == "cpu" or not any(k in str(exc).lower() for k in ("cuda", "cublas", "cudnn")):
+                raise
+            log.warning("Whisper GPU gagal (%s), mengulang di CPU.", exc)
+            return transcribe_chunked(_get_model(force_cpu=True), path, duration, language, progress)
