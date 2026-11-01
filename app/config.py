@@ -163,6 +163,13 @@ WHISPER_VAD_PAD_MS = int(os.environ.get("WHISPER_VAD_PAD_MS", "200"))
 # ucapan; P5.5.2 CI #35: satu ucapan per set Inggris cakupan VAD < 50%). Whisper sendiri membuang hening/musik.
 WHISPER_GAP_FALLBACK_SECONDS = float(os.environ.get("WHISPER_GAP_FALLBACK_SECONDS", "1.5"))
 WHISPER_GAP_FALLBACK_DBFS = float(os.environ.get("WHISPER_GAP_FALLBACK_DBFS", "-40"))
+# Kandidat koreksi kata sisipan (P5.5.2 CI #38), BAWAAN NONAKTIF sampai terbukti dengan model asli:
+# - wilayah VAD lebih pendek dari ini digabung dengan tetangganya (jeda <= WHISPER_CHUNK_MERGE_GAP_SECONDS,
+#   hasil <= WHISPER_CHUNK_MAX_SECONDS). 0 = tidak digabung.
+WHISPER_CHUNK_MIN_SECONDS = float(os.environ.get("WHISPER_CHUNK_MIN_SECONDS", "0"))
+WHISPER_CHUNK_MERGE_GAP_SECONDS = float(os.environ.get("WHISPER_CHUNK_MERGE_GAP_SECONDS", "1.0"))
+# - segmen dibuang bila BEBERAPA sinyal kualitas sekaligus buruk (lihat chunked._low_quality). 0 = nonaktif.
+WHISPER_SEGMENT_FILTER = os.environ.get("WHISPER_SEGMENT_FILTER", "0") == "1"
 # Saat job analisis besar menunggu RAM, worker menahan antrean itu untuknya selama ini (detik) agar job kecil tidak
 # terus mendahului (starvation). Setelahnya antrean dibuka lagi; kondisi menunggu tetap terlihat di monitoring.
 ADMISSION_HOLD_SECONDS = float(os.environ.get("ADMISSION_HOLD_SECONDS", "600"))

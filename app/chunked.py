@@ -85,6 +85,25 @@ def _speech_regions(audio: np.ndarray) -> list[tuple[int, int]]:
     return [(r["start"], r["end"]) for r in get_speech_timestamps(audio, opts)]
 
 
+def _merge_short(regions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Gabungkan wilayah VAD < WHISPER_CHUNK_MIN_SECONDS dengan tetangga terdekat bila jedanya <=
+    WHISPER_CHUNK_MERGE_GAP_SECONDS dan hasilnya <= WHISPER_CHUNK_MAX_SECONDS (bawaan nonaktif)."""
+    min_len = int(config.WHISPER_CHUNK_MIN_SECONDS * RATE)
+    if min_len <= 0 or len(regions) < 2:
+        return regions
+    max_gap = int(config.WHISPER_CHUNK_MERGE_GAP_SECONDS * RATE)
+    max_len = int(config.WHISPER_CHUNK_MAX_SECONDS * RATE)
+    out = [list(regions[0])]
+    for s, e in regions[1:]:
+        last = out[-1]
+        short = (e - s) < min_len or (last[1] - last[0]) < min_len
+        if short and s - last[1] <= max_gap and e - last[0] <= max_len:
+            last[1] = e
+        else:
+            out.append([s, e])
+    return [(s, e) for s, e in out]
+
+
 def _split(start: int, end: int, kind: str) -> list[tuple[int, int, str]]:
     """Potong [start, end) menjadi potongan <= CHUNK_MAX dengan overlap CHUNK_OVERLAP (kata direkonsiliasi nanti)."""
     size = int(config.WHISPER_CHUNK_MAX_SECONDS * RATE)
@@ -110,7 +129,7 @@ def _loud(audio: np.ndarray) -> bool:
 def plan(buf: np.ndarray, final: bool) -> tuple[list[tuple[int, int, str]], int]:
     """(potongan [(awal, akhir, jenis)] dalam sampel buffer, jumlah sampel buffer yang selesai diproses).
     jenis: "speech" (ucapan menurut VAD) atau "gap" (interval non-VAD yang keras)."""
-    regions = _speech_regions(buf)
+    regions = _merge_short(_speech_regions(buf))
     n = len(buf)
     limit = n if final else max(0, n - int(config.WHISPER_CHUNK_MAX_SECONDS * RATE))
     done, deferred_at = [], None
@@ -147,6 +166,16 @@ def plan(buf: np.ndarray, final: bool) -> tuple[list[tuple[int, int, str]], int]
 
 # ------------------------------------------------------------------ transkripsi
 
+def _low_quality(seg, chunk_seconds: float) -> bool:
+    """Saringan multi-sinyal (bawaan nonaktif, WHISPER_SEGMENT_FILTER): segmen dibuang hanya bila DUA sinyal buruk
+    bersamaan — bukan satu ambang saja — agar ucapan nyata yang lirih tidak ikut terbuang:
+      no_speech tinggi & logprob rendah; atau teks berulang (compression ratio tinggi) & logprob rendah; atau
+      potongan sangat pendek (< 1 dtk) & no_speech sedang & logprob rendah."""
+    nsp, lp, cr = seg.no_speech_prob, seg.avg_logprob, getattr(seg, "compression_ratio", 0.0) or 0.0
+    return ((nsp > 0.6 and lp < -0.7) or (cr > 2.4 and lp < -1.0)
+            or (chunk_seconds < 1.0 and nsp > 0.3 and lp < -0.8))
+
+
 def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset: float, kind: str) -> tuple[list, str]:
     from .transcribe import PUNCTUATION_PROMPTS
 
@@ -157,6 +186,8 @@ def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset:
     for seg in segments:
         jobcontrol.check()   # titik batal/timeout per segmen
         if kind == "gap" and seg.no_speech_prob > GAP_NO_SPEECH_PROB and seg.avg_logprob < GAP_MIN_LOGPROB:
+            continue
+        if config.WHISPER_SEGMENT_FILTER and _low_quality(seg, len(audio) / RATE):
             continue
         words = [{"start": round(w.start + offset, 3), "end": round(w.end + offset, 3), "word": w.word.strip()}
                  for w in (seg.words or []) if w.word.strip()]

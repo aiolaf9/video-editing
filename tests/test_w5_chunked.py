@@ -301,3 +301,50 @@ def test_chunked_path_never_decodes_whole_audio(tone, tmp_path, monkeypatch):
     audio = _tones(path, [(3.0, 400), (1.5, 0), (3.0, 500)])
     res = transcribe.transcribe(path, len(audio) / RATE, None)
     assert {w for _, _, w in _words(res)} == {"f400", "f500"}
+
+
+def test_merge_short_regions_off_by_default_and_bounded(monkeypatch):
+    regs = [(0, RATE // 2), (RATE, 4 * RATE), (int(4.3 * RATE), int(4.6 * RATE)), (10 * RATE, 12 * RATE)]
+    assert config.WHISPER_CHUNK_MIN_SECONDS == 0 and chunked._merge_short(regs) == regs     # bawaan: tidak berubah
+    monkeypatch.setattr(config, "WHISPER_CHUNK_MIN_SECONDS", 1.0)
+    monkeypatch.setattr(config, "WHISPER_CHUNK_MERGE_GAP_SECONDS", 1.0)
+    monkeypatch.setattr(config, "WHISPER_CHUNK_MAX_SECONDS", 10.0)
+    merged = chunked._merge_short(regs)
+    # 0,5 dtk digabung dengan berikutnya (jeda 0,5); 0,3 dtk digabung (jeda 0,3); wilayah terpisah 5,4 dtk tetap.
+    assert merged == [(0, int(4.6 * RATE)), (10 * RATE, 12 * RATE)]
+    monkeypatch.setattr(config, "WHISPER_CHUNK_MAX_SECONDS", 3.0)       # tidak pernah melewati batas potongan
+    assert all(e - s <= 4 * RATE for s, e in chunked._merge_short(regs))
+
+
+def test_merge_keeps_every_word(tone, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "WHISPER_CHUNK_MIN_SECONDS", 2.0)
+    plan = []
+    for i in range(12):                  # ucapan pendek 1 dtk, jeda 1 dtk (sejajar bingkai 0,5 dtk model tiruan)
+        plan += [(1.0, 300 + 20 * i), (1.0, 0)]
+    path = tmp_path / "m.wav"
+    audio = _tones(path, plan)
+    res = transcribe.transcribe(path, len(audio) / RATE, "id")
+    _same(_words(res), _frame_words(audio))
+    assert len(tone.calls) < 12                                   # potongan pendek benar-benar digabung
+
+
+def test_segment_filter_needs_two_bad_signals(monkeypatch):
+    seg = lambda nsp, lp, cr=1.5: NS(no_speech_prob=nsp, avg_logprob=lp, compression_ratio=cr)  # noqa: E731
+    assert chunked._low_quality(seg(0.9, -1.0), 5.0)              # no_speech tinggi & logprob rendah
+    assert not chunked._low_quality(seg(0.9, -0.3), 5.0)           # ucapan lirih tapi yakin: tetap
+    assert not chunked._low_quality(seg(0.1, -1.5), 5.0)           # logprob rendah saja: tetap
+    assert chunked._low_quality(seg(0.1, -1.2, cr=3.0), 5.0)       # berulang & logprob rendah
+    assert chunked._low_quality(seg(0.4, -0.9), 0.6)               # potongan < 1 dtk & dua sinyal sedang
+    assert not chunked._low_quality(seg(0.4, -0.9), 3.0)
+
+
+def test_segment_filter_off_by_default():
+    assert config.WHISPER_SEGMENT_FILTER is False
+
+    class Bad:
+        def transcribe(self, audio, **kw):
+            s = NS(start=0.0, end=1.0, text=" halo", words=[NS(start=0, end=1, word=" halo")], no_speech_prob=0.9,
+                   avg_logprob=-1.2, compression_ratio=1.0)
+            return iter([s]), NS(language="id")
+    segs, _ = chunked._transcribe_piece(Bad(), np.zeros(RATE, np.float32), "id", 0.0, "speech")
+    assert segs                                                   # bawaan: perilaku lama, tidak disaring
