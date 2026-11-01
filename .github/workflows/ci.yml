@@ -26,7 +26,7 @@ on:
         type: string
         default: "3"
       bench_exps:
-        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise, diag, w5q, w5m, w5d_id, w5d_en, w5mem_l30, w5mem_l40, w5mem_l45, w5mem_c45, w5conc_l, w5conc_c"
+        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise, diag, w5q, w5m, w5d_id, w5d_en, w5mem_l30, w5mem_l40, w5mem_l45, w5mem_c45, w5conc_l, w5conc_c, accept_id"
         type: string
         default: mem,conc,det,gt,noise
 
@@ -292,6 +292,8 @@ jobs:
               "w5mem_c45": {"args": "45 chunked", "docker": small3g, "isolated": True},
               "w5conc_l": {"args": "--models small --minutes 25", "docker": small3g},
               "w5conc_c": {"args": "--models small --minutes 25", "docker": small3g},
+              # Acceptance MVP prototipe: satu alur UI (HP) dengan Whisper asli, video ucapan FLEURS id_nodup.
+              "accept_id": {"args": "id_nodup", "docker": small3g, "accept": True},
           }
           exps = [e.strip() for e in os.environ["EXPS"].split(",") if e.strip()]
           badx = [e for e in exps if e not in allx]
@@ -427,7 +429,7 @@ jobs:
           pip install -q "huggingface_hub>=0.24"
           python bench/p552/fleurs_corpus.py "$RUNNER_TEMP/corpus" --clean 20 --long-seconds 600 | tail -3
       - name: Eksperimen ${{ matrix.exp }} di dalam image produksi
-        if: ${{ !matrix.isolated }}
+        if: ${{ !matrix.isolated && !matrix.accept }}
         timeout-minutes: 210
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
@@ -480,6 +482,58 @@ jobs:
           if [ "$oom" = "true" ] || [ "$rc" != "0" ]; then
             echo "::warning::w5mem ${{ matrix.exp }}: exit $rc, OOMKilled=$oom (lihat exp-${{ matrix.exp }}.jsonl)"
           fi
+      - name: Acceptance — siapkan video ucapan FLEURS & video 16 menit
+        if: ${{ matrix.accept }}
+        timeout-minutes: 20
+        run: |
+          mkdir -p "$RUNNER_TEMP/acc/out" && chmod -R 777 "$RUNNER_TEMP/acc" "$RUNNER_TEMP/corpus"
+          docker run --rm --init -e VIDEO_APP_DATA=/tmp/data -v "$PWD:/src:ro" \
+            -v "$RUNNER_TEMP/corpus:$RUNNER_TEMP/corpus" -v "$RUNNER_TEMP/acc:/acc" -w /src --entrypoint python \
+            video-editing:bench bench/acceptance/make_video.py "$RUNNER_TEMP/corpus" ${{ matrix.args }} /acc
+      - name: Acceptance — jalankan aplikasi demo (Whisper asli, WHISPER_CHUNKED=1, batas 15 menit, 3 GiB)
+        if: ${{ matrix.accept }}
+        timeout-minutes: 10
+        run: |
+          pw="$(openssl rand -hex 16)"; echo "::add-mask::$pw"; echo "ACC_PW=$pw" >> "$GITHUB_ENV"
+          docker run -d --init --name "acc-${{ github.run_id }}-${{ github.run_attempt }}" ${{ matrix.docker }} \
+            -p 127.0.0.1:8000:8000 -e WEB_WORKERS=1 -e EMBEDDED_WORKERS=1 -e WHISPER_CHUNKED=1 -e MAX_VIDEO_SECONDS=900 \
+            -e WHISPER_MODEL=small -e WHISPER_DEVICE=cpu -e HF_HUB_OFFLINE=0 -e ADMIN_EMAIL=accept@ci.local \
+            -e ADMIN_PASSWORD="$pw" video-editing:bench
+          for i in $(seq 1 60); do curl -fs http://127.0.0.1:8000/api/health && break; sleep 2; done
+      - name: Acceptance — alur MVP lewat UI (Chrome, viewport HP)
+        if: ${{ matrix.accept }}
+        timeout-minutes: 60
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright-core@1.48.2 >/dev/null
+          set +e
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" BASE=http://127.0.0.1:8000 CHROME="$(command -v google-chrome)" \
+            VIDEO="$RUNNER_TEMP/acc/accept.mp4" LONG_VIDEO="$RUNNER_TEMP/acc/panjang_16m.mp4" \
+            REF="$RUNNER_TEMP/acc/reference.json" OUT="$RUNNER_TEMP/acc/out" USER_EMAIL=accept@ci.local \
+            USER_PASSWORD="$ACC_PW" node bench/acceptance/ui_acceptance.js
+          rc=$?
+          set -e
+          if [ -f "$RUNNER_TEMP/acc/out/render.mp4" ]; then
+            docker run --rm -v "$RUNNER_TEMP/acc/out:/o" --entrypoint ffprobe video-editing:bench -v error \
+              -show_entries stream=codec_type,codec_name,width,height:format=duration -of compact /o/render.mp4 \
+              | tee "$RUNNER_TEMP/acc/out/render_probe.txt"
+            t=$(python3 -c "import json;k=json.load(open('$RUNNER_TEMP/acc/out/koreksi.json'));print(max(0.0,k['seg_start']-k['clip_start'])+0.6)" 2>/dev/null || echo 1)
+            docker run --rm -v "$RUNNER_TEMP/acc/out:/o" --entrypoint ffmpeg video-editing:bench -v error -y -ss "$t" \
+              -i /o/render.mp4 -frames:v 1 -vf scale=360:-1 /o/frame_koreksi.png || true
+          fi
+          cp "$RUNNER_TEMP/acc/reference.json" "$RUNNER_TEMP/acc/out/"
+          exit $rc
+      - name: Acceptance — log & hentikan aplikasi
+        if: ${{ always() && matrix.accept }}
+        run: |
+          docker logs "acc-${{ github.run_id }}-${{ github.run_attempt }}" > "$RUNNER_TEMP/acc/out/server.log" 2>&1 || true
+          docker rm -f "acc-${{ github.run_id }}-${{ github.run_attempt }}" 2>/dev/null || true
+          cat "$RUNNER_TEMP/acc/out/acceptance.json" 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
+        if: ${{ always() && matrix.accept }}
+        with:
+          name: acceptance-${{ matrix.exp }}
+          path: ${{ runner.temp }}/acc/out
+          retention-days: 14
       - name: Hentikan container eksperimen (selesai/gagal/dibatalkan)
         if: always()
         run: |
