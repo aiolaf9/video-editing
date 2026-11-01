@@ -163,3 +163,23 @@ def test_redistributed_words_stay_inside_segment():
     transcript_edit.apply_edits(t, [{"index": 0, "text": "satu dua tiga empat"}])
     ws = t["segments"][0]["words"]
     assert len(ws) == 4 and ws[0]["start"] >= 10.0 and ws[-1]["end"] <= 14.0 + 1e-6
+
+
+def test_subtitle_ordering_never_drops_words_and_leaves_normal_words_alone(caplog):
+    from app.subtitles import collect_words
+    w = lambda s, e, t: {"start": s, "end": e, "word": t}   # noqa: E731
+    normal = {"segments": [{"start": 0.0, "end": 3.0, "text": "a b c",
+                            "words": [w(0.0, 1.0, "satu"), w(1.0, 2.0, "dua"), w(2.2, 3.0, "tiga")]}]}
+    assert collect_words(normal, 0.0, 3.0) == [w(0.0, 1.0, "satu"), w(1.0, 2.0, "dua"), w(2.2, 3.0, "tiga")]
+    covered = {"segments": [
+        {"start": 0.0, "end": 3.0, "text": "panjang dua", "words": [w(0.0, 2.0, "panjang"), w(2.0, 3.0, "dua")]},
+        {"start": 0.5, "end": 1.5, "text": "tertutup", "words": [w(0.5, 1.5, "tertutup")]},
+    ]}
+    with caplog.at_level("INFO", logger="video-editing.subtitles"):
+        out = collect_words(covered, 0.0, 3.0)
+    assert [x["word"] for x in out] == ["panjang", "tertutup", "dua"]            # tidak ada kata yang hilang
+    assert all(b["start"] >= a["start"] for a, b in zip(out, out[1:]))
+    assert all(x["end"] - x["start"] > 0.1 for x in out)
+    assert "digeser" in caplog.text                                                 # tidak diam-diam
+    ev = _events(build_ass(covered, 0.0, 3.0, 1080, 1920, SubtitleOptions(style="simple", words_per_line=1)))
+    assert len(ev) == 3 and all(e1 <= s2 + 1e-6 for (_, e1, _), (s2, _, _) in zip(ev, ev[1:]))

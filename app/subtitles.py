@@ -1,6 +1,9 @@
 """Pembuat subtitle ASS bergaya kekinian (karaoke, pop, satu kata) untuk dibakar oleh FFmpeg/libass."""
+import logging
 from dataclasses import dataclass
 
+log = logging.getLogger("video-editing.subtitles")
+MIN_WORD = 0.12          # durasi tampil minimum kata yang digeser (detik)
 STYLES = ("karaoke", "pop", "word", "simple")
 
 
@@ -76,15 +79,24 @@ def collect_words(transcript: dict, clip_start: float, clip_end: float, speed: f
             if e > s:
                 out.append({"start": s, "end": e, "word": w["word"]})
     # Segmen bersebelahan bisa tumpang tindih (mis. batas potongan transkripsi): urutkan menurut waktu dan geser awal
-    # kata agar tidak mendahului akhir kata sebelumnya, supaya baris subtitle tidak bertumpuk. Kata yang habis
-    # tertutup kata sebelumnya dibuang.
+    # kata agar tidak mendahului akhir kata sebelumnya, supaya baris subtitle tidak bertumpuk. Tidak ada kata yang
+    # dibuang: kata yang seluruhnya tertutup kata sebelumnya ditampilkan tepat sesudahnya (minimal MIN_WORD detik);
+    # jumlah kata yang digeser dicatat di log.
     out.sort(key=lambda w: (w["start"], w["end"]))
-    clean, last_end = [], 0.0
+    length = (clip_end - clip_start) / speed
+    clean, last_end, moved = [], 0.0, 0
     for w in out:
-        s = max(w["start"], last_end)
-        if w["end"] - s > 0.01:
-            clean.append({**w, "start": s})
-            last_end = w["end"]
+        s, e = max(w["start"], last_end), w["end"]
+        if e - s < MIN_WORD:
+            e = min(max(e, s + MIN_WORD), length)
+            s = min(s, max(0.0, e - MIN_WORD))
+        if (s, e) != (w["start"], w["end"]):
+            moved += 1
+        clean.append({**w, "start": s, "end": e})
+        last_end = max(last_end, e)
+    if moved:
+        log.info("Subtitle: %d dari %d kata digeser agar baris tidak bertumpuk (tidak ada kata yang dibuang).",
+                 moved, len(clean))
     return clean
 
 

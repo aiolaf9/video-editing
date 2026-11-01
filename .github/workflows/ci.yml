@@ -526,8 +526,15 @@ jobs:
         if: ${{ always() && matrix.accept }}
         run: |
           docker logs "acc-${{ github.run_id }}-${{ github.run_attempt }}" > "$RUNNER_TEMP/acc/out/server.log" 2>&1 || true
+          docker inspect -f 'running={{.State.Running}} oom_killed={{.State.OOMKilled}} restarts={{.RestartCount}}' \
+            "acc-${{ github.run_id }}-${{ github.run_attempt }}" | tee "$RUNNER_TEMP/acc/out/container_state.txt" || true
           docker rm -f "acc-${{ github.run_id }}-${{ github.run_attempt }}" 2>/dev/null || true
           cat "$RUNNER_TEMP/acc/out/acceptance.json" 2>/dev/null || true
+          # Bukti model asli: baris pemuatan WhisperModel dari log server (image produksi tanpa test double).
+          grep -E "Memuat model Whisper|Traceback|MemoryError|Killed" "$RUNNER_TEMP/acc/out/server.log" \
+            | tee "$RUNNER_TEMP/acc/out/model_evidence.txt" || true
+          grep -q "Memuat model Whisper 'small'" "$RUNNER_TEMP/acc/out/server.log" \
+            || { echo "::error::Model Whisper asli tidak tercatat dimuat"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         if: ${{ always() && matrix.accept }}
         with:
