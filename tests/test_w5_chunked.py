@@ -6,6 +6,7 @@ ucapan, jadi di tes ini VAD diganti detektor energi sederhana (VAD asli divalida
 """
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -263,11 +264,43 @@ def test_admission_need_follows_flag(monkeypatch):
 
 
 def _ffmpeg_children(path):
-    """Decoder FFmpeg milik tes ini saja (worker tanam dari tes lain bisa menjalankan FFmpeg lain bersamaan)."""
+    """Decoder FFmpeg milik tes ini saja: anak langsung proses pytest ini yang command line-nya memuat berkas uji
+    (worker tanam dari tes lain bisa menjalankan FFmpeg lain bersamaan). Dibaca dari /proc, bukan `ps`: image
+    produksi (python:3.12-slim) tidak memuat procps. /proc tidak ada -> error, bukan lolos diam-diam."""
     import os
-    out = subprocess.run(["ps", "-ww", "-o", "pid=,args=", "--ppid", str(os.getpid())], capture_output=True,
-                         text=True).stdout                     # -ww: argumen tidak dipotong lebar kolom
-    return [ln for ln in out.splitlines() if "ffmpeg" in ln and str(path) in ln]
+    me, found = os.getpid(), []
+    for entry in os.listdir("/proc"):              # FileNotFoundError bila /proc tak tersedia: tes gagal keras
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as fh:
+                stat = fh.read()
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                args = [a.decode(errors="replace") for a in fh.read().split(b"\0") if a]
+        except OSError:                            # proses selesai di tengah pemindaian
+            continue
+        state, ppid = stat[stat.rindex(")") + 2:].split()[:2]   # nama proses bisa memuat spasi/kurung
+        if int(ppid) != me:
+            continue
+        if args and "ffmpeg" in os.path.basename(args[0]) and any(str(path) in a for a in args):
+            found.append((int(entry), state, " ".join(args)))
+    return found
+
+
+def test_ffmpeg_probe_detects_live_decoder(tmp_path):
+    """Kontrol positif: pemeriksa harus melihat FFmpeg yang sengaja dibiarkan hidup, lalu kosong setelah ditutup."""
+    path = tmp_path / "hidup.wav"
+    _tones(path, [(5.0, 440)])
+    proc = subprocess.Popen(["ffmpeg", "-hide_banner", "-v", "error", "-re", "-i", str(path), "-f", "s16le", "-"],
+                            stdout=subprocess.DEVNULL)
+    try:
+        time.sleep(0.3)
+        assert [pid for pid, _, _ in _ffmpeg_children(path)] == [proc.pid]
+        assert _ffmpeg_children(tmp_path / "lain.wav") == []          # berkas lain tidak ikut terhitung
+    finally:
+        proc.kill()
+        proc.wait()
+    assert _ffmpeg_children(path) == []
 
 
 def test_decoder_stopped_when_model_fails_midway(tone, tmp_path, monkeypatch):
@@ -348,3 +381,4 @@ def test_segment_filter_off_by_default():
             return iter([s]), NS(language="id")
     segs, _ = chunked._transcribe_piece(Bad(), np.zeros(RATE, np.float32), "id", 0.0, "speech")
     assert segs                                                   # bawaan: perilaku lama, tidak disaring
+
