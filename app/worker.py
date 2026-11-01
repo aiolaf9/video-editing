@@ -19,7 +19,7 @@ from typing import Optional
 
 
 from . import db, jobcontrol, jobs, lifecycle, monitor, pipeline, resources, storage
-from .config import (ANALYSIS_WORKERS, CANCEL_GRACE, CLEANUP_INTERVAL, CPU_WAIT_MAX, DOWNLOAD_TIMEOUT,
+from .config import (ADMISSION_HOLD_SECONDS, ANALYSIS_WORKERS, CANCEL_GRACE, CLEANUP_INTERVAL, CPU_WAIT_MAX, DOWNLOAD_TIMEOUT,
                      JOB_TIMEOUT_MAX, RENDER_TIMEOUT_BASE, RENDER_TIMEOUT_PER_SEC, RETENTION_DAYS,
                      UNSERVABLE_FAIL_AFTER_SECONDS, WORKER_REPORT_INTERVAL)
 from .schemas import RenderRequest
@@ -137,19 +137,31 @@ def _report(name: str, state: str, **kw) -> None:
 def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
             meter: Optional[resources.UsageMeter] = None) -> bool:
     """Jalankan satu pekerjaan bila ada. Mengembalikan False bila antrean kosong."""
-    data = jobs.claim(queues, name)
+    held = _held_job(queues)
+    data = jobs.claim_id(held, name) if held else jobs.claim(queues, name)
     if data is None:
+        if held:  # job yang ditahan sudah dibatalkan/diambil worker lain: buka lagi antreannya
+            _clear_hold(held)
         return False
-    # Cek RAM sekali lagi untuk job yang benar-benar diklaim, lalu cadangkan kebutuhannya: thread lain di proses ini
-    # (mode tanam) tidak boleh ikut lolos sebelum job ini sempat memakai RAM-nya.
+    # Cek RAM sekali lagi untuk job yang benar-benar diklaim (kebutuhan per job: durasi audio bila sudah diketahui),
+    # lalu cadangkan: thread lain di proses ini (mode tanam) tidak boleh ikut lolos sebelum job ini memakai RAM-nya.
+    need = resources.job_need_mb(data)
+    never = ""
     with resources.ADMISSION_LOCK:
-        ok, why = resources.admit_memory(data["queue"])
+        if need > resources.required_mb(data["queue"]):
+            never = resources.exceeds_capacity(need)
+        ok, why = (False, never) if never else resources.admit_memory(data["queue"], need_mb=need)
         if ok:
-            resources.reserve(data["id"], data["queue"])
+            resources.reserve(data["id"], data["queue"], need)
+    if never:
+        _fail_too_large(data, name, never)
+        return True
     if not ok:
         jobs.requeue(data["id"], message=WAIT_TEMPORARY)
-        log.info("[%s] %s dikembalikan ke antrean: %s", name, data["id"], why)
+        _set_hold(data)
+        log.info("[%s] %s dikembalikan ke antrean (butuh %d MB): %s", name, data["id"], need, why)
         return False
+    _clear_hold(data["id"])
     job = jobs.Job(data)
     control = jobcontrol.JobControl(job.id, initial_timeout(job))
     try:
@@ -171,6 +183,18 @@ def run_one(queues: tuple[str, ...], name: str, standalone: bool = False,
             log.info("[%s] selesai %s", name, job.id)
             outcome = "ok"
         _refresh_size(job.project_id)
+    except resources.CapacityWait as exc:
+        # Durasi baru diketahui setelah probe dan RAM-nya belum tersedia: kembali ke antrean (bukan kegagalan).
+        # Durasi sudah tersimpan di proyek, jadi klaim berikutnya memakai kebutuhan yang benar sejak awal.
+        outcome = "requeued"
+        log.info("[%s] %s menunggu RAM setelah probe: %s", name, job.id, exc)
+        if not abandoned.is_set():
+            jobs.requeue(job.id, message=WAIT_TEMPORARY)
+            _set_hold(job.data)
+    except resources.CapacityExceeded as exc:
+        outcome = "failed"
+        if not abandoned.is_set():
+            _fail_too_large(job.data, name, str(exc))
     except jobcontrol.JobCancelled as exc:
         log.info("[%s] %s %s", name, exc.reason, job.id)
         outcome = "cancelled"
@@ -243,10 +267,61 @@ def incapable_queues(queues: tuple[str, ...], known: Optional[dict] = None) -> d
     return found
 
 
+# Penahanan antrean (anti-starvation): job yang dikembalikan karena RAM ditahan untuk antreannya selama
+# ADMISSION_HOLD_SECONDS; selama itu worker di proses ini hanya mencoba job tersebut. Berlaku per proses (semua thread
+# worker tanam), bukan lintas proses worker terpisah.
+_holds: dict = {}            # antrean -> (job_id, berlaku_sampai)
+_holds_lock = threading.Lock()
+
+
+def _held_job(queues: tuple[str, ...]) -> Optional[str]:
+    now = time.time()
+    with _holds_lock:
+        for q in queues:
+            h = _holds.get(q)
+            if h is None:
+                continue
+            if h[1] > now:
+                return h[0]
+            del _holds[q]
+            log.warning("Penahanan antrean %s untuk job %s berakhir (lewat %.0f dtk); antrean dibuka lagi.", q, h[0],
+                        ADMISSION_HOLD_SECONDS)
+    return None
+
+
+def _set_hold(data: dict) -> None:
+    if ADMISSION_HOLD_SECONDS <= 0:
+        return
+    with _holds_lock:
+        if data["queue"] not in _holds:
+            _holds[data["queue"]] = (data["id"], time.time() + ADMISSION_HOLD_SECONDS)
+
+
+def _clear_hold(job_id: str) -> None:
+    with _holds_lock:
+        for q in [q for q, h in _holds.items() if h[0] == job_id]:
+            del _holds[q]
+
+
+def _fail_too_large(data: dict, name: str, why: str) -> None:
+    """Kebutuhan RAM job ini melebihi batas worker (mis. video sangat panjang di pipeline lama): gagal dengan pesan
+    jelas, bukan berakhir OOM atau berputar di antrean."""
+    log.error("[%s] %s tidak akan pernah muat: %s", name, data["id"], why)
+    _clear_hold(data["id"])
+    jobs.finish(data["id"], error=FAIL_TOO_LARGE)
+    if data.get("task") == "analyze":
+        try:
+            storage.update_project(data["project_id"], status="gagal")
+        except Exception:
+            pass
+
+
 # Pesan untuk pengguna biasa: tanpa angka RAM atau nama server (detail teknis hanya di log & halaman admin).
 WAIT_TEMPORARY = "Menunggu kapasitas server tersedia..."
 WAIT_CONFIG = "Menunggu server dengan kapasitas memori yang cukup. Bila lama tidak berubah, hubungi admin."
 FAIL_CONFIG = "Pekerjaan ini membutuhkan memori lebih besar daripada kapasitas server. Hubungi admin."
+FAIL_TOO_LARGE = ("Video ini terlalu panjang untuk dianalisis dengan kapasitas memori server saat ini. "
+                  "Potong video menjadi beberapa bagian atau hubungi admin.")
 _unservable_since: dict = {}     # antrean -> sejak kapan proses ini terus-menerus melihatnya tidak dapat dilayani
 
 

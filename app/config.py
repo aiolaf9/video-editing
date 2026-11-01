@@ -128,6 +128,58 @@ TASK_MEM_MB = {
     "render": int(os.environ.get("RENDER_MEM_MB", "700")),
     "io": int(os.environ.get("IO_MEM_MB", "300")),
 }
+# --- W5 (P5.5.2): kebutuhan RAM analisis yang memperhitungkan durasi audio ---------------------------------------
+# Pengukuran P5.5.2 (CI #25, image produksi, CPU int8): RSS puncak transkripsi tumbuh ±45-50 MiB per menit audio
+# yang diproses sekaligus (decode + VAD + STFT/mel atas seluruh array), SAMA untuk tiny/base/small. Dasar per model =
+# nilai terkecil sehingga dasar + 50 MiB x menit >= SEMUA titik ukur RSS puncak 10/30/60 menit (lalu ditambah
+# WHISPER_MEM_MARGIN). medium/large belum diukur: estimasi lama (_WHISPER_MEM) + 600 MiB, TIDAK TERVERIFIKASI.
+_WHISPER_BASE_MB = {"tiny": 350, "base": 420, "small": 1030}
+WHISPER_MEM_PER_AUDIO_MIN_MB = float(os.environ.get("WHISPER_MEM_PER_AUDIO_MIN_MB", "50"))
+WHISPER_MEM_MARGIN = float(os.environ.get("WHISPER_MEM_MARGIN", "0.10"))     # cadangan relatif di atas estimasi
+# Bagian model yang tetap tinggal di proses setelah dimuat (rss_after_load - rss_start, CI #25/#28), dikurangkan
+# bila model sudah dimuat di proses ini: RAM itu sudah terhitung di pemakaian aktual.
+_WHISPER_RESIDENT_MB = {"tiny": 120, "base": 150, "small": 330}
+
+
+def whisper_base_mb(model: str = WHISPER_MODEL) -> int:
+    return _WHISPER_BASE_MB.get(model, _WHISPER_MEM.get(model, 2500) + 600)
+
+
+def whisper_resident_mb(model: str = WHISPER_MODEL) -> int:
+    return _WHISPER_RESIDENT_MB.get(model, 0)
+
+
+# Transkripsi per potongan ucapan (W5 lapisan 2). BAWAAN NONAKTIF: pipeline lama tetap dipakai sampai validasi
+# kualitas & memori lulus. Bila aktif, audio dibaca bertahap per jendela decode (tidak pernah seluruh audio sekaligus),
+# dipotong di jeda ucapan (VAD), dan tiap potongan ditranskripsi independen (P5.5.2 CI #32/#35: lompatan seek
+# melewati ucapan dalam jendela 30 dtk yang berisi banyak ucapan).
+WHISPER_CHUNKED = os.environ.get("WHISPER_CHUNKED", "0") == "1"
+WHISPER_DECODE_WINDOW_SECONDS = float(os.environ.get("WHISPER_DECODE_WINDOW_SECONDS", "300"))
+WHISPER_CHUNK_MAX_SECONDS = float(os.environ.get("WHISPER_CHUNK_MAX_SECONDS", "20"))
+WHISPER_CHUNK_OVERLAP_SECONDS = float(os.environ.get("WHISPER_CHUNK_OVERLAP_SECONDS", "1.0"))
+WHISPER_VAD_MIN_SILENCE_MS = int(os.environ.get("WHISPER_VAD_MIN_SILENCE_MS", "500"))
+WHISPER_VAD_PAD_MS = int(os.environ.get("WHISPER_VAD_PAD_MS", "200"))
+# Interval tanpa ucapan menurut VAD yang tetap ditranskripsi bila cukup panjang DAN cukup keras (VAD bisa melewatkan
+# ucapan; P5.5.2 CI #35: satu ucapan per set Inggris cakupan VAD < 50%). Whisper sendiri membuang hening/musik.
+WHISPER_GAP_FALLBACK_SECONDS = float(os.environ.get("WHISPER_GAP_FALLBACK_SECONDS", "1.5"))
+WHISPER_GAP_FALLBACK_DBFS = float(os.environ.get("WHISPER_GAP_FALLBACK_DBFS", "-40"))
+# Saat job analisis besar menunggu RAM, worker menahan antrean itu untuknya selama ini (detik) agar job kecil tidak
+# terus mendahului (starvation). Setelahnya antrean dibuka lagi; kondisi menunggu tetap terlihat di monitoring.
+ADMISSION_HOLD_SECONDS = float(os.environ.get("ADMISSION_HOLD_SECONDS", "600"))
+
+
+def analysis_need_mb(duration: "float | None", model: str = WHISPER_MODEL, chunked: "bool | None" = None) -> int:
+    """Perkiraan RAM (MiB) satu job analisis untuk audio berdurasi `duration` detik (None = belum diketahui).
+    Pipeline lama memproses seluruh audio sekaligus; mode potongan hanya satu jendela decode + satu potongan."""
+    chunked = WHISPER_CHUNKED if chunked is None else chunked
+    if duration is None or duration <= 0:
+        span = WHISPER_DECODE_WINDOW_SECONDS + WHISPER_CHUNK_MAX_SECONDS if chunked else 0.0
+    else:
+        span = min(duration, WHISPER_DECODE_WINDOW_SECONDS + WHISPER_CHUNK_MAX_SECONDS) if chunked else duration
+    raw = whisper_base_mb(model) + WHISPER_MEM_PER_AUDIO_MIN_MB * span / 60.0
+    return int(-(-raw * (1.0 + WHISPER_MEM_MARGIN) // 1))
+
+
 # GPU dipakai hanya bila terdeteksi (nvidia-smi) dengan VRAM bebas minimal ini.
 GPU_MIN_FREE_MB = int(os.environ.get("GPU_MIN_FREE_MB", "2048"))
 # Penjadwalan antrean

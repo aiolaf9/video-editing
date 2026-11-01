@@ -216,6 +216,11 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     info = media.probe(src)
     storage.update_project(pid, **info)
     _limit_analysis_time(info["duration"])
+    if info.get("has_audio"):
+        # Durasi kini diketahui (probe ffprobe, tanpa decode audio): sesuaikan reservasi RAM job sebelum langkah berat.
+        # Durasi sudah tersimpan di proyek (update_project di atas), jadi bila job dikembalikan ke antrean karena RAM,
+        # klaim berikutnya langsung memakai kebutuhan ini (tanpa siklus klaim-probe-antre berulang).
+        resources.ensure_job_memory(job.id, info["duration"])
 
     preview = media.make_preview(src, folder / "preview.mp4", info["duration"], info["has_audio"],
                                  job.stage(0, 18, "Membuat preview..."))
@@ -270,6 +275,9 @@ def safe_analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
     previous = storage.load_project(pid).get("status")
     try:
         return analyze(job, pid, language)
+    except resources.CapacityWait:
+        storage.update_project(pid, status=previous or "antre")   # bukan kegagalan: job kembali ke antrean
+        raise
     except jobcontrol.JobCancelled as exc:
         # Analisis ulang yang dihentikan: hasil lama (transkrip, preview) masih utuh, kembalikan ke "siap".
         had_result = previous == "siap" and storage.read_data(pid, "transcript") is not None

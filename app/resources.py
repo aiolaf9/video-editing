@@ -209,6 +209,71 @@ def required_mb(queue: str) -> int:
     return need
 
 
+def _model_loaded() -> bool:
+    try:
+        from . import transcribe
+        return transcribe._model is not None
+    except ImportError:
+        return False
+
+
+def job_need_mb(job: dict) -> int:
+    """Perkiraan RAM (MiB) untuk job tertentu. Analisis: dari durasi audio proyek bila sudah diketahui (kolom
+    projects.duration, diisi probe; job yang dikembalikan ke antrean sesudah probe memakai angka terkoreksi ini),
+    dikurangi bagian model yang sudah tinggal di proses ini. Jenis lain: perkiraan per antrean (TASK_MEM_MB)."""
+    queue = job.get("queue")
+    if job.get("task") != "analyze":
+        return required_mb(queue)
+    duration = project_duration(job.get("project_id"))
+    if duration is None:
+        return required_mb(queue)
+    return analysis_job_need_mb(duration)
+
+
+def project_duration(pid: Optional[str]) -> Optional[float]:
+    if not pid:
+        return None
+    try:
+        from sqlalchemy import select
+
+        from . import db
+        with db.engine().connect() as c:
+            value = c.execute(select(db.projects.c.duration).where(db.projects.c.id == pid)).scalar()
+        return float(value) if value else None
+    except Exception:  # proyek hilang / DB sesaat tidak terjangkau: pakai perkiraan per antrean
+        log.debug("Durasi proyek %s tidak terbaca", pid, exc_info=True)
+        return None
+
+
+def analysis_job_need_mb(duration: Optional[float]) -> int:
+    """Kebutuhan RAM job analisis untuk audio berdurasi `duration` di proses ini (lihat job_need_mb)."""
+    from .config import analysis_need_mb, whisper_resident_mb
+    need = analysis_need_mb(duration)
+    if _model_loaded():
+        need -= whisper_resident_mb()
+    return max(need, TASK_MEM_MB.get("analisis_loaded", 600))
+
+
+def ensure_job_memory(job_id: str, duration: Optional[float]) -> None:
+    """Dipanggil setelah probe: naikkan reservasi job ini ke kebutuhan sebenarnya (lihat adjust_reservation).
+    Job yang tidak berjalan lewat worker (tanpa reservasi) hanya diperiksa terhadap batas permanen."""
+    need = analysis_job_need_mb(duration)
+    if job_id not in _inflight:
+        why = exceeds_capacity(need)
+        if why:
+            raise CapacityExceeded(why)
+        return
+    adjust_reservation(job_id, need)
+
+
+class CapacityExceeded(RuntimeError):
+    """Kebutuhan RAM job melebihi batas worker ini: tidak akan pernah muat, menunggu tidak ada gunanya."""
+
+
+class CapacityWait(RuntimeError):
+    """RAM tidak cukup SAAT INI; job harus kembali ke antrean dan dicoba lagi (bukan kegagalan)."""
+
+
 # ------------------------------------------------------------------ GPU
 
 _gpu_cache: tuple[float, Optional[list]] = (0.0, None)
@@ -268,11 +333,33 @@ def _own_rss() -> Optional[int]:
     return u["rss"] if u else None
 
 
-def reserve(job_id: str, queue: str) -> None:
+def reserve(job_id: str, queue: str, need_mb: Optional[int] = None) -> None:
     global _own_base
     if not _inflight:
         _own_base = _own_rss()
-    _inflight[job_id] = required_mb(queue) * 1024 * 1024
+    _inflight[job_id] = (required_mb(queue) if need_mb is None else need_mb) * 1024 * 1024
+
+
+def reserved_for(job_id: str) -> int:
+    """Reservasi (MiB) job ini di proses ini (0 bila tidak ada)."""
+    return _inflight.get(job_id, 0) // (1024 * 1024)
+
+
+def adjust_reservation(job_id: str, need_mb: int) -> None:
+    """Naikkan reservasi job yang sedang berjalan setelah kebutuhannya diketahui lebih tepat (mis. durasi audio
+    setelah probe), secara atomik di bawah ADMISSION_LOCK. Tidak pernah menurunkan.
+    CapacityExceeded: melebihi batas container/host (permanen). CapacityWait: RAM tidak cukup saat ini."""
+    with ADMISSION_LOCK:
+        current = reserved_for(job_id)
+        if need_mb <= current:
+            return
+        why = exceeds_capacity(need_mb)
+        if why:
+            raise CapacityExceeded(why)
+        ok, why = admit_memory("analisis", need_mb=need_mb - current)
+        if not ok:
+            raise CapacityWait(why)
+        _inflight[job_id] = need_mb * 1024 * 1024
 
 
 def release(job_id: str) -> None:
@@ -298,10 +385,14 @@ def reserved_bytes() -> int:
 def capacity_shortfall(queue: str) -> str:
     """Alasan job antrean ini TIDAK AKAN PERNAH muat di mesin/container ini walau RAM sedang lengang (kosong bila
     muat). Berbeda dengan admit_memory, yang menunggu RAM terpakai turun: menunggu di sini tidak ada gunanya."""
+    return exceeds_capacity(required_mb(queue))
+
+
+def exceeds_capacity(need: int) -> str:
+    """Alasan kebutuhan `need` MiB tidak akan pernah muat di mesin/container ini (kosong bila muat)."""
     mem = memory()
     if mem is None:
         return ""
-    need = required_mb(queue)
     host_total = mem.get("host_total") or 0
     if host_total and (need + MEM_RESERVE_MB) * 2**20 > host_total:
         return (f"RAM host {host_total / 2**20:.0f} MB < kebutuhan {need} MB + cadangan host {MEM_RESERVE_MB} MB")
@@ -323,12 +414,13 @@ def admit(queue: str) -> tuple[bool, str]:
     return True, ""
 
 
-def admit_memory(queue: str) -> tuple[bool, str]:
-    """Pemeriksaan RAM saja (dipakai lagi sesaat setelah klaim job, di bawah ADMISSION_LOCK)."""
+def admit_memory(queue: str, need_mb: Optional[int] = None) -> tuple[bool, str]:
+    """Pemeriksaan RAM saja (dipakai lagi sesaat setelah klaim job, di bawah ADMISSION_LOCK). `need_mb`: kebutuhan
+    job tertentu (job_need_mb); bawaan perkiraan per antrean."""
     mem = memory()
     if mem is not None:
         held = reserved_bytes()
-        task = required_mb(queue) * 1024 * 1024 + held
+        task = (required_mb(queue) if need_mb is None else need_mb) * 1024 * 1024 + held
         # Cadangan host hanya untuk RAM host; batas container cukup diberi ruang aman kecil. Tanpa pemisahan ini
         # worker di container kecil (worker-io, mem_limit 512 MB) tidak pernah mengambil job (bug P5.5.1).
         host = mem.get("host_available", mem["available"])

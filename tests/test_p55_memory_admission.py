@@ -157,7 +157,7 @@ def test_reservation_released_however_job_ends(client, monkeypatch, ending):
     from app import jobcontrol, jobs, storage, worker
 
     monkeypatch.setattr(resources, "_inflight", {})
-    monkeypatch.setattr(resources, "admit_memory", lambda queue: (True, ""))
+    monkeypatch.setattr(resources, "admit_memory", lambda queue, **kw: (True, ""))
     seen = []
 
     def task(job):
@@ -188,7 +188,7 @@ def test_claimed_job_is_requeued_when_memory_no_longer_fits(client, monkeypatch)
                       queue="uji-admission")["id"]
     ran = []
     monkeypatch.setattr(worker, "_run_task", lambda job: ran.append(job.id))
-    monkeypatch.setattr(resources, "admit_memory", lambda queue: (False, "RAM container tersedia 100 MB < 364 MB"))
+    monkeypatch.setattr(resources, "admit_memory", lambda queue, **kw: (False, "RAM container tersedia 100 MB < 364 MB"))
     assert worker.run_one(("uji-admission",), "uji-admission-worker") is False
     job = jobs.get(jid)
     assert ran == [] and job["status"] == "antre" and job["message"] == worker.WAIT_TEMPORARY
@@ -346,7 +346,7 @@ def test_temporary_requeue_message_has_no_server_details(client, monkeypatch):
 
     pid = storage.create_project("admission-pesan")["id"]
     jid = jobs.submit("download", "uji", pid, {"url": "https://example.com/v.mp4"}, "Unduh", queue="uji-pesan")["id"]
-    monkeypatch.setattr(resources, "admit_memory", lambda q: (False, "RAM container tersedia 100 MB < 364 MB"))
+    monkeypatch.setattr(resources, "admit_memory", lambda q, **kw: (False, "RAM container tersedia 100 MB < 364 MB"))
     assert worker.run_one(("uji-pesan",), "uji-pesan-worker") is False
     job = jobs.get(jid)
     assert job["status"] == "antre" and job["message"] == worker.WAIT_TEMPORARY

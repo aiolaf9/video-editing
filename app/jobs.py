@@ -51,6 +51,7 @@ class Job:
     """Pegangan pekerjaan yang sedang dijalankan worker."""
 
     def __init__(self, data: dict):
+        self.data = data
         self.id = data["id"]
         self.task = data["task"]
         self.project_id = data["project_id"]
@@ -250,6 +251,17 @@ def claim(queues: tuple[str, ...], worker: str, now: Optional[float] = None) -> 
             if row is not None:
                 return db.row(row)
     return None
+
+
+def claim_id(job_id: str, worker: str, now: Optional[float] = None) -> Optional[dict]:
+    """Ambil job tertentu bila masih 'antre' (dipakai penahanan antrean anti-starvation di worker)."""
+    now = now or time.time()
+    j = db.jobs.c
+    with db.engine().begin() as c:
+        row = c.execute(update(db.jobs).where(j.id == job_id, j.status == "antre").values(
+            status="jalan", worker=worker, started=now, heartbeat=now,
+            attempts=j.attempts + 1, message="Memulai...").returning(*db.jobs.c)).first()
+        return db.row(row) if row is not None else None
 
 
 def finish(job_id: str, result: Any = None, error: Optional[str] = None, cancelled: bool = False) -> None:
