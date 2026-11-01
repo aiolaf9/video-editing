@@ -311,15 +311,17 @@ def _set_backoff(queue: str) -> None:
 
 
 def _capable_elsewhere(queue: str, need: int, me: str) -> Optional[str]:
-    """Nama worker lain (hidup atau offline < 1 hari) untuk antrean ini yang melaporkan RAM total (batas container bila
-    ada) cukup untuk `need` MB + ruang aman. None bila tidak ada: job memang tidak muat di worker mana pun yang dikenal."""
+    """Nama worker lain untuk antrean ini yang HIDUP (heartbeat masih berlaku, bukan 'berhenti') dan melaporkan RAM
+    total (batas container bila ada) cukup untuk `need` MB + ruang aman. Worker offline/basi atau yang belum melaporkan
+    RAM tidak dihitung: tanpa bukti kapasitas yang masih berlaku, job tidak diputar ulang di antrean. None -> job
+    memang tidak muat di worker mana pun yang sedang hidup."""
     from .config import CONTAINER_MEM_HEADROOM_MB
     try:
         workers = monitor.list_workers()
     except Exception:
         return None
     for w in workers:
-        if w["name"] == me or queue not in (w.get("queues") or "").split(","):
+        if w["name"] == me or not w.get("alive") or queue not in (w.get("queues") or "").split(","):
             continue
         total = (w.get("system") or {}).get("mem_total")
         if total and total >= (need + CONTAINER_MEM_HEADROOM_MB) * 2**20:

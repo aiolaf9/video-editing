@@ -382,3 +382,21 @@ def test_segment_filter_off_by_default():
     segs, _ = chunked._transcribe_piece(Bad(), np.zeros(RATE, np.float32), "id", 0.0, "speech")
     assert segs                                                   # bawaan: perilaku lama, tidak disaring
 
+
+def test_w5_flags_and_candidates_default_off_in_clean_process():
+    """Bawaan kode (proses baru tanpa variabel W5) dan berkas deploy: jalur potongan, penggabungan potongan pendek
+    dan saringan segmen semuanya NONAKTIF; tidak ada berkas deploy yang menyalakannya."""
+    import json
+    import os
+    import sys
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("WHISPER_", "ADMISSION_"))}
+    out = subprocess.run([sys.executable, "-c", "import json; from app import config as c; print(json.dumps("
+                          "[c.WHISPER_CHUNKED, c.WHISPER_CHUNK_MIN_SECONDS, c.WHISPER_SEGMENT_FILTER]))"],
+                         env=env, capture_output=True, text=True, check=True, cwd=Path(__file__).parents[1]).stdout
+    assert json.loads(out.strip().splitlines()[-1]) == [False, 0.0, False]
+    root = Path(__file__).parents[1]
+    deploy = [root / "docker-compose.yml", root / ".env.example", root / "Dockerfile", *root.glob("deploy/*.yml")]
+    for f in deploy:
+        text = f.read_text()
+        for flag in ("WHISPER_CHUNKED", "WHISPER_CHUNK_MIN_SECONDS", "WHISPER_SEGMENT_FILTER"):
+            assert flag not in text, f"{flag} diset di {f.name}"

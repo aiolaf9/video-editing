@@ -260,7 +260,7 @@ def test_too_large_here_but_capable_worker_elsewhere_is_not_failed(client, monke
     monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
     ran = []
     monkeypatch.setattr(worker, "_run_task", lambda job: ran.append(job.id) or {})
-    big_worker = {"name": "worker-besar", "queues": "uji-w5-else", "system": {"mem_total": 16 * 2**30}}
+    big_worker = {"name": "worker-besar", "queues": "uji-w5-else", "alive": True, "system": {"mem_total": 16 * 2**30}}
     monkeypatch.setattr(monitor, "list_workers", lambda now=None: [big_worker])
     jid, pid = _analyze_job("60-menit-lain", 3600, "uji-w5-else")
     assert worker.run_one(("uji-w5-else",), "kecil") is False
@@ -273,3 +273,76 @@ def test_too_large_here_but_capable_worker_elsewhere_is_not_failed(client, monke
     worker._backoff.clear()
     assert worker.run_one(("uji-w5-else",), "kecil") is True
     assert jobs.get(jid)["status"] == "gagal" and jobs.get(jid)["error"] == worker.FAIL_TOO_LARGE
+
+
+def test_capable_elsewhere_needs_live_heartbeat_and_reported_capacity(monkeypatch):
+    """Worker besar hanya dihitung bila heartbeat-nya masih berlaku dan kapasitasnya dilaporkan."""
+    from app import monitor
+    big = {"name": "besar", "queues": "q", "alive": True, "system": {"mem_total": 16 * 2**30}}
+    cases = [
+        ({**big}, "besar"),
+        ({**big, "alive": False}, None),                         # heartbeat basi / offline / state 'berhenti'
+        ({**big, "system": None}, None),                          # belum melapor kapasitas
+        ({**big, "system": {"mem_total": 2 * 2**30}}, None),      # melapor, tetapi juga terlalu kecil
+        ({**big, "queues": "lain"}, None),                        # tidak melayani antrean ini
+        ({**big, "name": "saya"}, None),                          # diri sendiri
+    ]
+    for w, expect in cases:
+        monkeypatch.setattr(monitor, "list_workers", lambda now=None, w=w: [w])
+        assert worker._capable_elsewhere("q", 4000, "saya") == expect, w
+
+
+def test_heartbeat_from_real_registry_decides_capable_elsewhere(client, monkeypatch):
+    """Lewat tabel workers sungguhan: heartbeat segar -> mampu; heartbeat basi -> tidak dihitung."""
+    from app import db, monitor
+    monitor.register("besar-asli", ("uji-hb",))
+    with db.engine().begin() as c:
+        c.execute(db.workers.update().where(db.workers.c.name == "besar-asli").values(
+            system='{"mem_total": %d}' % (16 * 2**30)))
+    assert worker._capable_elsewhere("uji-hb", 4000, "kecil") == "besar-asli"
+    with db.engine().begin() as c:                                # heartbeat berhenti diperbarui
+        c.execute(db.workers.update().where(db.workers.c.name == "besar-asli").values(
+            heartbeat=time.time() - monitor.alive_after() - 5))
+    assert worker._capable_elsewhere("uji-hb", 4000, "kecil") is None
+
+
+def test_too_large_job_does_not_cycle_forever(client, monkeypatch):
+    """Job terlalu besar di sini: paling banyak satu klaim per BACKOFF_SECONDS; begitu worker besar tidak lagi
+    berheartbeat, klaim berikutnya menggagalkannya dengan pesan jelas (tidak berputar tanpa batas)."""
+    from app import monitor
+    _container(monkeypatch, 3072, {"used": 100 * MB})
+    monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
+    monkeypatch.setattr(worker, "_run_task", lambda job: {})
+    big = {"name": "besar", "queues": "uji-w5-loop", "alive": True, "system": {"mem_total": 16 * 2**30}}
+    monkeypatch.setattr(monitor, "list_workers", lambda now=None: [big])
+    claims = []
+    real = jobs.claim
+    monkeypatch.setattr(jobs, "claim", lambda *a, **k: claims.append(1) or real(*a, **k))
+    jid, _ = _analyze_job("60-menit-loop", 3600, "uji-w5-loop")
+    for _ in range(20):                                           # 20 putaran poll dalam jendela backoff
+        assert worker.run_one(("uji-w5-loop",), "kecil") is False
+    assert len(claims) == 1 and jobs.get(jid)["status"] == "antre"
+    worker._backoff["uji-w5-loop"] = time.time() - 1             # jendela 60 dtk lewat
+    assert worker.run_one(("uji-w5-loop",), "kecil") is False and len(claims) == 2
+    big["alive"] = False                                          # worker besar mati / heartbeat basi
+    worker._backoff["uji-w5-loop"] = time.time() - 1
+    assert worker.run_one(("uji-w5-loop",), "kecil") is True and len(claims) == 3
+    assert jobs.get(jid)["status"] == "gagal" and jobs.get(jid)["error"] == worker.FAIL_TOO_LARGE
+
+
+def test_cancel_of_held_job_frees_queue_immediately(client, monkeypatch):
+    """Pembatalan job yang ditahan tidak menunggu ADMISSION_HOLD_SECONDS: job lain di antrean langsung dilayani."""
+    state = {"used": 1800 * MB}
+    _container(monkeypatch, 3072, state)
+    monkeypatch.setattr(config, "WHISPER_CHUNKED", False)
+    ran = []
+    monkeypatch.setattr(worker, "_run_task", lambda job: ran.append(job.id) or {})
+    held, _ = _analyze_job("30-menit-tahan", 1800, "uji-w5-cbatal")
+    assert worker.run_one(("uji-w5-cbatal",), "w") is False and worker._holds   # ditahan, RAM kurang
+    small, _ = _analyze_job("1-menit", 60, "uji-w5-cbatal")
+    assert worker.run_one(("uji-w5-cbatal",), "w") is False and ran == []       # antrean ditahan untuk job besar
+    t0 = time.time()
+    assert jobs.request_cancel(held) == "batal"
+    assert worker.run_one(("uji-w5-cbatal",), "w") is False and worker._holds == {}   # penahanan dilepas
+    assert worker.run_one(("uji-w5-cbatal",), "w") is True and ran == [small]
+    assert time.time() - t0 < 5 and jobs.get(held)["status"] == "batal"
