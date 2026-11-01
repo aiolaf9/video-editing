@@ -51,8 +51,12 @@ def child_main(spec_path: str, out_path: str) -> None:
         fake.patch()
 
     t0 = time.perf_counter()
-    transcribe._get_model()
+    model_obj = transcribe._get_model()
     load_s = time.perf_counter() - t0
+    diag = None
+    if spec.get("diag"):                       # perekam per potongan (w5d), hanya di proses benchmark
+        from w5_diag2 import install_spies
+        diag = install_spies(model_obj)
     rss_load = _vm("VmRSS")
     t1 = time.perf_counter()
     if spec.get("cancel_after"):
@@ -78,7 +82,7 @@ def child_main(spec_path: str, out_path: str) -> None:
            "peak_rss_mb": round(_vm("VmHWM"), 1),
            "languages": sorted({r.get("language") for r in results if r.get("language")}),
            "segments": [[{"start": s["start"], "end": s["end"], "words": s["words"]} for s in r["segments"]]
-                        for r in results]}
+                        for r in results], **({"diag": diag} if diag is not None else {})}
     Path(out_path).write_text(json.dumps(out, ensure_ascii=False))
 
 

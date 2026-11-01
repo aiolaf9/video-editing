@@ -454,7 +454,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("corpus", nargs="?")
     ap.add_argument("out", nargs="?")
-    ap.add_argument("--exp", choices=("mem", "conc", "det", "gt", "noise", "diag", "w5q", "w5m"))
+    ap.add_argument("--exp", choices=("mem", "conc", "det", "gt", "noise", "diag", "w5q", "w5m", "w5d_id", "w5d_en",
+                                      "w5conc_l", "w5conc_c"))
+    ap.add_argument("--variants", default="chunked", help="w5d: varian (lihat w5_diag2.VARIANTS), dipisah koma")
     ap.add_argument("--windows", default="30,60", help="diag: target jendela (dtk), dipisah koma")
     ap.add_argument("--diag-modes", default="per_utt,joined,joined_nocond,joined_novad",
                     help="diag: mode non-jendela (per_utt, joined, joined_nocond, joined_novad, joined_noprompt)")
@@ -468,6 +470,16 @@ def main():
         run_one(*a.one)
         return
     out = Path(a.out)
+    if a.exp.startswith(("w5d_", "w5conc_")):
+        import w5_diag2
+        os.environ["WHISPER_MODEL"] = a.models.split(",")[0]
+        if a.exp.startswith("w5d_"):
+            sets = json.loads((Path(a.corpus) / "corpus.json").read_text())["sets"]
+            w5_diag2.exp_w5d(a, sets, out, emit, norm, edit_ops, wer_cer)
+        else:
+            w5_diag2.conc_run(Path(a.corpus), int(a.minutes.split(",")[0]),
+                              "chunked" if a.exp.endswith("_c") else "legacy", out, emit)
+        return
     if a.exp in ("w5q", "w5m"):
         import w5_validate
         os.environ["WHISPER_MODEL"] = a.models.split(",")[0]

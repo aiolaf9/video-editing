@@ -26,7 +26,7 @@ on:
         type: string
         default: "3"
       bench_exps:
-        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise, diag, w5q, w5m"
+        description: "Eksperimen remediasi (bench=remediasi), dipisah koma: mem, conc, det, gt, noise, diag, w5q, w5m, w5d_id, w5d_en, w5mem_l30, w5mem_l40, w5mem_l45, w5mem_c45, w5conc_l, w5conc_c"
         type: string
         default: mem,conc,det,gt,noise
 
@@ -279,6 +279,19 @@ jobs:
               # W5 (P5.5.2): pipeline lama vs per potongan lewat jalur aplikasi; memori 30/60 mnt di container 3 GiB.
               "w5q": {"args": "--models small --sets en_clean,en_nodup,id_clean,id_nodup,id_long", "docker": small3g},
               "w5m": {"args": "--models small --minutes 30,60", "docker": small3g},
+              # Review CI #38: diagnostik per potongan + kandidat koreksi; memori satu skenario per container;
+              # konkurensi dua job lewat worker aplikasi.
+              "w5d_id": {"args": "--models small --sets id_nodup,id_clean,id_long --variants "
+                                 "chunked,chunked_merge,chunked_nogap,chunked_filter,chunked_combo,per_utt,legacy",
+                         "docker": small3g},
+              "w5d_en": {"args": "--models small --sets en_clean,en_nodup --variants "
+                                 "chunked,chunked_combo,chunked_w60,per_utt", "docker": small3g},
+              "w5mem_l30": {"args": "30 legacy", "docker": small3g, "isolated": True},
+              "w5mem_l40": {"args": "40 legacy", "docker": small3g, "isolated": True},
+              "w5mem_l45": {"args": "45 legacy", "docker": small3g, "isolated": True},
+              "w5mem_c45": {"args": "45 chunked", "docker": small3g, "isolated": True},
+              "w5conc_l": {"args": "--models small --minutes 25", "docker": small3g},
+              "w5conc_c": {"args": "--models small --minutes 25", "docker": small3g},
           }
           exps = [e.strip() for e in os.environ["EXPS"].split(",") if e.strip()]
           badx = [e for e in exps if e not in allx]
@@ -414,6 +427,7 @@ jobs:
           pip install -q "huggingface_hub>=0.24"
           python bench/p552/fleurs_corpus.py "$RUNNER_TEMP/corpus" --clean 20 --long-seconds 600 | tail -3
       - name: Eksperimen ${{ matrix.exp }} di dalam image produksi
+        if: ${{ !matrix.isolated }}
         timeout-minutes: 210
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
@@ -428,9 +442,49 @@ jobs:
           if grep -q '"status": "\(oom\|timeout\|killed_unverified\|error\)"\|"result": "\(OOM\|NOT_OK\)"' "exp-${{ matrix.exp }}.jsonl"; then
             echo "::warning::OOM/timeout/kegagalan proses tercatat pada eksperimen ${{ matrix.exp }} (lihat exp-${{ matrix.exp }}.jsonl)"
           fi
+      - name: Memori terisolasi — siapkan audio (container tanpa batas, bukan bagian pengukuran)
+        if: ${{ matrix.isolated }}
+        timeout-minutes: 30
+        run: |
+          mkdir -p "$RUNNER_TEMP/hf" "$RUNNER_TEMP/xout"
+          chmod 777 "$RUNNER_TEMP/hf" "$RUNNER_TEMP/xout" "$RUNNER_TEMP/corpus"
+          docker run --rm --init -e HF_HOME=/hf -e HF_HUB_OFFLINE=0 -e VIDEO_APP_DATA=/tmp/data -v "$PWD:/src:ro" \
+            -v "$RUNNER_TEMP/corpus:$RUNNER_TEMP/corpus" -v "$RUNNER_TEMP/xout:/out" -v "$RUNNER_TEMP/hf:/hf" \
+            -w /src --entrypoint python \
+            video-editing:bench bench/p552/w5_diag2.py --mem-prep "$RUNNER_TEMP/corpus" ${{ matrix.args }} /out/mem
+      - name: Memori terisolasi — ukur satu skenario (container 3 GiB baru; OOM dari docker inspect)
+        if: ${{ matrix.isolated }}
+        timeout-minutes: 120
+        run: |
+          name="mem-${{ matrix.exp }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          set +e
+          docker run --init --name "$name" ${{ matrix.docker }} -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 \
+            -e WHISPER_DEVICE=cpu -e VIDEO_APP_DATA=/tmp/data -v "$PWD:/src:ro" -v "$RUNNER_TEMP/hf:/hf" \
+            -v "$RUNNER_TEMP/xout:/out" -w /src --entrypoint python video-editing:bench \
+            bench/p552/w5_diag2.py --mem-measure /out/mem/spec.json /out/mem/result.json
+          rc=$?
+          oom=$(docker inspect -f '{{.State.OOMKilled}}' "$name")
+          docker rm -f "$name" >/dev/null
+          set -e
+          python3 - "$rc" "$oom" "$RUNNER_TEMP/xout/mem" "exp-${{ matrix.exp }}.jsonl" <<'PY'
+          import json, pathlib, sys
+          rc, oom, d, out = int(sys.argv[1]), sys.argv[2] == "true", pathlib.Path(sys.argv[3]), sys.argv[4]
+          spec = json.loads((d / "spec.json").read_text())
+          res = d / "result.json"
+          row = json.loads(res.read_text()) if rc == 0 and res.exists() else {
+              **spec, "status": "oom" if oom else "error", "exit_code": rc}
+          row.update({"exp": "w5mem", "docker_oom_killed": oom, "exit_code": rc})
+          pathlib.Path(out).write_text(json.dumps(row) + "\n")
+          print(json.dumps(row))
+          PY
+          if [ "$oom" = "true" ] || [ "$rc" != "0" ]; then
+            echo "::warning::w5mem ${{ matrix.exp }}: exit $rc, OOMKilled=$oom (lihat exp-${{ matrix.exp }}.jsonl)"
+          fi
       - name: Hentikan container eksperimen (selesai/gagal/dibatalkan)
         if: always()
-        run: docker rm -f "bench-${{ matrix.exp }}-${{ github.run_id }}-${{ github.run_attempt }}" 2>/dev/null || true
+        run: |
+          docker rm -f "bench-${{ matrix.exp }}-${{ github.run_id }}-${{ github.run_attempt }}" 2>/dev/null || true
+          docker rm -f "mem-${{ matrix.exp }}-${{ github.run_id }}-${{ github.run_attempt }}" 2>/dev/null || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0
         if: always()
         with:
