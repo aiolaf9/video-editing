@@ -614,3 +614,51 @@ Temuan:
   kecil sebagai pemicu (NOT VERIFIED).
 - Konteks: condition_on_previous_text=False menurunkan en 52,3% → 23,1% (8 → 3 hilang).
 - Bahasa: id jauh lebih ringan (2 hilang, tanpa lompatan penuh) meski juga berisi kalimat kembar.
+
+## Diagnostik final kehilangan teks — CI #35 (`44bed2d`, `bench_exps=diag`, 4 set × 6 mode)
+
+Run: https://github.com/aiolaf9/video-editing/actions/runs/41257412246 — job `diag` success, 24/24 mode `ok`,
+`oom_kill` 0; timeline acuan↔audio valid di 4 set. Tokenizer model asli: `timestamp_begin` instrumen 50364 =
+`faster_whisper.tokenizer.Tokenizer.timestamp_begin` 50364 (cocok). small, satu model, decoding sama kecuali satu
+variabel per mode.
+
+| Set | Mode | WER | sub/ins/del | Ucapan hilang | Cakupan ucapan | Audio ucapan tanpa segmen | Jendela maju penuh 30 dtk |
+|---|---|---|---|---|---|---|---|
+| en_nodup | per ucapan | 6,5% | 22/4/3 | 0 | 100% | — | 0 |
+| en_nodup | default | **70,0%** | 14/4/**293** | **10** | 50% | 115,8 dtk | 3 |
+| en_nodup | tanpa konteks | 59,5% | 11/1/252 | 9 | 55% | 79,6 dtk | 0 |
+| en_nodup | tanpa VAD | 43,9% | 15/4/176 | 9 | 55% | 78,1 dtk | 2 |
+| en_nodup | jendela 30 | 23,9% | 23/5/78 | 2 | 90% | 27,5 dtk | 0 |
+| en_nodup | jendela 60 | 51,3% | 16/4/208 | 8 | 60% | 83,3 dtk | 1 |
+| id_nodup | per ucapan | 16,5% | 52/6/8 | 0 | 100% | — | 0 |
+| id_nodup | default | 17,5% | 51/7/12 | 0 | 100% | 0 dtk | 0 |
+| id_nodup | tanpa konteks / tanpa VAD / 30 / 60 | 16,7–18,0% | — | 0 | 100% | 0 dtk | 0–1 |
+| en_clean | per ucapan | 8,6% | 27/6/4 | 0 | 100% | — | 0 |
+| en_clean | default | 51,9% | 10/0/212 | 8 | 60% | 94,0 dtk | 3 |
+| en_clean | tanpa konteks | 14,5% | 25/3/34 | 1 | 95% | 9,2 dtk | 0 |
+| en_clean | tanpa VAD | 69,6% | 8/0/290 | 13 | 35% | 134,7 dtk | 4 |
+| en_clean | jendela 30 | 31,3% | 15/1/118 | 5 | 75% | 61,2 dtk | 2 |
+| en_clean | jendela 60 | 15,9% | 11/4/53 | 3 | 85% | 26,4 dtk | 2 |
+| id_clean | per ucapan | 14,1% | 38/9/5 | 0 | 100% | — | 0 |
+| id_clean | default | 25,5% | 52/10/32 | 1 | 95% | 12,8 dtk | 0 |
+| id_clean | tanpa konteks | 28,7% | 14/6/86 | 5 | 75% | — | 1 |
+| id_clean | tanpa VAD / 30 / 60 | 12,5–17,1% | — | 1 | 95% | ≤ 10,2 dtk | 0–2 |
+
+Bukti langsung (log faster-whisper + token segmen):
+- Setiap jendela yang maju penuh 30 dtk di set Inggris punya satu segmen yang diakhiri SATU token timestamp jauh
+  sebelum akhir jendela (mis. `ts:6.00`, `ts:10.00`, `ts:11.00`) → `seek += segment_size` → sisa jendela (dan ucapan
+  di dalamnya) tidak ditranskripsi. Contoh en_clean default: jendela 115,58→145,58 dtk (asli 127,4→165,0), satu
+  segmen berakhir 132,9 dtk, `ts:6.00`, ucapan 14–16 di rentang yang dilewati.
+- Tidak semua kehilangan lewat jalur itu: en_nodup tanpa konteks kehilangan 79,6 dtk tanpa satu pun jendela penuh
+  (segmen pertama jendela dimulai terlambat / ucapan dalam jendela tidak dikeluarkan). Jalur kedua ini NOT VERIFIED.
+- `no_speech` skip hanya 3 kali di seluruh run (win30/nocond), bukan pemicu utama.
+
+Kesimpulan:
+- Kalimat kembar BUKAN penyebab: en_nodup (tanpa kembar) sama/lebih buruk dari en_clean. Hipotesis CI #32 ditolak.
+- Masalah spesifik bahasa Inggris pada sampel ini: id_nodup 0 dtk hilang di semua mode. Penyebab perbedaan bahasa
+  NOT VERIFIED.
+- Hanya transkripsi per ucapan yang 100% cakupan di keempat set. Tanpa konteks/tanpa VAD/jendela 30/60 tidak
+  konsisten antar-set.
+- Keterbatasan: 20 ucapan per set; set kembar & tanpa kembar berisi ucapan berbeda (pemilihan sampel ≠); satu run,
+  satu runner, model small, ucapan bacaan (FLEURS) bukan percakapan alami; satu ucapan per set Inggris tak
+  terdeteksi VAD (cakupan < 50%: en_nodup #16, en_clean #14).
