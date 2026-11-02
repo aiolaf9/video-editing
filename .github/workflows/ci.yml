@@ -497,7 +497,7 @@ jobs:
           pw="$(openssl rand -hex 16)"; echo "::add-mask::$pw"; echo "ACC_PW=$pw" >> "$GITHUB_ENV"
           docker run -d --init --name "acc-${{ github.run_id }}-${{ github.run_attempt }}" ${{ matrix.docker }} \
             -p 127.0.0.1:8000:8000 -e WEB_WORKERS=1 -e EMBEDDED_WORKERS=1 -e WHISPER_CHUNKED=1 -e MAX_VIDEO_SECONDS=900 \
-            -e WHISPER_MODEL=small -e WHISPER_DEVICE=cpu -e HF_HUB_OFFLINE=0 -e ADMIN_EMAIL=accept@ci.local \
+            -e WHISPER_MODEL=small -e WHISPER_DEVICE=cpu -e HF_HUB_OFFLINE=0 -e SUBTITLE_TRACE=1 -e ADMIN_EMAIL=accept@ci.local \
             -e ADMIN_PASSWORD="$pw" video-editing:bench
           for i in $(seq 1 60); do curl -fs http://127.0.0.1:8000/api/health && break; sleep 2; done
       - name: Acceptance — alur MVP lewat UI (Chrome, viewport HP)
@@ -533,6 +533,7 @@ jobs:
           # Bukti model asli: baris pemuatan WhisperModel dari log server (image produksi tanpa test double).
           grep -E "Memuat model Whisper|Traceback|MemoryError|Killed" "$RUNNER_TEMP/acc/out/server.log" \
             | tee "$RUNNER_TEMP/acc/out/model_evidence.txt" || true
+          grep "Subtitle:" "$RUNNER_TEMP/acc/out/server.log" | tee "$RUNNER_TEMP/acc/out/subtitle_evidence.txt" || true
           grep -q "Memuat model Whisper 'small'" "$RUNNER_TEMP/acc/out/server.log" \
             || { echo "::error::Model Whisper asli tidak tercatat dimuat"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.0

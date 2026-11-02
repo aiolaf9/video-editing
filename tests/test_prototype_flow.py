@@ -111,7 +111,7 @@ def test_transcript_edit_is_unit_isolated_and_blocked_during_analysis(sample_vid
     users = {}
     for key, unit in (("a", a), ("b", b)):
         email = f"{key}{time.time()}@uji.local"
-        r = client.post("/api/admin/users", json={"email": email, "name": key, "password": "password-123",
+        r = client.post("/api/admin/users", json={"email": email, "name": key, "password": "password-123",  # pragma: allowlist secret
                                                   "role": "editor", "unit_id": unit["id"]})
         assert r.status_code == 200, r.text
         users[key] = login_client(email, "password-123")
@@ -165,8 +165,10 @@ def test_redistributed_words_stay_inside_segment():
     assert len(ws) == 4 and ws[0]["start"] >= 10.0 and ws[-1]["end"] <= 14.0 + 1e-6
 
 
-def test_subtitle_ordering_never_drops_words_and_leaves_normal_words_alone(caplog):
+def test_subtitle_ordering_never_drops_words_and_leaves_normal_words_alone(caplog, monkeypatch):
+    from app import subtitles
     from app.subtitles import collect_words
+    monkeypatch.setattr(subtitles, "TRACE", True)                                  # mode uji acceptance
     w = lambda s, e, t: {"start": s, "end": e, "word": t}   # noqa: E731
     normal = {"segments": [{"start": 0.0, "end": 3.0, "text": "a b c",
                             "words": [w(0.0, 1.0, "satu"), w(1.0, 2.0, "dua"), w(2.2, 3.0, "tiga")]}]}
@@ -180,6 +182,29 @@ def test_subtitle_ordering_never_drops_words_and_leaves_normal_words_alone(caplo
     assert [x["word"] for x in out] == ["panjang", "tertutup", "dua"]            # tidak ada kata yang hilang
     assert all(b["start"] >= a["start"] for a, b in zip(out, out[1:]))
     assert all(x["end"] - x["start"] > 0.1 for x in out)
-    assert "digeser" in caplog.text                                                 # tidak diam-diam
+    assert "3 kata di rentang klip sebelum pengurutan, 3 sesudah, 2 digeser" in caplog.text   # tidak diam-diam
+    assert "geser 'tertutup' 0.500-1.500 -> 2.000-2.120" in caplog.text and "geser 'dua' 2.000-3.000 -> 2.120-3.000" in caplog.text
     ev = _events(build_ass(covered, 0.0, 3.0, 1080, 1920, SubtitleOptions(style="simple", words_per_line=1)))
     assert len(ev) == 3 and all(e1 <= s2 + 1e-6 for (_, e1, _), (s2, _, _) in zip(ev, ev[1:]))
+
+
+def test_subtitle_trace_off_by_default_keeps_transcript_out_of_logs_and_output_identical(caplog, monkeypatch):
+    from app import subtitles
+    assert subtitles.TRACE is False                                                 # bawaan: tanpa log per kata
+    w = lambda s, e, t: {"start": s, "end": e, "word": t}   # noqa: E731
+    t = {"segments": [
+        {"start": 0.0, "end": 3.0, "text": "", "words": [w(0.0, 2.0, "rahasiapengguna"), w(2.0, 3.0, "dua")]},
+        {"start": 0.5, "end": 1.5, "text": "", "words": [w(0.5, 1.5, "katapribadi")]},
+    ]}
+    with caplog.at_level("INFO", logger="video-editing.subtitles"):
+        off = subtitles.collect_words(t, 0.0, 3.0)
+    assert "rahasiapengguna" not in caplog.text and "katapribadi" not in caplog.text
+    assert "3 kata di rentang klip sebelum pengurutan, 3 sesudah" in caplog.text   # hanya angka
+    monkeypatch.setattr(subtitles, "TRACE", True)
+    on = subtitles.collect_words(t, 0.0, 3.0)
+    assert on == off                                                                # log tidak mengubah hasil render
+    opts = SubtitleOptions(style="karaoke")
+    monkeypatch.setattr(subtitles, "TRACE", False)
+    ass_off = build_ass(t, 0.0, 3.0, 1080, 1920, opts)
+    monkeypatch.setattr(subtitles, "TRACE", True)
+    assert build_ass(t, 0.0, 3.0, 1080, 1920, opts) == ass_off

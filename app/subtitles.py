@@ -1,9 +1,12 @@
 """Pembuat subtitle ASS bergaya kekinian (karaoke, pop, satu kata) untuk dibakar oleh FFmpeg/libass."""
 import logging
+import os
 from dataclasses import dataclass
 
 log = logging.getLogger("video-editing.subtitles")
 MIN_WORD = 0.12          # durasi tampil minimum kata yang digeser (detik)
+# Log per kata yang digeser (memuat teks transkrip): hanya untuk uji acceptance, bawaan mati.
+TRACE = os.environ.get("SUBTITLE_TRACE") == "1"
 STYLES = ("karaoke", "pop", "word", "simple")
 
 
@@ -84,19 +87,21 @@ def collect_words(transcript: dict, clip_start: float, clip_end: float, speed: f
     # jumlah kata yang digeser dicatat di log.
     out.sort(key=lambda w: (w["start"], w["end"]))
     length = (clip_end - clip_start) / speed
-    clean, last_end, moved = [], 0.0, 0
+    clean, last_end, moved = [], 0.0, []
     for w in out:
         s, e = max(w["start"], last_end), w["end"]
         if e - s < MIN_WORD:
             e = min(max(e, s + MIN_WORD), length)
             s = min(s, max(0.0, e - MIN_WORD))
         if (s, e) != (w["start"], w["end"]):
-            moved += 1
+            moved.append((w["word"], w["start"], w["end"], s, e))
         clean.append({**w, "start": s, "end": e})
         last_end = max(last_end, e)
-    if moved:
-        log.info("Subtitle: %d dari %d kata digeser agar baris tidak bertumpuk (tidak ada kata yang dibuang).",
-                 moved, len(clean))
+    log.info("Subtitle: %d kata di rentang klip sebelum pengurutan, %d sesudah, %d digeser (tidak ada kata yang "
+             "dibuang).", len(out), len(clean), len(moved))
+    if TRACE:   # rinci per kata hanya untuk uji acceptance (SUBTITLE_TRACE=1): berisi teks transkrip
+        for word, s0, e0, s1, e1 in moved[:50]:
+            log.info("Subtitle: geser %r %.3f-%.3f -> %.3f-%.3f", word, s0, e0, s1, e1)
     return clean
 
 
