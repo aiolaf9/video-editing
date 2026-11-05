@@ -81,9 +81,14 @@ RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "0"))
 # Video, preview, hasil render & musik dihapus otomatis: RETENTION jam sejak aktivitas terakhir
 # pengguna, paling lama MAX jam sejak upload. Metadata (akun, proyek, guidebook) tetap disimpan.
 MEDIA_LIFECYCLE = os.environ.get("MEDIA_LIFECYCLE", "on").strip().lower() not in ("0", "off", "false", "no")
-MEDIA_RETENTION_HOURS = float(os.environ.get("MEDIA_RETENTION_HOURS", "24"))
-MEDIA_MAX_HOURS = float(os.environ.get("MEDIA_MAX_HOURS", "72"))
-MEDIA_WARN_HOURS = float(os.environ.get("MEDIA_WARN_HOURS", "3"))       # tampilkan peringatan di UI
+# Bawaan AI Video Studio: 2 jam sejak aktivitas terakhir, paling lama 5 jam sejak upload (download manual).
+MEDIA_RETENTION_HOURS = float(os.environ.get("MEDIA_RETENTION_HOURS", "2"))
+MEDIA_MAX_HOURS = float(os.environ.get("MEDIA_MAX_HOURS", "5"))
+# Peringatan di UI sebelum media dihapus. Bawaan seperempat masa simpan (maks. 3 jam): 30 menit untuk 2 jam, sehingga
+# peringatan tidak tampil terus sejak upload.
+MEDIA_WARN_HOURS = float(os.environ.get("MEDIA_WARN_HOURS", str(min(3.0, MEDIA_RETENTION_HOURS / 4))))
+# Pembersihan cadangan di proses web (mode server, worker terpisah): media tetap terhapus walau semua worker mati.
+WEB_CLEANUP = os.environ.get("WEB_CLEANUP", "1") == "1"
 CLEANUP_INTERVAL = float(os.environ.get("CLEANUP_INTERVAL", "300"))       # detik antar pembersihan
 TEMP_FILE_GRACE_MINUTES = float(os.environ.get("TEMP_FILE_GRACE_MINUTES", "30"))  # umur min. file sisa
 INCOMPLETE_UPLOAD_HOURS = float(os.environ.get("INCOMPLETE_UPLOAD_HOURS", "2"))
@@ -175,6 +180,9 @@ WHISPER_SEGMENT_FILTER = os.environ.get("WHISPER_SEGMENT_FILTER", "0") == "1"
 # Saat job analisis besar menunggu RAM, worker menahan antrean itu untuknya selama ini (detik) agar job kecil tidak
 # terus mendahului (starvation). Setelahnya antrean dibuka lagi; kondisi menunggu tetap terlihat di monitoring.
 ADMISSION_HOLD_SECONDS = float(os.environ.get("ADMISSION_HOLD_SECONDS", "600"))
+# Tolak pekerjaan baru (upload, analisis, render, impor link) bila tidak ada worker HIDUP (heartbeat masih berlaku)
+# untuk antreannya, alih-alih menerima job yang akan "Menunggu giliran 0%" tanpa kejelasan. 0 = mati.
+REQUIRE_LIVE_WORKER = os.environ.get("REQUIRE_LIVE_WORKER", "1") == "1"
 
 
 def analysis_need_mb(duration: "float | None", model: str = WHISPER_MODEL, chunked: "bool | None" = None) -> int:

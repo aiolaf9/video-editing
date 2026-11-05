@@ -21,6 +21,11 @@ os.environ.setdefault("AUTO_MIGRATE", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 # Pembersihan media dijalankan eksplisit oleh tes (lifecycle.sweep(now=...)), bukan oleh worker bawaan.
 os.environ.setdefault("CLEANUP_INTERVAL", "1000000")
+# Tes mekanisme siklus media lama (tests/test_lifecycle.py, test_p2_hardening.py) ditulis untuk masa simpan 24/72 jam.
+# Bawaan AI Video Studio (2/5 jam) diuji tersendiri di tests/test_p0_retention.py.
+os.environ.setdefault("MEDIA_RETENTION_HOURS", "24")
+os.environ.setdefault("MEDIA_MAX_HOURS", "72")
+os.environ.setdefault("MEDIA_WARN_HOURS", "3")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 

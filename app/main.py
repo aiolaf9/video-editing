@@ -5,7 +5,9 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
+import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -104,6 +106,25 @@ def ensure_unit(name: str) -> str:
             return c.execute(query).scalar()
 
 
+def _start_web_cleanup():
+    """Mode server: pembersihan media cadangan di proses web tiap CLEANUP_INTERVAL. Worker sudah membersihkan saat start
+    dan berkala; ini menjaga batas 2/5 jam tetap berlaku walau semua worker mati. Aman paralel (advisory lock)."""
+    from .config import CLEANUP_INTERVAL, WEB_CLEANUP
+    if not WEB_CLEANUP or not MEDIA_LIFECYCLE:
+        return None
+    ev = threading.Event()
+
+    def loop():
+        while not ev.wait(CLEANUP_INTERVAL):
+            try:
+                lifecycle.sweep()
+            except Exception:
+                log.warning("Pembersihan media (web) gagal:\n%s", traceback.format_exc(limit=2))
+
+    threading.Thread(target=loop, name="web-cleanup", daemon=True).start()
+    return ev
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     bootstrap()
@@ -111,7 +132,10 @@ async def lifespan(_app: FastAPI):
     if EMBEDDED_WORKERS:
         from .worker import start_embedded
         stop = start_embedded(JOB_WORKERS)
+    sweeper = _start_web_cleanup() if not EMBEDDED_WORKERS else None
     yield
+    if sweeper:
+        sweeper.set()
     if stop:
         stop.set()
         from . import jobcontrol
@@ -316,8 +340,11 @@ def _check_quota(user: dict, kind: str) -> None:
 
 
 def _queue_job(task: str, kind: str, meta: dict, user: dict, payload: dict, label: str,
-               queue: Optional[str] = None) -> dict:
-    """Ajukan job atas media proyek: dikunci terhadap pembersihan (lease) dan dihitung sebagai aktivitas."""
+               queue: Optional[str] = None, require_worker: bool = True) -> dict:
+    """Ajukan job atas media proyek: dikunci terhadap pembersihan (lease) dan dihitung sebagai aktivitas.
+    require_worker=False hanya untuk finalisasi upload yang sudah diterima: file tidak boleh ditolak di akhir."""
+    if require_worker:
+        monitor.require_live_worker(task)  # tidak ada worker hidup: tolak dengan pesan jelas, bukan "0%"
     jobs.check_capacity(task, meta.get("unit_id"), queue)  # backpressure: antrean unit/server penuh
     lifecycle.ensure_disk()
     with lifecycle.reserve(meta["id"]) as conn:
@@ -345,7 +372,9 @@ def me(user: dict = CurrentUser):
     ai_cfg = _ai_settings()
     provider = ai.PROVIDERS[ai_cfg["provider"]]
     cfg = _provider_cfg(ai_cfg, ai_cfg["provider"])
-    data["ai"] = {"name": provider["name"], "ready": bool(cfg.get("api_key")) or not provider["needs_key"]}
+    enabled = ai_cfg["provider"] != ai.NONE
+    data["ai"] = {"name": provider["name"], "enabled": enabled,
+                  "ready": enabled and (bool(cfg.get("api_key")) or not provider["needs_key"])}
     data["url_import"] = ALLOW_URL_IMPORT == "all" or (ALLOW_URL_IMPORT == "admins" and user["role"] != "editor")
     data["media_policy"] = {"lifecycle": MEDIA_LIFECYCLE, "retention_hours": MEDIA_RETENTION_HOURS,
                             "max_hours": MEDIA_MAX_HOURS}
@@ -436,6 +465,7 @@ def upload_project(request: Request, file: UploadFile = File(...), language: Opt
         raise HTTPException(400, f"Format {ext or '(tanpa ekstensi)'} tidak didukung.")
     _check_pending(user)
     unit_id = _target_unit(user)
+    monitor.require_live_worker("analyze")  # tidak ada worker analisis hidup: tolak sebelum file disalin
     jobs.check_capacity("analyze", unit_id)  # tolak sebelum file disalin bila antrean penuh
     size = _upload_size(file)
     lifecycle.ensure_disk(size)
@@ -453,7 +483,9 @@ def upload_project(request: Request, file: UploadFile = File(...), language: Opt
         storage.delete_project(pid)  # upload gagal/terputus: jangan tinggalkan proyek & file setengah jadi
         raise
     meta = storage.update_project(pid, source=f"source{ext}", status="antre")
-    job = _queue_job("analyze", "analisis", meta, user, {"language": language or None}, "Analisis video")
+    # Worker sudah diperiksa sebelum file disalin; file yang sudah diterima tidak ditolak di akhir.
+    job = _queue_job("analyze", "analisis", meta, user, {"language": language or None}, "Analisis video",
+                     require_worker=False)
     return {"project": meta, "job": job}
 
 
@@ -470,6 +502,7 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
         raise HTTPException(400, str(exc))
     _check_pending(user)
     unit_id = _target_unit(user)
+    monitor.require_live_worker("download", "analyze")  # unduh lalu analisis: keduanya harus punya worker hidup
     jobs.check_capacity("download", unit_id)
     lifecycle.ensure_disk()
     lifecycle.ensure_quota(_unit(unit_id))
@@ -527,6 +560,7 @@ def upload_create(request: Request, user: dict = CurrentUser):
     meta = uploads.parse_metadata(request.headers.get("upload-metadata"))
     _check_pending(user)
     unit_id = _target_unit(user)
+    monitor.require_live_worker("analyze")  # tidak ada worker analisis hidup: tolak sebelum file besar dikirim
     jobs.check_capacity("analyze", unit_id)  # antrean penuh: tolak sebelum file dikirim
     row = uploads.create(user, unit_id, size, meta, VIDEO_EXTS)
     return Response(status_code=201, headers={**TUS, "Location": f"/api/uploads/{row['id']}", "Upload-Offset": "0"})
@@ -557,7 +591,8 @@ def _start_analysis(row: dict, user: dict) -> dict:
         return jobs.view(existing[-1])
     meta = storage.load_project(row["project_id"])
     language = json.loads(row.get("meta") or "{}").get("language")
-    return _queue_job("analyze", "analisis", meta, user, {"language": language}, "Analisis video")
+    return _queue_job("analyze", "analisis", meta, user, {"language": language}, "Analisis video",
+                      require_worker=False)  # upload sudah diterima: job disimpan & menunggu worker
 
 
 @app.patch("/api/uploads/{uid}")
@@ -794,7 +829,7 @@ def _ai_settings() -> dict:
     data = db.get_setting("ai") or {}
     data.setdefault("providers", {})
     if data.get("provider") not in ai.PROVIDERS:
-        data["provider"] = "claude"
+        data["provider"] = ai.NONE   # bawaan: AI lokal saja; AI eksternal (berbayar) opsional
     return data
 
 
@@ -938,6 +973,8 @@ def plan_ai(pid: str, body: RangeRequest, user: dict = CurrentUser):
     ctx = _plan_context(pid, body.start, body.end, user)
     settings = _ai_settings()
     provider = settings["provider"]
+    if provider == ai.NONE:
+        raise HTTPException(400, "AI eksternal tidak diaktifkan admin. Pakai tombol \"Otomatis (gratis)\".")
     label = ai.PROVIDERS[provider]["name"]
     cfg = _provider_cfg(settings, provider)
     if ai.PROVIDERS[provider]["needs_key"] and not cfg.get("api_key"):

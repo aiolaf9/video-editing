@@ -22,6 +22,7 @@ import logging
 import os
 import shutil
 import socket
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -600,13 +601,23 @@ def _try_lock(conn) -> bool:
     return bool(conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _SWEEP_LOCK_KEY}).scalar())
 
 
+_SWEEP_LOCAL = threading.Lock()   # satu pembersihan per proses (SQLite tidak punya advisory lock)
+
+
 def sweep(now: Optional[float] = None) -> dict:
-    """Satu putaran pembersihan. Aman dijalankan beberapa worker sekaligus (hanya satu yang bekerja)."""
+    """Satu putaran pembersihan. Aman dijalankan beberapa worker/proses sekaligus (hanya satu yang bekerja)."""
     now = now or time.time()
     result = {"expired": 0, "resumed": 0, "incomplete": 0, "orphans": {}, "skipped": False}
-    if not MEDIA_LIFECYCLE:
+    if not MEDIA_LIFECYCLE or not _SWEEP_LOCAL.acquire(blocking=False):
         result["skipped"] = True
         return result
+    try:
+        return _sweep_locked(now, result)
+    finally:
+        _SWEEP_LOCAL.release()
+
+
+def _sweep_locked(now: float, result: dict) -> dict:
     with db.engine().connect() as lock_conn:
         if not _try_lock(lock_conn):
             result["skipped"] = True

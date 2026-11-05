@@ -222,6 +222,13 @@ function showProvider() {
   $("apiKey").value = "";
   $("apiKey").placeholder = p.needs_key ? (p.has_key ? `Tersimpan (${p.key_hint}), isi untuk mengganti` : "Tempel API key di sini") : "Tidak perlu (opsional)";
   $("keyStatus").textContent = !p.needs_key ? "" : p.has_key ? `Kunci tersimpan (${p.key_hint})` : "Belum ada API key";
+  const off = name === "none";
+  for (const id of ["apiKey", "apiModel", "apiBaseUrl", "modelsBtn"]) $(id).disabled = off;
+  if (off) {
+    $("keyStatus").textContent = "";
+    $("providerHint").textContent = "Tombol 🤖 disembunyikan; pengguna memakai ⚡ Otomatis (gratis, lokal).";
+    return;
+  }
   $("providerHint").innerHTML = name === "ollama"
     ? 'AI lokal: pasang <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a> di server, lalu misalnya <code>ollama pull qwen2.5:3b</code>.'
     : p.key_url ? `Buat API key di <a href="${esc(p.key_url)}" target="_blank" rel="noopener">${esc(p.key_url.replace(/^https?:\/\//, ""))}</a>.` : "";

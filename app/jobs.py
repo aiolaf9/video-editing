@@ -195,17 +195,59 @@ def view_many(items: list[dict]) -> list[dict]:
                 db.jobs.c.status.in_(ACTIVE),
                 db.jobs.c.queue.in_({j["queue"] for j in waiting}),
                 db.jobs.c.created < max(j["created"] for j in waiting))).all()
+    cap = None
+    if any(j["status"] in ACTIVE for j in items):
+        from . import monitor   # impor lambat: monitor mengimpor modul ini
+        try:
+            cap = monitor.queue_capacity()
+        except Exception:   # status worker hanya pelengkap tampilan: jangan gagalkan polling karenanya
+            cap = None
+    now = time.time()
     out = []
     for job in items:
         data = {k: job[k] for k in ("id", "kind", "project_id", "label", "status", "progress", "message",
                                     "error", "created")}
         data["result"] = json.loads(job["result"]) if job.get("result") else None
+        data["wait"] = None
         if job["status"] == "antre":
             ahead = sum(1 for q, created in active if q == job["queue"] and created < job["created"])
-            if ahead:
-                data["message"] = f"Menunggu giliran ({ahead} pekerjaan lain sedang/akan diproses)..."
+            data["message"], reason = _waiting_message(job, ahead, cap)
+            waited = max(0.0, now - job["created"])
+            data["wait"] = {"reason": reason, "seconds": round(waited)}
+            if waited >= 60:
+                data["message"] += f" (menunggu {_fmt_wait(waited)})"
+        elif job["status"] in RUNNING and job.get("heartbeat") and now - job["heartbeat"] > STALE_AFTER:
+            data["message"] = WORKER_LOST_MESSAGE
+            data["wait"] = {"reason": "worker_hilang", "seconds": round(now - job["heartbeat"])}
         out.append(data)
     return out
+
+
+NO_WORKER_QUEUED_MESSAGE = ("Server pemrosesan sedang tidak aktif. Pekerjaan Anda tetap tersimpan dan akan "
+                            "dilanjutkan otomatis saat server aktif kembali.")
+WORKER_LOST_MESSAGE = ("Server pemrosesan berhenti merespons. Pekerjaan Anda tetap tersimpan dan akan diulang "
+                       "otomatis saat server aktif kembali.")
+BUSY_MESSAGE = "Menunggu kapasitas server (memori/CPU sedang dipakai pekerjaan lain); akan mulai otomatis."
+
+
+def _waiting_message(job: dict, ahead: int, cap: Optional[dict]) -> tuple[str, str]:
+    """(pesan, kode alasan) untuk job 'antre' menurut status worker antreannya saat ini."""
+    state = None if cap is None else cap.get(job["queue"], {}).get("state", "tanpa_worker")
+    if state in ("tanpa_worker", "mampu_offline"):
+        return NO_WORKER_QUEUED_MESSAGE, "worker_tidak_aktif"
+    if state == "konfigurasi":
+        return job["message"] or "Menunggu server dengan kapasitas memori yang cukup.", "kapasitas_tidak_cukup"
+    if state == "sementara":
+        return BUSY_MESSAGE, "server_sibuk"
+    if ahead:
+        return f"Menunggu giliran ({ahead} pekerjaan lain sedang/akan diproses)...", "antrean"
+    return job["message"] or "Menunggu giliran...", "antrean"
+
+
+def _fmt_wait(seconds: float) -> str:
+    if seconds < 3600:
+        return f"{int(seconds // 60)} menit"
+    return f"{int(seconds // 3600)} jam {int(seconds % 3600 // 60)} menit"
 
 
 def _pick(conn, queue: str, now: float) -> Optional[str]:

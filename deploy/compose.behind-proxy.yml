@@ -1,0 +1,12 @@
+# VPS yang sudah punya web server (Nginx/Apache/panel) di port 80/443: Caddy TIDAK dijalankan dan aplikasi hanya
+# mendengar di 127.0.0.1:${APP_PORT:-8001}. Web server yang ada meneruskan subdomain ke alamat itu (lihat
+# docs/DEPLOY_KVM2.md). Tidak mengubah konfigurasi situs lain.
+#   docker compose -f docker-compose.yml -f deploy/compose.kvm2.yml -f deploy/compose.behind-proxy.yml up -d --build
+services:
+  web:
+    ports:
+      - "127.0.0.1:${APP_PORT:-8001}:8000"
+    environment:
+      FORWARDED_ALLOW_IPS: "*"
+  caddy:
+    profiles: ["caddy"]   # tidak ikut dijalankan kecuali diminta dengan --profile caddy

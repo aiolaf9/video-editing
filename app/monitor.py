@@ -123,6 +123,31 @@ def queue_capacity(now: Optional[float] = None, workers: Optional[list] = None) 
     return result
 
 
+QUEUE_LABEL = {"analisis": "analisis video", "render": "render video", "io": "pengunduhan video dari link"}
+NO_WORKER_MESSAGE = ("Server pemrosesan {label} sedang tidak aktif, jadi pekerjaan baru belum bisa diterima. "
+                     "Coba lagi beberapa menit lagi atau hubungi admin.")
+
+
+def queue_state(queue: str, capacity: Optional[dict] = None) -> str:
+    """Status satu antrean menurut heartbeat worker saat ini. Antrean tanpa satu pun worker terdaftar = tanpa_worker
+    (queue_capacity hanya memuat antrean yang pernah dilayani worker)."""
+    cap = capacity if capacity is not None else queue_capacity()
+    return cap.get(queue, {}).get("state", "tanpa_worker")
+
+
+def require_live_worker(*tasks: str) -> None:
+    """Admission: tolak (503) pekerjaan baru bila antrean salah satu task tidak punya worker hidup yang mampu.
+    "sementara" (worker hidup tetapi menunggu RAM/CPU) tetap diterima: job akan mulai sendiri."""
+    from .config import REQUIRE_LIVE_WORKER
+    if not REQUIRE_LIVE_WORKER:
+        return
+    cap = queue_capacity()
+    for task in tasks:
+        q = jobs.queue_for(task)
+        if queue_state(q, cap) not in ("siap", "sementara"):
+            raise jobs.QueueFull(503, NO_WORKER_MESSAGE.format(label=QUEUE_LABEL.get(q, q)))
+
+
 def unservable_queues(now: Optional[float] = None) -> dict:
     """{antrean: alasan} yang pasti tidak dapat dilayani konfigurasi worker saat ini (status `konfigurasi`)."""
     return {q: c["reason"] for q, c in queue_capacity(now).items() if c["state"] == "konfigurasi"}

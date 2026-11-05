@@ -5,7 +5,7 @@ database kosong dengan `pg_restore`, lalu `db-status` = terbaru, `db-check` = sa
 (proyek, job, user) identik.
 
 Yang dicadangkan: seluruh database (akun, unit, Guidebook, proyek, rencana animasi, riwayat job & render, sesi
-upload). **Tidak** termasuk file video/hasil render: media bersifat sementara (dihapus otomatis 24-72 jam).
+upload). **Tidak** termasuk file video/hasil render: media bersifat sementara (dihapus otomatis 2-5 jam, dapat diatur).
 
 ## Backup
 

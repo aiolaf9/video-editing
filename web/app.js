@@ -29,6 +29,9 @@ const fmt = (s) => {
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const ACTIVE_JOB = ["antre", "jalan", "berhenti"];
 const isActive = (j) => ACTIVE_JOB.includes(j.status);
+// Job yang antre tidak diberi "0%": server mengirim alasan menunggu & lamanya (job.wait).
+const jobStalled = (j) => !!(j.wait && ["worker_tidak_aktif", "worker_hilang", "kapasitas_tidak_cukup"].includes(j.wait.reason));
+const jobStatusText = (j) => (j.status === "antre" || jobStalled(j)) ? j.message : `${j.message} (${Math.round(j.progress)}%)`;
 // Sisa waktu yang mudah dibaca: "5 jam 20 menit", "40 menit".
 function fmtRemaining(sec) {
   if (sec <= 0) return "kurang dari 1 menit";
@@ -221,8 +224,8 @@ function renderStatus() {
   cancelBtn.hidden = true;
   if (job && isActive(job)) {
     box.hidden = false;
-    box.classList.remove("error");
-    box.querySelector(".status-text").textContent = `${job.message} (${Math.round(job.progress)}%)`;
+    box.classList.toggle("error", jobStalled(job));
+    box.querySelector(".status-text").textContent = jobStatusText(job);
     box.querySelector(".bar > div").style.width = job.progress + "%";
     cancelBtn.hidden = false;
     cancelBtn.dataset.job = job.id;
@@ -588,7 +591,7 @@ function renderRenders() {
             ? `<div class="err">Gagal: ${esc(j.error)}</div>`
             : j.status === "batal"
               ? '<div class="muted cancelled">Dibatalkan</div>'
-              : `<div class="muted">${esc(j.message)} ${Math.round(j.progress)}%</div><div class="bar"><div style="width:${j.progress}%"></div></div>
+              : `<div class="${jobStalled(j) ? "err" : "muted"}">${esc(jobStatusText(j))}</div><div class="bar"><div style="width:${j.progress}%"></div></div>
                  <button class="ghost danger cancel" data-cancel="${esc(j.id)}" ${j.status === "berhenti" ? "disabled" : ""}>${j.status === "berhenti" ? "Membatalkan..." : "Batalkan"}</button>`}
         </div>
       </li>`),
@@ -1220,6 +1223,7 @@ async function loadMe() {
     $("retentionText").textContent = `${pol.retention_hours} jam setelah aktivitas terakhir, paling lama ${pol.max_hours} jam sejak upload`;
   }
   $("aiName").textContent = me.ai.name;
+  $("planAiBtn").hidden = !me.ai.enabled;   // bawaan: tanpa AI eksternal, hanya ⚡ Otomatis (lokal)
   $("planAiBtn").disabled = !me.ai.ready;
   $("planAiBtn").title = me.ai.ready ? "Otomatis lewat API AI yang diatur admin"
     : "API AI belum diatur admin. Pakai 'Salin prompt' dulu.";

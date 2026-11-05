@@ -92,7 +92,7 @@ class PlanItem(BaseModel):
 
 class Settings(BaseModel):
     """Pengaturan AI untuk penyedia yang dipilih. api_key kosong = kunci lama dipertahankan."""
-    provider: str = Field("claude", max_length=30)
+    provider: str = Field("none", max_length=30)   # bawaan: tanpa AI eksternal
     guidebook: str = Field("", max_length=4000)
     api_key: Optional[str] = Field(None, max_length=400)
     clear_key: bool = False

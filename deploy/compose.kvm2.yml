@@ -1,0 +1,17 @@
+# Override Hostinger KVM 2 (2 vCPU, 8 GB RAM). Dipakai bersama deploy/kvm2.env.example:
+#   docker compose -f docker-compose.yml -f deploy/compose.kvm2.yml up -d --build
+# Batas worker (cpus/mem_limit) diatur lewat .env; berkas ini membatasi layanan yang di docker-compose.yml belum
+# dibatasi agar seluruh aplikasi tidak menghabiskan RAM VPS (layanan lain di server tetap punya ruang).
+services:
+  db:
+    mem_limit: 512m
+    cpus: 0.5
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=40"]
+  migrate:
+    mem_limit: 512m
+  web:
+    mem_limit: 768m
+    cpus: 0.75
+  caddy:
+    mem_limit: 128m
+    cpus: 0.25

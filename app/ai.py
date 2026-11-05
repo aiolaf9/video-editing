@@ -12,7 +12,12 @@ from typing import Optional
 
 from . import netpolicy, plan
 
+# "none" = bawaan: tidak ada AI eksternal. Rencana animasi memakai mode otomatis lokal (plan.auto_plan, gratis).
+# Penyedia lain opsional dan hanya dipakai bila dipilih Superadmin.
+NONE = "none"
 PROVIDERS = {
+    NONE: {"name": "Tidak dipakai (mode otomatis lokal)", "base_url": "", "needs_key": False, "key_url": "",
+           "prefer": []},
     "claude": {"name": "Claude", "base_url": "", "needs_key": True,
                "key_url": "https://console.anthropic.com/settings/keys", "default_model": "claude-opus-5-5"},
     "gemini": {"name": "Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -121,6 +126,8 @@ def _friendly(code: int, raw: str) -> tuple[str, str]:
 
 
 def list_models(provider: str, cfg: dict) -> list[str]:
+    if provider == NONE:
+        return []
     key = cfg.get("api_key") or None
     if provider == "claude":
         import anthropic
@@ -166,6 +173,8 @@ def generate_plan(provider: str, cfg: dict, transcript: dict, start: float, end:
     """Kembalikan (elemen rencana, nama model yang dipakai)."""
     if provider not in PROVIDERS:
         raise AIError(f"Penyedia AI tidak dikenal: {provider}")
+    if provider == NONE:
+        raise AIError("AI eksternal tidak diaktifkan. Pakai mode otomatis (gratis).")
     info = PROVIDERS[provider]
     if info["needs_key"] and not cfg.get("api_key"):
         raise AIError(f"API key {info['name']} belum diisi. Buat di {info['key_url']}")

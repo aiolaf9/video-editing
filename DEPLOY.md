@@ -28,7 +28,7 @@ Untuk ratusan pengguna (puluhan aktif bersamaan), mulai dari:
 | Kebutuhan | Rekomendasi awal |
 |---|---|
 | CPU / RAM | **8 vCPU, 16 GB RAM** |
-| Disk | 200 GB SSD (media dihapus otomatis 24–72 jam; lihat "Penyimpanan media sementara") |
+| Disk | 200 GB SSD (media dihapus otomatis 2–5 jam; lihat "Penyimpanan media sementara") |
 | OS | Ubuntu 22.04 / 24.04 |
 
 Bisa dari penyedia mana pun (lokal maupun global). Bisa naik kelas kapan saja tanpa mengubah aplikasi.
@@ -42,7 +42,7 @@ curl -fsSL https://get.docker.com | sh
 ## 3. Ambil aplikasi & isi pengaturan
 
 ```bash
-git clone -b claude/dreamy-carson-0mnbh2 https://github.com/aiolaf9/video-editing.git /opt/video-editing
+git clone -b v2/phase-1 https://github.com/aiolaf9/video-editing.git /opt/video-editing
 ```
 
 ```bash
@@ -195,8 +195,8 @@ ukuran file sementara (spool + salinan). Halaman web memakai upload bertahap.
 
 Video sumber, preview, dan hasil render bersifat **sementara**:
 
-- dihapus otomatis `MEDIA_RETENTION_HOURS` (bawaan 24 jam) setelah aktivitas terakhir pengguna,
-  dan paling lama `MEDIA_MAX_HOURS` (bawaan 72 jam) sejak upload;
+- dihapus otomatis `MEDIA_RETENTION_HOURS` (bawaan 2 jam) setelah aktivitas terakhir pengguna,
+  dan paling lama `MEDIA_MAX_HOURS` (bawaan 5 jam) sejak upload;
 - membuka atau memantau proyek tidak memperpanjang masa simpan; mengedit, merender, atau mengunduh memperpanjangnya;
 - media yang sedang dipakai tidak pernah dihapus: pekerjaan antre/berjalan (termasuk yang sedang dipulihkan
   setelah worker mati), upload yang sedang ditulis, dan file yang sedang diunduh. Setelah pemakaian terakhir

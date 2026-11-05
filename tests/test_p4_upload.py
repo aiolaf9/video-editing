@@ -213,7 +213,9 @@ def _start_server(data_dir):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    env = dict(os.environ, VIDEO_APP_DATA=str(data_dir), EMBEDDED_WORKERS="0",
+    # Tanpa worker (hanya menguji mekanisme upload): admission "worker hidup" dimatikan di server tes ini;
+    # admission itu sendiri diuji di tests/test_p0_admission.py.
+    env = dict(os.environ, VIDEO_APP_DATA=str(data_dir), EMBEDDED_WORKERS="0", REQUIRE_LIVE_WORKER="0",
                DATABASE_URL=os.environ.get("DATABASE_URL", ""))
     if not env["DATABASE_URL"]:
         env.pop("DATABASE_URL")
