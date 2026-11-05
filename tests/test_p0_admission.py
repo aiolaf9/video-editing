@@ -66,12 +66,15 @@ def test_no_live_worker_rejects_all_new_work_with_clear_message(client, sample_v
     storage.delete_project(pid)
 
 
-def test_url_import_needs_both_io_and_analysis_workers(client, fleet, monkeypatch):
+def test_url_import_needs_live_io_worker(client, fleet, monkeypatch):
     from app import netpolicy
     monkeypatch.setattr(netpolicy, "check_import_url", lambda url, trusted=False: None)
-    fleet.up("io", ["io"])                                      # pengunduh hidup, tetapi analisis tidak
     r = client.post("/api/projects/from-url", json={"url": "https://example.com/v"})
-    assert r.status_code == 503 and "analisis video" in r.json()["detail"]
+    assert r.status_code == 503 and r.json()["queue_full"]                 # tanpa pengunduh: ditolak
+    fleet.up("io", ["io"])                                                 # pengunduh hidup, analisis tidak
+    r = client.post("/api/projects/from-url", json={"url": "https://example.com/v"})
+    assert r.status_code == 200, r.text                                   # diterima; analisis menunggu worker
+    storage.delete_project(r.json()["project"]["id"])
 
 
 def test_worker_back_alive_accepts_again(client, fleet):

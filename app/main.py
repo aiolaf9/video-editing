@@ -502,7 +502,9 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
         raise HTTPException(400, str(exc))
     _check_pending(user)
     unit_id = _target_unit(user)
-    monitor.require_live_worker("download", "analyze")  # unduh lalu analisis: keduanya harus punya worker hidup
+    # Pengunduh (worker io) wajib hidup. Analisis lanjutan tidak ikut diwajibkan: bila worker analisis mati, job-nya
+    # tetap disimpan dengan status "worker tidak aktif" dan dilanjutkan otomatis (sama seperti upload selesai).
+    monitor.require_live_worker("download")
     jobs.check_capacity("download", unit_id)
     lifecycle.ensure_disk()
     lifecycle.ensure_quota(_unit(unit_id))
