@@ -18,6 +18,7 @@ database produksi bisa berada di salah satu keadaan berikut, tanpa catatan versi
 | `0004_scheduling` | `0080aa0` (P3) | kolom `jobs.priority`; tabel `workers`; indeks `ix_jobs_queue_status`, `ix_jobs_queue_started` | `create_all` + `ALTER` + `CREATE INDEX` |
 | `0005_metrics_index` | `0b39237` (P3 final) | indeks `ix_jobs_queue_finished` | `CREATE INDEX` |
 | `0006_uploads` | `55366de` (P4) | tabel `uploads` | `create_all` |
+| `0007_recipes` | V2 P1 (editor hibrida; setelah P5) | tabel `project_recipes`, `edit_templates` | — (sejak awal lewat Alembic) |
 
 Revisi dibuat per keadaan nyata agar database dari commit mana pun bisa dikenali tepat dan dinaikkan tanpa
 langkah yang bertabrakan (mis. P2.1 sudah punya `project_media` tetapi belum `media_leases`).

@@ -208,15 +208,15 @@ def test_foreign_database_is_not_touched(fresh_url):
 
 @pytest.fixture
 def broken_head(tmp_path, monkeypatch):
-    """Salinan migrasi + revisi 0007 yang membuat tabel & kolom lalu GAGAL di tengah jalan."""
+    """Salinan migrasi + revisi 0008 yang membuat tabel & kolom lalu GAGAL di tengah jalan."""
     scripts = tmp_path / "migrations"
     shutil.copytree(migrate.MIGRATIONS_DIR, scripts, ignore=shutil.ignore_patterns("__pycache__"))
-    (scripts / "versions" / "0007_rusak.py").write_text('''
+    (scripts / "versions" / "0008_rusak.py").write_text('''
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0007_rusak"
-down_revision = "0006_uploads"
+revision = "0008_rusak"
+down_revision = "0007_recipes"
 branch_labels = None
 depends_on = None
 
@@ -236,18 +236,18 @@ def downgrade():
 
 
 def test_failed_migration_rolls_back_completely(fresh_url, broken_head):
-    """Database di 0004 dinaikkan ke head yang rusak: 0005, 0006, 0007 berjalan dalam SATU transaksi, jadi gagal
-    = kembali utuh ke 0004 (tanpa indeks 0005, tanpa tabel uploads, tanpa sisa 0007)."""
+    """Database di 0004 dinaikkan ke head yang rusak: 0005 s.d. 0008 berjalan dalam SATU transaksi, jadi gagal
+    = kembali utuh ke 0004 (tanpa indeks 0005, tanpa tabel uploads/resep, tanpa sisa 0008)."""
     build_legacy(fresh_url, load_snapshot("v3a_0080aa0"))
     with pytest.raises(RuntimeError, match="gagal di tengah jalan"):
         migrate.upgrade(fresh_url)
     assert version(fresh_url) == ["0004_scheduling"]  # stamp database lama sudah tercatat, upgrade tidak
     tbl = tables(fresh_url)
-    assert "uploads" not in tbl and "tabel_setengah_jadi" not in tbl
+    assert "uploads" not in tbl and "tabel_setengah_jadi" not in tbl and "project_recipes" not in tbl
     eng = engine_for(fresh_url)
     with eng.connect() as c:
         assert "ix_jobs_queue_finished" not in {i["name"] for i in inspect(c).get_indexes("jobs")}
-        assert c.execute(text("SELECT count(*) FROM units")).scalar() == 1  # data baru dari 0007 tidak tersisa
+        assert c.execute(text("SELECT count(*) FROM units")).scalar() == 1  # data baru dari 0008 tidak tersisa
     eng.dispose()
     check_data(fresh_url, load_snapshot("v3a_0080aa0"))
     if fresh_url.startswith("sqlite"):
@@ -298,7 +298,7 @@ def test_manage_cli_commands(fresh_url, tmp_path):
     assert st.returncode == 2 and "setara 0002_media_lifecycle" in st.stdout
     assert run("db-check").returncode == 1
     up = run("db-upgrade")
-    assert up.returncode == 0 and "0002_media_lifecycle -> 0006_uploads" in up.stdout
+    assert up.returncode == 0 and "0002_media_lifecycle -> 0007_recipes" in up.stdout
     assert run("db-status").returncode == 0
     ok = run("db-check")
     assert ok.returncode == 0 and "OK" in ok.stdout

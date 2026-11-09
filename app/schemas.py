@@ -21,6 +21,20 @@ class MusicSettings(BaseModel):
     ducking: bool = True            # musik mengecil otomatis saat ada suara
 
 
+class PlanItem(BaseModel):
+    id: Optional[str] = Field(None, max_length=40)
+    type: Literal["zoom", "keyword", "card", "chips", "checklist"]
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    text: str = Field("", max_length=200)
+    label: str = Field("", max_length=80)
+    items: list[str] = Field(default_factory=list, max_length=10)
+
+
+MAX_OVERLAYS = 300
+MAX_TEXT_FIXES = 500
+
+
 class RenderRequest(BaseModel):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
@@ -41,6 +55,9 @@ class RenderRequest(BaseModel):
     encoder: Literal["cpu", "nvidia", "intel", "amd", "mac"] = "cpu"
     subtitles: SubtitleSettings = SubtitleSettings()
     music: MusicSettings = MusicSettings()
+    # Snapshot resep (P1, render dari resep): None = pakai isi resep proyek saat render dijalankan.
+    overlays: Optional[list[PlanItem]] = Field(None, max_length=MAX_OVERLAYS)
+    text_fixes: Optional[dict[str, str]] = Field(None, max_length=MAX_TEXT_FIXES)
 
     @model_validator(mode="after")
     def _check_range(self):
@@ -78,16 +95,6 @@ class RangeRequest(BaseModel):
 
 class PlanImport(RangeRequest):
     text: str = Field(min_length=2, max_length=100_000)
-
-
-class PlanItem(BaseModel):
-    id: Optional[str] = None
-    type: Literal["zoom", "keyword", "card", "chips", "checklist"]
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
-    text: str = Field("", max_length=200)
-    label: str = Field("", max_length=80)
-    items: list[str] = Field(default_factory=list, max_length=10)
 
 
 class Settings(BaseModel):

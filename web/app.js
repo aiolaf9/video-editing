@@ -17,6 +17,8 @@ const state = {
   pollTimer: null,
   plan: [],
   faces: [],
+  templates: [],
+  templateId: null,
 };
 
 // ------------------------------------------------------------ util
@@ -84,18 +86,31 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let msg = data && data.detail ? data.detail : `Error ${res.status}`;
     if (Array.isArray(msg)) msg = msg.map((d) => d.msg).join("; ");
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
+  const rv = res.headers.get("X-Recipe-Version");   // server mengubah resep (koreksi teks / animasi)
+  if (rv && state.project) syncServerRecipe(+rv);
   return data;
 }
 const postJSON = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-// ------------------------------------------------------------ pengaturan tersimpan
+// ------------------------------------------------------------ resep editing (P1)
+// Pengaturan editing disimpan per proyek di database (autosave), bukan hanya di browser. localStorage hanya
+// menyimpan "pengaturan terakhir" sebagai bawaan proyek yang belum pernah diedit (kompatibel dengan versi lama).
 const SETTING_IDS = ["cropX", "colorSelect", "brightness", "contrast", "saturation", "speedSelect", "zoomCheck", "fadeCheck",
   "subEnabled", "subStyle", "subFont", "subColor", "subHighlight", "subSize", "subWords", "subPosition", "subUpper",
   "musicVolume", "duckCheck", "normCheck", "encoderSelect", "langSelect", "targetSelect", "reframeCheck", "animEnabled"];
+const SAVE_DELAY = 800;          // debounce autosave (ms)
+const REMOTE_CHECK = 15000;      // cek perubahan dari perangkat lain (ms), hanya saat tab terlihat & tidak ada edit
+const editorCfg = { looks: {} };
+const rs = { version: 0, recipe: null, dirty: false, saving: false, timer: null, retry: 0, conflict: null,
+  loading: false, savedAt: null, pid: null };
+const round3 = (x) => Math.round(x * 1000) / 1000;
 
-function saveSettings() {
+function saveSettings() {   // bawaan untuk proyek baru (format lama tetap dibaca)
   const data = { aspect: state.aspect };
   for (const id of SETTING_IDS) {
     const el = $(id);
@@ -116,37 +131,388 @@ function loadSettings() {
   if (data.aspect) setAspect(data.aspect, false);
 }
 
-function renderSettings(start, end, title) {
-  const music = $("musicSelect").value;
+function recipeFromControls() {
+  const base = rs.recipe || {};
+  const checked = [...state.checked].sort((a, b) => a - b).map((i) => state.clips[i]).filter(Boolean).slice(0, 30);
   return {
-    start, end, title,
+    v: 1,
+    selection: state.sel.end - state.sel.start > 0.05 ? { start: round3(state.sel.start), end: round3(state.sel.end) } : null,
+    target: +$("targetSelect").value || 30,
+    checked: checked.map((c) => ({ start: round3(c.start), end: round3(c.end) })),
     aspect: state.aspect,
-    crop_x: +$("cropX").value,
-    reframe: $("reframeCheck").checked ? "auto" : "manual",
-    animations: $("animEnabled").checked,
-    crop_y: 0.5,
-    color: $("colorSelect").value,
-    brightness: +$("brightness").value,
-    contrast: +$("contrast").value,
-    saturation: +$("saturation").value,
-    speed: +$("speedSelect").value,
-    zoom: $("zoomCheck").checked ? "slow" : "none",
-    fade: $("fadeCheck").checked,
-    normalize_audio: $("normCheck").checked,
-    encoder: $("encoderSelect").value,
+    crop: { x: +$("cropX").value, y: 0.5, reframe: $("reframeCheck").checked ? "auto" : "manual" },
+    look: { color: $("colorSelect").value, brightness: +$("brightness").value, contrast: +$("contrast").value,
+      saturation: +$("saturation").value },
+    motion: { speed: +$("speedSelect").value, zoom: $("zoomCheck").checked ? "slow" : "none", fade: $("fadeCheck").checked },
     subtitles: {
-      enabled: $("subEnabled").checked,
-      style: $("subStyle").value,
-      font: $("subFont").value,
-      size: +$("subSize").value,
-      color: $("subColor").value,
-      highlight: $("subHighlight").value,
-      position: $("subPosition").value,
-      uppercase: $("subUpper").checked,
-      words_per_line: +$("subWords").value,
+      enabled: $("subEnabled").checked, style: $("subStyle").value, font: $("subFont").value, size: +$("subSize").value,
+      color: $("subColor").value.toUpperCase(), highlight: $("subHighlight").value.toUpperCase(),
+      position: $("subPosition").value, uppercase: $("subUpper").checked, words_per_line: +$("subWords").value,
     },
-    music: { file: music || null, volume: +$("musicVolume").value, ducking: $("duckCheck").checked },
+    audio: { music: $("musicSelect").value || null, volume: +$("musicVolume").value, ducking: $("duckCheck").checked,
+      normalize: $("normCheck").checked },
+    animations: $("animEnabled").checked,
+    overlays: base.overlays === undefined ? null : base.overlays,
+    text_fixes: base.text_fixes || {},
+    template_id: state.templateId || null,
+    encoder: $("encoderSelect").value,
+    language: $("langSelect").value || null,
   };
+}
+
+function setControl(id, value) {
+  const el = $(id);
+  if (!el || value === undefined || value === null) return;
+  if (el.type === "checkbox") el.checked = !!value; else el.value = String(value);
+}
+
+function applyRecipeToControls(r) {
+  setControl("cropX", r.crop.x);
+  setControl("reframeCheck", r.crop.reframe === "auto");
+  setControl("colorSelect", r.look.color);
+  setControl("brightness", r.look.brightness);
+  setControl("contrast", r.look.contrast);
+  setControl("saturation", r.look.saturation);
+  setControl("speedSelect", r.motion.speed);
+  setControl("zoomCheck", r.motion.zoom === "slow");
+  setControl("fadeCheck", r.motion.fade);
+  const s = r.subtitles;
+  setControl("subEnabled", s.enabled); setControl("subStyle", s.style); setControl("subFont", s.font);
+  setControl("subSize", s.size); setControl("subColor", s.color.toLowerCase());
+  setControl("subHighlight", s.highlight.toLowerCase()); setControl("subPosition", s.position);
+  setControl("subUpper", s.uppercase); setControl("subWords", s.words_per_line);
+  setControl("musicVolume", r.audio.volume); setControl("duckCheck", r.audio.ducking); setControl("normCheck", r.audio.normalize);
+  setControl("encoderSelect", r.encoder); setControl("langSelect", r.language || "");
+  setControl("targetSelect", r.target); setControl("animEnabled", r.animations);
+  state.templateId = r.template_id || null;
+  setControl("templateSelect", state.templateId || "");
+  renderMusicOptions();
+  if (r.audio.music) $("musicSelect").value = r.audio.music;
+  setAspect(r.aspect, false);
+  applyLivePreview();
+}
+
+// Rentang & klip dicentang dari resep, dipasang setelah kandidat klip dimuat.
+function applyRecipeSelection(r) {
+  if (!r) return false;
+  state.checked.clear();
+  for (const c of r.checked || []) {
+    const i = state.clips.findIndex((k) => Math.abs(k.start - c.start) < 0.05 && Math.abs(k.end - c.end) < 0.05);
+    if (i >= 0) state.checked.add(i);
+  }
+  if (!r.selection) return false;
+  state.activeClip = state.clips.findIndex((k) => Math.abs(k.start - r.selection.start) < 0.05 && Math.abs(k.end - r.selection.end) < 0.05);
+  setSelection(r.selection.start, r.selection.end);
+  renderClips();
+  return true;
+}
+
+function setSaveState(kind, detail = "") {
+  const el = $("saveState");
+  if (!el) return;
+  el.hidden = !state.project;
+  el.className = `save-state ${kind}`;
+  const time = rs.savedAt ? new Date(rs.savedAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : "";
+  el.textContent = { dirty: "● Belum tersimpan", saving: "⏳ Menyimpan…", saved: `✓ Tersimpan${time ? " " + time : ""}`,
+    error: "⚠ Gagal menyimpan — klik untuk coba lagi", conflict: "⚠ Diubah di perangkat lain", idle: "Belum ada perubahan" }[kind] || "";
+  el.title = detail || "Pengaturan editing tersimpan otomatis di server untuk proyek ini.";
+}
+
+function markDirty() {
+  if (!state.project || rs.loading) return;
+  saveSettings();
+  rs.dirty = true;
+  if (!rs.conflict) setSaveState("dirty");
+  clearTimeout(rs.timer);
+  rs.timer = setTimeout(saveRecipe, SAVE_DELAY);
+}
+
+async function saveRecipe() {
+  clearTimeout(rs.timer);
+  if (!state.project || rs.conflict) return;
+  if (rs.saving) { rs.timer = setTimeout(saveRecipe, 300); return; }
+  const pid = state.project.id;
+  const body = { version: rs.version, recipe: recipeFromControls() };
+  rs.saving = true;
+  rs.dirty = false;
+  setSaveState("saving");
+  try {
+    const res = await fetch(`/api/projects/${pid}/recipe`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+    const data = await res.json().catch(() => null);
+    if (res.status === 401) { location.replace("/login.html"); return; }
+    if (!state.project || state.project.id !== pid) return;
+    if (res.status === 409 && data && data.conflict) {
+      if (sameSettings(data.current.recipe, rs.recipe)) {
+        // Versi naik karena koreksi teks/animasi dari tab ini (atau hanya kolom itu yang berubah): gabungkan & ulang.
+        rs.version = data.current.version;
+        rs.recipe = data.current.recipe;
+        rs.dirty = true;
+        rs.timer = setTimeout(saveRecipe, 50);
+        return;
+      }
+      showConflict(data.current, body.recipe);
+      return;
+    }
+    if (!res.ok) {
+      const d = data && data.detail;
+      throw new Error(Array.isArray(d) ? d.map((x) => x.msg).join("; ") : d || `Error ${res.status}`);
+    }
+    rs.version = data.version;
+    rs.recipe = data.recipe;
+    rs.retry = 0;
+    rs.savedAt = Date.now();
+    setSaveState(rs.dirty ? "dirty" : "saved");
+  } catch (e) {
+    if (!state.project || state.project.id !== pid) return;
+    rs.dirty = true;
+    rs.retry = Math.min(rs.retry + 1, 5);
+    setSaveState("error", e.message);
+    if (e.message && !/fetch|network|Failed/i.test(e.message)) toast(`Gagal menyimpan: ${e.message}`, true);
+    rs.timer = setTimeout(saveRecipe, [3, 5, 10, 20, 30][rs.retry - 1] * 1000);
+  } finally {
+    rs.saving = false;
+  }
+}
+
+// Pastikan resep di server sama dengan yang dilihat pengguna (sebelum render / pindah proyek).
+async function flushRecipe() {
+  if (!state.project) return;
+  if (rs.version === 0 && !rs.dirty) rs.dirty = true;     // proyek belum pernah disimpan: simpan dulu
+  const deadline = Date.now() + 15000;
+  while ((rs.dirty || rs.saving) && Date.now() < deadline) {
+    if (rs.conflict) break;
+    if (!rs.saving) await saveRecipe(); else await new Promise((r) => setTimeout(r, 100));
+  }
+  if (rs.conflict) throw new Error("Proyek diubah di perangkat lain. Pilih versi yang dipakai dulu.");
+  if (rs.dirty || rs.saving) throw new Error("Pengaturan belum tersimpan. Periksa koneksi, lalu coba lagi.");
+}
+
+function showConflict(current, mine) {
+  rs.conflict = { current, mine };
+  clearTimeout(rs.timer);
+  const who = current.updated_by_name ? ` oleh ${esc(current.updated_by_name)}` : "";
+  const when = current.updated ? ` pukul ${new Date(current.updated * 1000).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}` : "";
+  $("conflictText").innerHTML = `<b>Proyek ini baru saja diubah di perangkat atau tab lain${who}${when}.</b> Perubahan Anda di sini belum
+    disimpan agar tidak menimpa perubahan tersebut. Pilih versi yang dipakai.`;
+  $("conflictBanner").hidden = false;
+  setSaveState("conflict");
+}
+
+function applyServerRecipe(cur) {
+  rs.loading = true;
+  try {
+    const fixesChanged = JSON.stringify((rs.recipe || {}).text_fixes || {}) !== JSON.stringify(cur.recipe.text_fixes || {});
+    rs.version = cur.version;
+    rs.recipe = cur.recipe;
+    rs.dirty = false;
+    applyRecipeToControls(cur.recipe);
+    if (cur.recipe.overlays) { state.plan = cur.recipe.overlays; renderPlan(); updateOverlayPreview(); }
+    if (state.clips.length) applyRecipeSelection(cur.recipe);
+    if (fixesChanged && state.project) reloadTranscript();
+    rs.savedAt = cur.updated ? cur.updated * 1000 : Date.now();
+    setSaveState("saved");
+  } finally { rs.loading = false; }
+}
+
+// Kata per segmen; segmen tanpa waktu per kata dibagi rata (sama dengan app/subtitles.collect_words).
+function segWords(s) {
+  if (s.words && s.words.length) return s.words;
+  const tokens = String(s.text || "").split(/\s+/).filter(Boolean);
+  const step = (s.end - s.start) / Math.max(tokens.length, 1);
+  return tokens.map((t, i) => ({ start: s.start + i * step, end: s.start + (i + 1) * step, word: t }));
+}
+
+async function reloadTranscript() {
+  const tr = await api(`/api/projects/${state.project.id}/transcript`);
+  state.transcript = tr;
+  state.words = tr.segments.flatMap(segWords);
+  renderTranscript();
+  updateCaptionPreview();
+}
+
+// Perubahan resep oleh server atas permintaan pengguna ini (koreksi teks, rencana animasi): ambil kolom yang diubah
+// server tanpa membuang edit lokal yang belum tersimpan. Bila versi melompat lebih jauh, ada perangkat lain: konflik.
+async function syncServerRecipe(headerVersion) {
+  if (!state.project || rs.conflict) return;
+  const pid = state.project.id;
+  const cur = await api(`/api/projects/${pid}/recipe`).catch(() => null);
+  if (!cur || !state.project || state.project.id !== pid) return;
+  if (cur.version > headerVersion && !sameSettings(cur.recipe, rs.recipe)) {   // perangkat lain ikut mengubah
+    if (rs.dirty || rs.saving) showConflict(cur, recipeFromControls()); else applyServerRecipe(cur);
+    return;
+  }
+  // Perubahan kita sendiri: layar sudah diperbarui dari respons; cukup ambil versi & kolom milik server.
+  rs.version = Math.max(rs.version, cur.version);
+  rs.recipe = { ...(rs.recipe || cur.recipe), text_fixes: cur.recipe.text_fixes, overlays: cur.recipe.overlays };
+  if (!rs.dirty && !rs.saving) { rs.savedAt = Date.now(); setSaveState("saved"); }
+}
+
+// Sama kecuali koreksi teks & overlay (kolom yang diubah server atas permintaan editor ini).
+function sameSettings(a, b) {
+  if (!a || !b) return false;
+  const strip = (r) => JSON.stringify({ ...r, text_fixes: null, overlays: null });
+  return strip(a) === strip(b);
+}
+
+async function checkRemoteRecipe() {
+  if (!state.project || rs.dirty || rs.saving || rs.conflict || document.visibilityState !== "visible") return;
+  const pid = state.project.id;
+  const cur = await api(`/api/projects/${pid}/recipe`).catch(() => null);
+  if (!cur || !state.project || state.project.id !== pid || rs.dirty || rs.saving) return;
+  if (cur.version > rs.version) {
+    applyServerRecipe(cur);
+    toast(`Pengaturan diperbarui dari perangkat lain${cur.updated_by_name ? ` (${cur.updated_by_name})` : ""}.`);
+  }
+}
+
+async function loadRecipe(pid) {
+  const cur = await api(`/api/projects/${pid}/recipe`);
+  rs.pid = pid;
+  rs.conflict = null;
+  $("conflictBanner").hidden = true;
+  rs.retry = 0;
+  if (cur.version > 0) {
+    applyServerRecipe(cur);
+  } else {
+    // Proyek lama / baru: belum ada resep. Kontrol tetap memakai pengaturan terakhir di perangkat ini, lalu
+    // tersimpan sebagai resep proyek pada perubahan pertama atau sebelum render.
+    rs.version = 0;
+    rs.recipe = cur.recipe;
+    rs.dirty = false;
+    state.templateId = null;
+    setControl("templateSelect", "");
+    rs.savedAt = null;
+    setSaveState("idle");
+    applyLivePreview();
+  }
+}
+
+// Pratinjau langsung di browser: filter warna lewat CSS (GPU perangkat), kecepatan lewat playbackRate.
+// Penyesuaian = eq FFmpeg: luma y = kontras * (x - 0.5) + 0.5 + kecerahan, warna (kroma) dikali saturasi.
+// CSS brightness() mengalikan, jadi garis yang sama (y = c*x + 0.5*(1 - c) + b) dibentuk dari pasangan
+// brightness & contrast. Urutannya dipilih agar nilai tidak terpotong di tengah rantai:
+//   b >= 0: contrast(c / k) lalu brightness(k), k = 1 + 2b
+//   b <  0: brightness(c / c2) lalu contrast(c2), c2 = c - 2b   (gelapkan dulu, baru naikkan kontras)
+// Pasangan itu juga mengalikan kroma dengan c (eq tidak), sehingga saturasi CSS dibagi c: saturate(s / c).
+// eq bekerja pada video YUV "limited range" (16-235): offset b setara b * 255/219 di RGB layar.
+// Selisih yang tersisa diukur di tests/test_p1_browser_editor.py (paritas warna).
+const EQ_RANGE = 255 / 219;
+function lookCss() {
+  const preset = (editorCfg.looks[$("colorSelect").value] || {}).css || "";
+  const b = +$("brightness").value * EQ_RANGE, c = +$("contrast").value, s = +$("saturation").value;
+  const parts = [preset];
+  if (b >= 0 && (Math.abs(c - 1) > 1e-3 || b > 1e-3)) {
+    const k = 1 + 2 * b;
+    parts.push(`contrast(${(c / k).toFixed(4)})`, `brightness(${k.toFixed(4)})`);
+  } else if (b < 0) {
+    const c2 = c - 2 * b;
+    parts.push(`brightness(${(c / c2).toFixed(4)})`, `contrast(${c2.toFixed(4)})`);
+  }
+  const sat = s / c;
+  if (Math.abs(sat - 1) > 1e-3) parts.push(`saturate(${sat.toFixed(4)})`);
+  return parts.filter(Boolean).join(" ");
+}
+
+function applyLivePreview() {
+  const player = $("player");
+  player.style.filter = lookCss();
+  const speed = +$("speedSelect").value || 1;
+  if (player.playbackRate !== speed) player.playbackRate = speed;
+}
+
+async function loadEditorConfig() {
+  try { Object.assign(editorCfg, await api("/api/editor/config")); } catch { /* pratinjau tanpa preset warna */ }
+  applyLivePreview();
+}
+
+async function submitRender(start, end, title) {
+  await flushRecipe();
+  try {
+    return await postJSON(`/api/projects/${state.project.id}/render-recipe`, { version: rs.version, start, end, title });
+  } catch (e) {
+    if (e.status === 409 && e.data && e.data.current) showConflict(e.data.current, recipeFromControls());
+    throw e;
+  }
+}
+
+// ------------------------------------------------------------ template
+async function loadTemplates() {
+  try { state.templates = await api("/api/templates"); } catch { state.templates = []; return; }
+  const groups = [["bawaan", "Bawaan"], ["global", "Semua unit"], ["unit", "Unit kerja"], ["personal", "Preset saya"]];
+  $("templateSelect").innerHTML = '<option value="">— Pilih template —</option>' + groups.map(([scope, label]) => {
+    const items = state.templates.filter((t) => t.scope === scope);
+    if (!items.length) return "";
+    return `<optgroup label="${label}">${items.map((t) =>
+      `<option value="${esc(t.id)}">${esc(t.name)}${scope === "unit" && t.unit_name && state.me && state.me.role === "admin" ? ` (${esc(t.unit_name)})` : ""}</option>`).join("")}</optgroup>`;
+  }).join("");
+  setControl("templateSelect", state.templateId || "");
+  updateTemplateButtons();
+}
+
+function updateTemplateButtons() {
+  const t = (state.templates || []).find((x) => x.id === $("templateSelect").value);
+  $("tplDeleteBtn").hidden = $("tplUpdateBtn").hidden = !(t && t.can_edit);
+  const role = state.me ? state.me.role : "editor";
+  $("tplScope").querySelector('[value="unit"]').hidden = !(role === "admin" || role === "unit_admin");
+  $("tplScope").querySelector('[value="global"]').hidden = role !== "admin";
+}
+
+function applyTemplate(id) {
+  const t = (state.templates || []).find((x) => x.id === id);
+  state.templateId = t ? t.id : null;
+  updateTemplateButtons();
+  if (!t) { markDirty(); return; }
+  const d = t.data, s = d.subtitles;
+  setControl("subStyle", s.style); setControl("subFont", s.font); setControl("subSize", s.size);
+  setControl("subColor", s.color.toLowerCase()); setControl("subHighlight", s.highlight.toLowerCase());
+  setControl("subPosition", s.position); setControl("subUpper", s.uppercase); setControl("subWords", s.words_per_line);
+  setControl("subEnabled", s.enabled);
+  if (d.look) {
+    setControl("colorSelect", d.look.color); setControl("brightness", d.look.brightness);
+    setControl("contrast", d.look.contrast); setControl("saturation", d.look.saturation);
+  }
+  if (d.aspect) setAspect(d.aspect, false);
+  applyLivePreview();
+  layoutCropFrame();
+  markDirty();
+  toast(`Template "${t.name}" dipakai. Pratinjau langsung berubah; render memakai gaya ini.`);
+}
+
+async function saveTemplate() {
+  const name = (prompt("Nama preset (gaya subtitle & warna saat ini):", "") || "").trim();
+  if (!name) return;
+  const r = recipeFromControls();
+  try {
+    const t = await postJSON("/api/templates", { name, scope: $("tplScope").value, data: { subtitles: r.subtitles, look: r.look } });
+    state.templateId = t.id;
+    await loadTemplates();
+    markDirty();
+    toast(`Preset "${t.name}" disimpan.`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function updateTemplate() {
+  const t = (state.templates || []).find((x) => x.id === $("templateSelect").value);
+  if (!t || !confirm(`Timpa template "${t.name}" dengan gaya subtitle & warna saat ini?`)) return;
+  const r = recipeFromControls();
+  try {
+    await api(`/api/templates/${encodeURIComponent(t.id)}`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: { subtitles: r.subtitles, look: r.look } }) });
+    await loadTemplates();
+    toast(`Template "${t.name}" diperbarui.`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteTemplate() {
+  const t = (state.templates || []).find((x) => x.id === $("templateSelect").value);
+  if (!t || !confirm(`Hapus template "${t.name}"? Proyek yang memakainya tidak berubah.`)) return;
+  try {
+    await api(`/api/templates/${encodeURIComponent(t.id)}`, { method: "DELETE" });
+    state.templateId = null;
+    await loadTemplates();
+    markDirty();
+  } catch (e) { toast(e.message, true); }
 }
 
 // ------------------------------------------------------------ proyek
@@ -164,9 +530,12 @@ async function refreshProjects() {
 }
 
 async function openProject(id) {
+  if (state.project && (rs.dirty || rs.saving)) await flushRecipe().catch(() => {});   // jangan hilangkan edit
+  const project = await api(`/api/projects/${id}`);
   state.checked.clear();
   state.activeClip = -1;
-  state.project = await api(`/api/projects/${id}`);
+  state.project = project;
+  await loadRecipe(id);
   $("emptyState").hidden = true;
   $("projectView").hidden = false;
   const player = $("player");
@@ -202,7 +571,7 @@ async function refreshProjectData() {
     if (!state.words.length && !state.clips.length) {
       const [tr, clips] = await Promise.all([api(`/api/projects/${p.id}/transcript`), api(`/api/projects/${p.id}/clips`)]);
       state.transcript = tr;
-      state.words = tr.segments.flatMap((s) => s.words && s.words.length ? s.words : []);
+      state.words = tr.segments.flatMap(segWords);
       state.clips = clips;
       const [planItems, faces] = await Promise.all([api(`/api/projects/${p.id}/plan`), api(`/api/projects/${p.id}/faces`)]);
       state.plan = planItems;
@@ -210,8 +579,13 @@ async function refreshProjectData() {
       layoutCropFrame();  // data wajah baru tersedia: posisikan ulang bingkai
       renderTranscript();
       renderClips();
-      if (clips.length) selectClip(0, false);
-      else setSelection(0, Math.min(30, p.duration || 30));
+      rs.loading = true;   // memasang rentang dari resep bukan perubahan pengguna
+      try {
+        if (!applyRecipeSelection(rs.version > 0 ? rs.recipe : null)) {
+          if (clips.length) selectClip(0, false);
+          else setSelection(0, Math.min(30, p.duration || 30));
+        }
+      } finally { rs.loading = false; }
     }
   }
 }
@@ -321,6 +695,7 @@ function setSelection(start, end) {
   renderTimeline();
   highlightTranscriptRange();
   renderPlan();
+  markDirty();
 }
 
 function playSelection() {
@@ -420,7 +795,7 @@ function setAspect(v, save = true) {
   state.aspect = v;
   document.querySelectorAll("#aspectSeg button").forEach((b) => b.classList.toggle("active", b.dataset.v === v));
   layoutCropFrame();
-  if (save) saveSettings();
+  if (save) markDirty();
 }
 
 function displayedVideoRect() {
@@ -480,14 +855,33 @@ function chunkWords(words, maxWords, maxGap = 0.6) {
   return chunks;
 }
 
+// Kata di rentang klip dengan aturan yang sama seperti render (app/subtitles.collect_words): dipotong ke rentang,
+// diurutkan, dan kata yang bertumpuk digeser agar tidak mendahului kata sebelumnya (minimal 0,12 detik).
+function clipWords(start, end) {
+  const MIN_WORD = 0.12;
+  const out = [];
+  for (const w of state.words) {
+    if (w.end <= start || w.start >= end) continue;
+    const s = Math.max(w.start, start), e = Math.min(w.end, end);
+    if (e > s) out.push({ start: s, end: e, word: w.word });
+  }
+  out.sort((a, b) => a.start - b.start || a.end - b.end);
+  let last = start;
+  return out.map((w) => {
+    let s = Math.max(w.start, last), e = w.end;
+    if (e - s < MIN_WORD) { e = Math.min(Math.max(e, s + MIN_WORD), end); s = Math.min(s, Math.max(start, e - MIN_WORD)); }
+    last = Math.max(last, e);
+    return { ...w, start: s, end: e };
+  });
+}
+
 function updateCaptionPreview() {
   const cap = $("captionPreview");
   const t = $("player").currentTime;
   const frame = $("cropFrame");
   if (!$("subEnabled").checked || frame.hidden || t < state.sel.start || t > state.sel.end) { cap.innerHTML = ""; return; }
   const style = $("subStyle").value;
-  const inRange = state.words.filter((w) => w.end > state.sel.start && w.start < state.sel.end);
-  const chunks = chunkWords(inRange, style === "word" ? 1 : +$("subWords").value);
+  const chunks = chunkWords(clipWords(state.sel.start, state.sel.end), style === "word" ? 1 : +$("subWords").value);
   const ci = chunks.findIndex((c, i) => t >= c[0].start && t < Math.min(c[c.length - 1].end + 0.25, chunks[i + 1] ? chunks[i + 1][0].start : Infinity));
   if (ci < 0) { cap.innerHTML = ""; return; }
   const chunk = chunks[ci];
@@ -499,6 +893,7 @@ function updateCaptionPreview() {
   let px = Math.min(ow, oh) * 0.075 * +$("subSize").value * (fh / oh);
   if (style === "word") px *= 1.4;
   cap.style.fontSize = px + "px";
+  cap.style.webkitTextStroke = `${Math.max(1, px * 0.16).toFixed(1)}px #000`;   // ASS: outline 8% di luar huruf
   cap.style.fontFamily = `"${$("subFont").value}", Impact, sans-serif`;
   cap.style.color = $("subColor").value;
   const pos = $("subPosition").value;
@@ -507,10 +902,13 @@ function updateCaptionPreview() {
   if (pos === "top") cap.style.top = fh * 0.12 + "px";
   else if (pos === "middle") { cap.style.top = "50%"; cap.style.transform = "translateY(-50%)"; }
   else cap.style.bottom = fh * 0.18 + "px";
-  cap.innerHTML = chunk.map((w) => {
+  // Sama dengan event ASS: kata ke-k tersorot dari awalnya (kata pertama: dari awal baris) sampai kata berikutnya
+  // mulai; gaya "satu kata" & "sederhana" tanpa warna sorotan.
+  let k = 0;
+  chunk.forEach((w, i) => { if (i > 0 && t >= w.start) k = i; });
+  cap.innerHTML = chunk.map((w, i) => {
     const word = esc(upper ? w.word.toUpperCase() : w.word);
-    const active = t >= w.start && t < w.end + 0.05;
-    if (style === "simple" || !active) return word;
+    if (style === "simple" || style === "word" || i !== k) return word;
     const scale = style === "pop" ? "display:inline-block;transform:scale(1.18);" : "";
     return `<span style="color:${hl};${scale}">${word}</span>`;
   }).join(" ");
@@ -627,10 +1025,6 @@ async function cancelJob(jobId) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function submitRender(start, end, title) {
-  saveSettings();
-  return postJSON(`/api/projects/${state.project.id}/render`, renderSettings(start, end, title));
-}
 
 async function afterRenderSubmit(count) {
   toast(`${count} klip masuk antrean render.`);
@@ -1040,7 +1434,7 @@ function bind() {
     $("cropX").value = v.toFixed(3);
     layoutCropFrame();
   });
-  handle.addEventListener("pointerup", () => { if (drag) { drag = null; saveSettings(); } });
+  handle.addEventListener("pointerup", () => { if (drag) { drag = null; markDirty(); } });
 
   $("timeline").addEventListener("click", (e) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -1064,6 +1458,7 @@ function bind() {
     if (e.target.matches("input[type=checkbox]")) {
       if (e.target.checked) state.checked.add(i); else state.checked.delete(i);
       renderTimeline();
+      markDirty();
       return;
     }
     selectClip(i);
@@ -1083,7 +1478,7 @@ function bind() {
       state.checked.clear();
       state.activeClip = -1;
       renderClips();
-      saveSettings();
+      markDirty();
       toast(`${state.clips.length} kandidat klip ditemukan.`);
     } catch (err) { toast(err.message, true); }
   });
@@ -1124,9 +1519,45 @@ function bind() {
   });
 
   for (const id of SETTING_IDS) {
-    $(id).addEventListener("change", () => { saveSettings(); layoutCropFrame(); });
-    $(id).addEventListener("input", () => { if (id === "cropX") layoutCropFrame(); updateCaptionPreview(); });
+    $(id).addEventListener("change", () => { markDirty(); applyLivePreview(); layoutCropFrame(); });
+    $(id).addEventListener("input", () => { if (id === "cropX") layoutCropFrame(); applyLivePreview(); updateCaptionPreview(); });
   }
+  $("musicSelect").addEventListener("change", markDirty);
+  $("templateSelect").addEventListener("change", (e) => applyTemplate(e.target.value));
+  $("tplSaveBtn").addEventListener("click", saveTemplate);
+  $("tplDeleteBtn").addEventListener("click", deleteTemplate);
+  $("tplUpdateBtn").addEventListener("click", updateTemplate);
+  $("saveState").addEventListener("click", () => { if (!rs.conflict) { rs.retry = 0; saveRecipe(); } });
+  $("conflictLoadBtn").addEventListener("click", () => {
+    const c = rs.conflict;
+    if (!c) return;
+    rs.conflict = null;
+    $("conflictBanner").hidden = true;
+    applyServerRecipe(c.current);
+    toast("Versi terbaru dimuat.");
+  });
+  $("conflictKeepBtn").addEventListener("click", () => {
+    const c = rs.conflict;
+    if (!c) return;
+    rs.conflict = null;
+    $("conflictBanner").hidden = true;
+    // Simpan pengaturan di layar ini di atas versi terbaru; koreksi teks & animasi dari server tetap dipakai.
+    rs.version = c.current.version;
+    rs.recipe = { ...c.mine, text_fixes: c.current.recipe.text_fixes, overlays: c.current.recipe.overlays };
+    rs.dirty = true;
+    saveRecipe();
+  });
+  window.addEventListener("beforeunload", (e) => {
+    if (!state.project || !(rs.dirty || rs.saving)) return;
+    try {   // simpan terakhir tanpa menunggu (keepalive tetap terkirim saat halaman ditutup)
+      fetch(`/api/projects/${state.project.id}/recipe`, { method: "PUT", keepalive: true,
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version: rs.version, recipe: recipeFromControls() }) });
+    } catch { /* abaikan */ }
+    e.preventDefault();
+    e.returnValue = "";
+  });
+  document.addEventListener("visibilitychange", checkRemoteRecipe);
+  setInterval(checkRemoteRecipe, REMOTE_CHECK);
 }
 
 // ------------------------------------------------------------ rencana animasi
@@ -1328,7 +1759,9 @@ $("logoutBtn").addEventListener("click", async () => {
   try { await api("/api/auth/logout", { method: "POST" }); } catch { /* abaikan */ }
   location.replace("/login.html");
 });
+loadEditorConfig();
 loadMe().then(() => {
+  loadTemplates();
   loadUnitGuidebook();
   checkHealth();
   refreshProjects();

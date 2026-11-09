@@ -211,6 +211,31 @@ usage = Table(
     Column("at", Float, nullable=False, index=True),
 )
 
+# Resep editing per proyek (P1). Disimpan di database (bukan localStorage, bukan folder media), jadi tetap ada
+# setelah media sementara dihapus dan sama di semua perangkat. `version` naik di setiap penyimpanan: dasar
+# optimistic locking agar perubahan dari dua perangkat tidak saling menimpa diam-diam.
+project_recipes = Table(
+    "project_recipes", metadata,
+    Column("project_id", String(12), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    Column("version", Integer, nullable=False),
+    Column("data", Text, nullable=False),                  # JSON tervalidasi (app/recipe.py)
+    Column("updated", Float, nullable=False),
+    Column("updated_by", String(12), nullable=True),
+)
+
+# Template/preset editing (P1): pribadi (owner), unit (unit_id), atau global (keduanya NULL kecuali owner).
+edit_templates = Table(
+    "edit_templates", metadata,
+    Column("id", String(12), primary_key=True),
+    Column("scope", String(10), nullable=False),           # personal | unit | global
+    Column("unit_id", String(12), ForeignKey("units.id", ondelete="CASCADE"), nullable=True, index=True),
+    Column("owner_id", String(12), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True),
+    Column("name", String(80), nullable=False),
+    Column("data", Text, nullable=False),
+    Column("created", Float, nullable=False),
+    Column("updated", Float, nullable=False),
+)
+
 _engine: Optional[Engine] = None
 
 

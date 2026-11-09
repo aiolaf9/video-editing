@@ -96,9 +96,17 @@ h3 { font-size: 14px; margin: 0 0 10px; }
 }
 .crop-handle:active { cursor: grabbing; }
 .caption {
-  position: absolute; left: 6%; right: 6%; text-align: center; font-weight: 900; color: #fff; pointer-events: none;
-  -webkit-text-stroke: 1px #000; text-shadow: 0 2px 3px rgba(0,0,0,.8); line-height: 1.15; word-wrap: break-word;
+  /* Sama dengan gaya ASS saat render: tebal (Bold), outline hitam ±8% ukuran huruf, bayangan tipis. */
+  position: absolute; left: 6%; right: 6%; text-align: center; font-weight: 700; color: #fff; pointer-events: none;
+  -webkit-text-stroke: 1px #000; paint-order: stroke fill; text-shadow: 0 2px 3px rgba(0,0,0,.8); line-height: 1.15;
+  word-wrap: break-word;
 }
+.save-state { background: none; border: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 500;
+  padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+.save-state.saved { color: var(--ok); }
+.save-state.error, .save-state.conflict { color: #ff6b6b; border-color: #ff6b6b; }
+.tpl-row { gap: 6px; align-items: center; margin-bottom: 6px; }
+.tpl-row select { width: auto; }
 
 .timeline { position: relative; height: 34px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; cursor: pointer; overflow: hidden; }
 .tl-clip { position: absolute; top: 4px; bottom: 4px; background: rgba(255,59,107,.35); border-radius: 4px; }

@@ -5,6 +5,7 @@ from typing import Optional
 
 from .config import FONTS_DIR
 from .faces import crop_x_expression
+from .looks import LOOKS
 from .overlays import ANIM_IN
 from .schemas import RenderRequest
 
@@ -15,17 +16,7 @@ OUTPUT_SIZES = {
     "16:9": (1920, 1080),
 }
 
-COLOR_PRESETS = {
-    "none": [],
-    "vivid": ["eq=saturation=1.35:contrast=1.08"],
-    "cinematic": ["curves=preset=medium_contrast",
-                  "colorbalance=rs=-0.05:bs=0.08:rh=0.06:bh=-0.04",
-                  "eq=saturation=0.9"],
-    "warm": ["colorbalance=rs=0.08:gs=0.02:bs=-0.08:rm=0.05:bm=-0.05"],
-    "cool": ["colorbalance=rs=-0.06:bs=0.08:bm=0.05"],
-    "bw": ["hue=s=0", "eq=contrast=1.15"],
-    "vintage": ["curves=preset=vintage", "eq=saturation=0.85"],
-}
+COLOR_PRESETS = {name: look["ffmpeg"] for name, look in LOOKS.items()}   # satu tabel dengan pratinjau browser
 
 ENCODERS = {
     "cpu": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"],

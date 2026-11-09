@@ -26,6 +26,7 @@ Transkrip dibuat oleh Whisper secara lokal, editing oleh FFmpeg, dan pemilihan k
 | Animasi sesuai omongan | Kartu, kata kunci besar bergradasi, chips, checklist, dan punch-in zoom yang muncul tepat saat hal itu diucapkan. Bisa dibuat **Otomatis** (gratis), **Salin prompt** ke Claude/Gemini/ChatGPT (gratis), atau lewat **API AI apa saja** (Claude, Gemini, ChatGPT, OpenRouter, Ollama lokal, dll.). Semua elemen bisa diedit sebelum render. |
 | Guidebook | Aturan gaya edit Anda sendiri, dipakai setiap kali AI membuat rencana animasi agar hasil konsisten |
 | Akun & unit | Login email + password. Peran **Admin**, **Admin Unit**, **Editor**. Proyek terpisah per unit, guidebook & kuota per unit, halaman Admin dengan statistik pemakaian |
+| Resep editing (P1) | Semua pengaturan editing tersimpan per proyek di server (autosave, indikator *Menyimpan/Tersimpan/Gagal*), sama di semua perangkat; edit dari dua perangkat tidak saling menimpa diam-diam. Pratinjau subtitle, crop, filter, dan animasi langsung di browser tanpa membuat MP4; render memakai resep yang sama. Template subtitle bawaan, preset pribadi, unit, dan global. Lihat `docs/EDITOR_P1.md`. |
 | Render massal | Centang beberapa klip, render sekaligus. Bisa pakai GPU NVIDIA/Intel/AMD/Mac (otomatis kembali ke CPU bila gagal). |
 
 ## Instalasi (satu komputer)

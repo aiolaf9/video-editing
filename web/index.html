@@ -68,6 +68,7 @@
         <div class="title-wrap">
           <h1 id="projectTitle"></h1>
           <span id="mediaBadge" class="media-badge" hidden></span>
+          <button type="button" id="saveState" class="save-state" hidden title="Status penyimpanan otomatis resep editing"></button>
         </div>
         <div class="actions">
           <button class="ghost" id="reanalyzeBtn">Analisis ulang</button>
@@ -75,6 +76,13 @@
         </div>
       </div>
 
+      <div id="conflictBanner" class="status error" hidden>
+        <div class="status-text" id="conflictText"></div>
+        <div class="row wrap">
+          <button id="conflictLoadBtn">Muat versi terbaru</button>
+          <button class="ghost" id="conflictKeepBtn">Simpan perubahan saya</button>
+        </div>
+      </div>
       <div id="mediaWarning" class="status warn" hidden></div>
       <div id="mediaGone" class="status error" hidden>
         <div class="status-text"><b>Media proyek ini sudah dihapus.</b> Video, preview, dan hasil render dihapus otomatis setelah masa simpan sementara berakhir. Proyek ini tidak bisa dibuka atau diedit lagi. Untuk mengedit ulang, unggah kembali videonya sebagai proyek baru.</div>
@@ -240,6 +248,19 @@
 
           <section class="card">
             <h3>Subtitle</h3>
+            <label class="field">Template
+              <select id="templateSelect"><option value="">— Pilih template —</option></select>
+            </label>
+            <div class="row wrap tpl-row">
+              <button type="button" class="ghost" id="tplSaveBtn">💾 Simpan sebagai preset</button>
+              <select id="tplScope" title="Siapa yang bisa memakai preset ini">
+                <option value="personal">Pribadi</option>
+                <option value="unit" hidden>Unit kerja</option>
+                <option value="global" hidden>Semua unit</option>
+              </select>
+              <button type="button" class="ghost" id="tplUpdateBtn" hidden title="Timpa template ini dengan gaya saat ini">Perbarui</button>
+              <button type="button" class="ghost danger" id="tplDeleteBtn" hidden>Hapus</button>
+            </div>
             <label class="check"><input type="checkbox" id="subEnabled" checked> Tampilkan subtitle</label>
             <label class="field">Gaya
               <select id="subStyle">

@@ -21,7 +21,7 @@ from starlette.requests import ClientDisconnect
 from sqlalchemy import delete, func, insert, select, true, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from . import ai, auth, clipper, db, jobs, lifecycle, monitor, netpolicy, plan, storage, uploads
+from . import ai, auth, clipper, db, edit_templates, jobs, lifecycle, looks, monitor, netpolicy, plan, recipe, storage, uploads
 from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
                      MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
                      METRICS_TOKEN, UPLOAD_CHUNK_MB, UPLOAD_RESUME_HOURS, UPLOAD_TMP_DIR,
@@ -29,6 +29,7 @@ from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPRO
 from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
                       RenderRequest, Settings, SuggestRequest, TranscriptEdit, UnitIn, UrlImport, UserCreate,
                       UserUpdate)
+from .schemas import MAX_OVERLAYS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("video-editing")
@@ -672,32 +673,47 @@ def reanalyze(pid: str, language: Optional[str] = None, user: dict = CurrentUser
     if not meta.get("source"):
         raise HTTPException(409, "Video sumber tidak ada. Unggah ulang videonya.")
     _check_pending(user)
-    return _queue_job("analyze", "analisis", meta, user, {"language": language, "reanalyze": True}, "Analisis ulang")
+    job = _queue_job("analyze", "analisis", meta, user, {"language": language, "reanalyze": True}, "Analisis ulang")
+
+    def clear_fixes(r: recipe.Recipe) -> recipe.Recipe:   # nomor segmen transkrip baru berbeda dari yang lama
+        r.text_fixes = {}
+        return r
+
+    if recipe.load(pid)["recipe"].text_fixes:
+        recipe.server_update(pid, clear_fixes, user["id"])
+    return job
 
 
 @app.get("/api/projects/{pid}/transcript")
 def get_transcript(pid: str, user: dict = CurrentUser):
     _project_for(pid, user)
-    return storage.read_data(pid, "transcript", {"language": None, "segments": []})
+    return recipe.effective_transcript(pid) or {"language": None, "segments": []}
 
 
 @app.put("/api/projects/{pid}/transcript")
-def edit_transcript(pid: str, body: TranscriptEdit, user: dict = CurrentUser):
-    """Koreksi teks segmen transkrip; render berikutnya memakai teks ini untuk subtitle."""
+def edit_transcript(pid: str, body: TranscriptEdit, response: Response, user: dict = CurrentUser):
+    """Koreksi teks segmen transkrip. Disimpan di resep (database) sebagai koreksi per segmen; transkrip mentah
+    tidak diubah. Pratinjau & render berikutnya memakai teks ini untuk subtitle."""
     from . import transcript_edit
     _project_for(pid, user)
     if any(j["status"] in jobs.ACTIVE and j["kind"] == "analisis" for j in jobs.for_project(pid)):
         raise HTTPException(409, "Analisis sedang berjalan. Tunggu sampai selesai sebelum mengoreksi transkrip.")
-    transcript = storage.read_data(pid, "transcript")
-    if transcript is None:
+    raw = storage.read_data(pid, "transcript")
+    if raw is None:
         raise HTTPException(409, "Video belum selesai dianalisis.")
+    edits = [e.model_dump() for e in body.segments]
     try:
-        transcript = transcript_edit.apply_edits(transcript, [e.model_dump() for e in body.segments])
+        transcript_edit.apply_edits(json.loads(json.dumps(raw)), edits)   # validasi terhadap transkrip ini
     except transcript_edit.EditError as exc:
         raise HTTPException(422, str(exc))
-    storage.write_data(pid, "transcript", transcript)
-    lifecycle.touch(pid)
-    return transcript
+
+    def change(r: recipe.Recipe) -> recipe.Recipe:
+        r.text_fixes.update({str(e["index"]): " ".join(str(e["text"]).split()) for e in edits})
+        return r
+
+    state = _recipe_update(pid, change, user, response)
+    _touch(pid)
+    return recipe.apply_text_fixes(raw, state["recipe"].text_fixes)
 
 
 @app.get("/api/projects/{pid}/clips")
@@ -709,7 +725,7 @@ def get_clips(pid: str, user: dict = CurrentUser):
 @app.post("/api/projects/{pid}/clips/suggest")
 def suggest_clips(pid: str, body: SuggestRequest, user: dict = CurrentUser):
     meta = _project_for(pid, user)
-    transcript = storage.read_data(pid, "transcript")
+    transcript = recipe.effective_transcript(pid)
     if transcript is None:
         raise HTTPException(409, "Video belum selesai dianalisis.")
     lifecycle.touch(pid)
@@ -763,16 +779,127 @@ def upload_music(pid: str, request: Request, file: UploadFile = File(...), user:
 
 @app.post("/api/projects/{pid}/render")
 def render_clip(pid: str, body: RenderRequest, user: dict = CurrentUser):
-    meta = _project_for(pid, user)
+    """Render dengan pengaturan lengkap dari klien (kompatibilitas). UI P1 memakai /render-recipe."""
+    return _queue_render(_project_for(pid, user), body, user, {})
+
+
+def _queue_render(meta: dict, req: RenderRequest, user: dict, extra: dict) -> dict:
     if meta.get("status") != "siap":
         raise HTTPException(409, "Video belum selesai dianalisis.")
-    if body.start >= (meta.get("duration") or 0):
+    if req.start >= (meta.get("duration") or 0):
         raise HTTPException(400, "Titik awal klip melebihi durasi video.")
     _check_pending(user)
     _check_quota(user, "render")
     lifecycle.ensure_quota(_unit(meta.get("unit_id")))  # kuota media penuh: render baru ditunda
-    label = body.title or f"Klip {body.start:.0f}s-{body.end:.0f}s"
-    return _queue_job("render", "render", meta, user, {"request": body.model_dump()}, label)
+    label = req.title or f"Klip {req.start:.0f}s-{req.end:.0f}s"
+    return _queue_job("render", "render", meta, user, {"request": req.model_dump(), **extra}, label)
+
+
+# ------------------------------------------------------------------ resep editing (P1)
+
+def _touch(pid: str) -> None:
+    """Aktivitas editing memperpanjang masa simpan media; resep tetap tersimpan walau media sudah dihapus."""
+    try:
+        lifecycle.touch(pid)
+    except lifecycle.MediaGone:
+        pass
+
+
+def _user_names(*ids) -> dict:
+    ids = [i for i in ids if i]
+    if not ids:
+        return {}
+    with db.engine().connect() as c:
+        return {r.id: (r.name or r.email) for r in c.execute(
+            select(db.users.c.id, db.users.c.name, db.users.c.email).where(db.users.c.id.in_(ids)))}
+
+
+def _recipe_public(pid: str, state: dict) -> dict:
+    return recipe.public(state, _user_names(state.get("updated_by")))
+
+
+def _recipe_update(pid: str, change, user: dict, response: Optional[Response] = None) -> dict:
+    """Perubahan resep dari sisi server (koreksi teks, rencana animasi): tidak menimpa perubahan lain. Versi baru
+    dikirim di header X-Recipe-Version agar klien tidak menganggapnya konflik."""
+    try:
+        state = recipe.server_update(pid, change, user["id"])
+    except recipe.TooLarge as exc:
+        raise HTTPException(413, str(exc))
+    if response is not None:
+        response.headers["X-Recipe-Version"] = str(state["version"])
+    return state
+
+
+@app.get("/api/projects/{pid}/recipe")
+def get_recipe(pid: str, user: dict = CurrentUser):
+    _project_for(pid, user)
+    return _recipe_public(pid, recipe.load(pid))
+
+
+@app.put("/api/projects/{pid}/recipe")
+def put_recipe(pid: str, body: recipe.SaveBody, user: dict = CurrentUser):
+    """Autosave dari editor. Hanya menulis database: tidak pernah memicu render FFmpeg. Versi yang sudah berubah di
+    server ditolak 409 beserta isi terbaru (dibuka di dua perangkat)."""
+    _project_for(pid, user)
+    try:
+        state = recipe.save(pid, body.recipe, body.version, user["id"])
+    except recipe.Conflict as exc:
+        return JSONResponse(status_code=409, content={
+            "detail": "Proyek ini baru saja diubah di perangkat atau tab lain.", "conflict": True,
+            "current": _recipe_public(pid, exc.current)})
+    except recipe.TooLarge as exc:
+        raise HTTPException(413, str(exc))
+    _touch(pid)
+    return _recipe_public(pid, state)
+
+
+@app.post("/api/projects/{pid}/render-recipe")
+def render_recipe(pid: str, body: recipe.RenderBody, user: dict = CurrentUser):
+    """Render klip dari resep TERSIMPAN (sumber yang sama dengan pratinjau). Versi harus sama dengan yang dilihat
+    pengguna; bila resep sudah berubah (perangkat lain / belum tersimpan), render ditolak agar hasil tidak berbeda
+    dari pratinjau."""
+    meta = _project_for(pid, user)
+    state = recipe.load(pid)
+    if state["version"] != body.version:
+        return JSONResponse(status_code=409, content={
+            "detail": "Resep editing berubah sejak pratinjau terakhir. Muat ulang atau tunggu tersimpan, lalu render.",
+            "conflict": True, "current": _recipe_public(pid, state)})
+    try:
+        req = recipe.to_render_request(pid, state["recipe"], body.start, body.end, body.title)
+    except ValueError as exc:   # rentang tidak sah (pydantic)
+        raise HTTPException(422, str(exc))
+    return _queue_render(meta, req, user, {"recipe_version": state["version"]})
+
+
+# ------------------------------------------------------------------ template editing (P1)
+
+@app.get("/api/templates")
+def list_templates(user: dict = CurrentUser):
+    return edit_templates.list_for(user)
+
+
+@app.post("/api/templates")
+def create_template(body: edit_templates.TemplateIn, user: dict = CurrentUser):
+    return edit_templates.create(body, user)
+
+
+@app.put("/api/templates/{template_id}")
+def update_template(template_id: str, body: edit_templates.TemplateUpdate, user: dict = CurrentUser):
+    return edit_templates.change(template_id, body, user)
+
+
+@app.delete("/api/templates/{template_id}")
+def delete_template(template_id: str, user: dict = CurrentUser):
+    edit_templates.remove(template_id, user)
+    return {"ok": True}
+
+
+@app.get("/api/editor/config")
+def editor_config(user: dict = CurrentUser):
+    """Konstanta editor yang harus sama di pratinjau & render (preset warna, ukuran output)."""
+    from .render import OUTPUT_SIZES
+    return {"looks": looks.public(), "output_sizes": OUTPUT_SIZES, "recipe_schema": recipe.SCHEMA_VERSION,
+            "limits": {"overlays": MAX_OVERLAYS, "checked": 30}}
 
 
 @app.get("/api/projects/{pid}/renders/{file}")
@@ -852,8 +979,8 @@ def _plan_context(pid: str, start: float, end: float, user: dict) -> dict:
     if end - start < 1:
         raise HTTPException(400, "Rentang klip tidak valid.")
     unit = _unit(meta.get("unit_id"))
-    return {"transcript": storage.read_data(pid, "transcript", {}) or {}, "start": start, "end": end,
-            "guidebook": unit["guidebook"] if unit else ""}
+    return {"transcript": recipe.effective_transcript(pid) or {}, "start": start, "end": end,
+            "guidebook": unit["guidebook"] if unit else "", "user": user}
 
 
 def _guidebook(ctx: dict, body: RangeRequest) -> str:
@@ -863,11 +990,22 @@ def _guidebook(ctx: dict, body: RangeRequest) -> str:
     return base if not extra or extra == base else (f"{base}\n{extra}" if base else extra)
 
 
-def _save_range(pid: str, items: list[dict], start: float, end: float) -> list[dict]:
+def _save_range(pid: str, items: list[dict], start: float, end: float, ctx: dict, response: Response) -> list[dict]:
     new = plan.normalize(items, start, end)
-    merged = plan.merge(storage.read_data(pid, "plan", []) or [], new, start, end)
-    storage.write_data(pid, "plan", merged)
-    return merged
+    out: dict = {}
+
+    def change(r: recipe.Recipe) -> recipe.Recipe:
+        merged = plan.merge(recipe.effective_overlays(pid, r), new, start, end)[:MAX_OVERLAYS]
+        out["items"] = merged
+        return _with_overlays(r, merged)
+
+    _recipe_update(pid, change, ctx["user"], response)
+    return out["items"]
+
+
+def _with_overlays(r: recipe.Recipe, items: list[dict]) -> recipe.Recipe:
+    r.overlays = [PlanItem(**i) for i in items]
+    return r
 
 
 @app.get("/api/settings")
@@ -932,23 +1070,26 @@ def get_faces(pid: str, user: dict = CurrentUser):
 @app.get("/api/projects/{pid}/plan")
 def get_plan(pid: str, user: dict = CurrentUser):
     _project_for(pid, user)
-    return storage.read_data(pid, "plan", []) or []
+    return recipe.effective_overlays(pid)
 
 
 @app.put("/api/projects/{pid}/plan")
-def put_plan(pid: str, items: list[PlanItem], user: dict = CurrentUser):
+def put_plan(pid: str, items: list[PlanItem], response: Response, user: dict = CurrentUser):
+    """Kompatibilitas klien lama: rencana animasi kini bagian dari resep (overlays)."""
     meta = _project_for(pid, user)
-    lifecycle.touch(pid)
+    if len(items) > MAX_OVERLAYS:
+        raise HTTPException(422, f"Maksimal {MAX_OVERLAYS} animasi per proyek.")
+    _touch(pid)
     data = plan.normalize([i.model_dump() for i in items], 0, meta.get("duration") or 1e9)
-    storage.write_data(pid, "plan", data)
+    _recipe_update(pid, lambda r: _with_overlays(r, data), user, response)
     return data
 
 
 @app.post("/api/projects/{pid}/plan/auto")
-def plan_auto(pid: str, body: RangeRequest, user: dict = CurrentUser):
+def plan_auto(pid: str, body: RangeRequest, response: Response, user: dict = CurrentUser):
     ctx = _plan_context(pid, body.start, body.end, user)
     items = plan.heuristic(ctx["transcript"], storage.read_data(pid, "energy", []) or [], ctx["start"], ctx["end"])
-    return _save_range(pid, items, ctx["start"], ctx["end"])
+    return _save_range(pid, items, ctx["start"], ctx["end"], ctx, response)
 
 
 @app.post("/api/projects/{pid}/plan/prompt")
@@ -958,20 +1099,20 @@ def plan_prompt(pid: str, body: RangeRequest, user: dict = CurrentUser):
 
 
 @app.post("/api/projects/{pid}/plan/import")
-def plan_import(pid: str, body: PlanImport, user: dict = CurrentUser):
+def plan_import(pid: str, body: PlanImport, response: Response, user: dict = CurrentUser):
     ctx = _plan_context(pid, body.start, body.end, user)
     try:
         items = plan.parse_reply(body.text)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    saved = _save_range(pid, items, ctx["start"], ctx["end"])
+    saved = _save_range(pid, items, ctx["start"], ctx["end"], ctx, response)
     if not any(ctx["start"] <= i["start"] < ctx["end"] for i in saved):
         raise HTTPException(400, "JSON terbaca, tetapi tidak ada elemen yang waktunya di dalam rentang klip ini.")
     return saved
 
 
 @app.post("/api/projects/{pid}/plan/ai")
-def plan_ai(pid: str, body: RangeRequest, user: dict = CurrentUser):
+def plan_ai(pid: str, body: RangeRequest, response: Response, user: dict = CurrentUser):
     ctx = _plan_context(pid, body.start, body.end, user)
     settings = _ai_settings()
     provider = settings["provider"]
@@ -998,7 +1139,7 @@ def plan_ai(pid: str, body: RangeRequest, user: dict = CurrentUser):
     if not cfg.get("model") and user["role"] == "admin":
         settings["providers"].setdefault(provider, {})["model"] = model
         db.set_setting("ai", settings)
-    return _save_range(pid, items, ctx["start"], ctx["end"])
+    return _save_range(pid, items, ctx["start"], ctx["end"], ctx, response)
 
 
 # ------------------------------------------------------------------ admin

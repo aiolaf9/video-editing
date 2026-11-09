@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clipper, faces, jobcontrol, media, netpolicy, overlays, resources, storage, transcribe
+from . import clipper, faces, jobcontrol, media, netpolicy, overlays, recipe, resources, storage, transcribe
 from .config import (ANALYZE_TIMEOUT_BASE, ANALYZE_TIMEOUT_PER_MIN, DOWNLOAD_PROXY, JOB_TIMEOUT_MAX,
                      URL_IMPORT_MAX_MB, URL_IMPORT_MAX_REDIRECTS)
 from .jobs import Job
@@ -322,7 +322,8 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
 
     subs = None
     if req.subtitles.enabled:
-        transcript = storage.read_data(pid, "transcript", {}) or {}
+        # Transkrip + koreksi teks dari snapshot resep (atau resep proyek bila permintaan tanpa snapshot).
+        transcript = recipe.effective_transcript(pid, fixes=req.text_fixes) or {}
         s = req.subtitles
         ass = build_ass(transcript, req.start, req.end, width, height,
                         SubtitleOptions(style=s.style, font=s.font, size=s.size, color=s.color,
@@ -354,7 +355,8 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
     overlay_dir = renders / f"tmp_{rid}"
     if req.animations:
         overlay_dir.mkdir(exist_ok=True)
-        for item in storage.read_data(pid, "plan", []) or []:
+        items = [i.model_dump() for i in req.overlays] if req.overlays is not None else recipe.effective_overlays(pid)
+        for item in items:
             s, e = max(item["start"], req.start), min(item["end"], req.end)
             if e - s < 0.3:
                 continue
