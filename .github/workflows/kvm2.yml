@@ -1,0 +1,123 @@
+# P0.1: simulasi profil Hostinger KVM 2 (2 vCPU, 8 GB, tanpa GPU). Seluruh stack (compose + deploy/compose.kvm2.yml
+# + deploy/kvm2.env.example) dan satu container "layanan lain" (RAM 3 GiB + pengukur CPU) dijalankan di dalam slice
+# systemd bertopi 2 vCPU / 8 GB tanpa swap, lalu diberi beban nyata: Whisper base (per potongan) atas video ucapan
+# 15 menit + tiga render klip. Membuktikan tidak ada OOM dan layanan lain tetap kebagian CPU. Waktu hanya indikatif:
+# runner GitHub bukan KVM 2 (kecepatan nyata harus diukur di VPS).
+name: Simulasi KVM 2
+
+on:
+  push:
+    branches: ["v2/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kvm2-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+env:
+  COMPOSE: docker compose -f docker-compose.yml -f deploy/compose.kvm2.yml -f deploy/compose.kvm2-sim.yml
+  ADMIN_EMAIL: admin@kvm2.local
+
+jobs:
+  simulate:
+    name: RAM 8 GB / 2 vCPU tanpa OOM (beban Whisper base 15 menit + render)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mesin runner & driver cgroup Docker
+        run: |
+          nproc; grep -m1 "model name" /proc/cpuinfo; free -m | sed -n 2p
+          driver=$(docker info -f '{{.CgroupDriver}} cgroup-v{{.CgroupVersion}}'); echo "docker: $driver"
+          test "$driver" = "systemd cgroup-v2"
+
+      - name: Host tiruan KVM 2 (slice systemd 2 vCPU / 8 GB, tanpa swap)
+        run: |
+          printf '[Slice]\nCPUAccounting=yes\nMemoryAccounting=yes\nCPUQuota=200%%\nMemoryMax=8G\nMemorySwapMax=0\n' \
+            | sudo tee /etc/systemd/system/kvm2sim.slice
+          sudo systemctl daemon-reload && sudo systemctl start kvm2sim.slice
+          cat /sys/fs/cgroup/kvm2sim.slice/cpu.max /sys/fs/cgroup/kvm2sim.slice/memory.max
+
+      - name: Build image produksi
+        run: docker build -t video-editing:latest .
+
+      - name: Video ucapan (FLEURS id, CC-BY 4.0) 90 detik & 15 menit
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q "huggingface_hub>=0.24"
+          HF_HUB_OFFLINE=0 python bench/p552/fleurs_corpus.py "$RUNNER_TEMP/corpus" --clean 1 --long-seconds 900 > corpus.txt
+          wav="$RUNNER_TEMP/corpus/id_long.wav"
+          for spec in "short 90" "long 900"; do set -- $spec
+            ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=640x360:rate=25" -stream_loop -1 -i "$wav" \
+              -t "$2" -c:v libx264 -preset veryfast -crf 32 -pix_fmt yuv420p -c:a aac -b:a 64k "$RUNNER_TEMP/$1.mp4"
+          done
+          ls -la "$RUNNER_TEMP"/*.mp4
+
+      - name: Stack profil KVM 2 di host tiruan
+        run: |
+          cp deploy/kvm2.env.example .env
+          pg=$(openssl rand -hex 16); adm=$(openssl rand -hex 12)
+          echo "::add-mask::$pg"; echo "::add-mask::$adm"
+          sed -i '/^POSTGRES_PASSWORD=/d; /^DOMAIN=/d; /^ADMIN_EMAIL=/d; /^ADMIN_PASSWORD=/d' .env
+          printf 'POSTGRES_PASSWORD=%s\nDOMAIN=localhost\nADMIN_EMAIL=%s\nADMIN_PASSWORD=%s\n' "$pg" "$ADMIN_EMAIL" "$adm" >> .env
+          echo "ADMIN_PASSWORD=$adm" >> "$GITHUB_ENV"
+          # "Layanan lain" di VPS: memegang 3 GiB RAM dan mengukur jatah CPU-nya (satu thread) tiap detik.
+          docker run -d --name layanan-lain --cgroup-parent kvm2sim.slice --entrypoint python video-editing:latest -u -c '
+          import json, time
+          ballast = bytearray(3 * 2**30)
+          for i in range(0, len(ballast), 4096): ballast[i] = 1
+          while True:
+              t, n = time.time(), 0
+              while time.time() - t < 1.0:
+                  sum(range(2000)); n += 1
+              print(json.dumps({"t": time.time(), "ops": n}))'
+          sleep 20   # pengukuran dasar: layanan lain sendirian (= satu core penuh)
+          $COMPOSE up -d --no-build
+          for i in $(seq 1 120); do
+            unhealthy=$($COMPOSE ps --format '{{.Service}} {{.Health}}' | awk '$2 != "" && $2 != "healthy"' || true)
+            [ -z "$unhealthy" ] && break; sleep 2
+          done
+          $COMPOSE ps -a --format 'table {{.Service}}\t{{.Status}}'
+          curl -fsSk --resolve localhost:443:127.0.0.1 https://localhost/api/health
+          echo "STACK_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Beban nyata & pemeriksaan OOM
+        timeout-minutes: 70
+        run: |
+          python3 deploy/checks/kvm2_load.py "$RUNNER_TEMP/short.mp4" "$RUNNER_TEMP/long.mp4" | tee kvm2-sim.txt
+          ooms=$(docker events --since "$STACK_START" --until "$(date +%s)" --filter event=oom --format '{{.Actor.Attributes.name}}')
+          if [ -n "$ooms" ]; then echo "event OOM: $ooms"; exit 1; fi
+          echo "tidak ada event OOM Docker"
+
+      - name: Ringkasan
+        if: always()
+        run: |
+          $COMPOSE logs --no-color --tail 200 > compose-logs.txt 2>&1 || true
+          docker logs layanan-lain > layanan-lain.txt 2>&1 || true
+          { echo "## Simulasi KVM 2"; echo '```'; grep '^RINGKASAN' kvm2-sim.txt || echo "tidak ada ringkasan"; echo '```'; } \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -f .env
+          $COMPOSE down -v --remove-orphans > /dev/null 2>&1 || true
+          docker rm -f layanan-lain > /dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: simulasi-kvm2
+          path: |
+            kvm2-sim.txt
+            compose-logs.txt
+            layanan-lain.txt
+            corpus.txt
+          if-no-files-found: ignore
+          retention-days: 30

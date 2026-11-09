@@ -158,7 +158,8 @@ def test_user_action_capped_by_72h_via_api(client, ready_project):
 
 def test_active_job_media_never_deleted():
     pid = _managed_project()
-    t_far = time.time() + 100 * H  # jauh melewati 24 jam dan 72 jam
+    # Lewat masa simpan, masih dalam toleransi pemulihan job (MEDIA_JOB_GRACE_HOURS). Sesudah toleransi: P0.1.
+    t_far = lifecycle.info(pid)["expires_at"] + 0.5 * lifecycle.MEDIA_JOB_GRACE_HOURS * H
     job = jobs.submit("render", "render", pid, {"request": RENDER_BODY}, "lease", queue="uji-p2")
     for status_step in ("antre", "jalan", "berhenti"):
         if status_step == "jalan":
@@ -226,7 +227,7 @@ def test_cleanup_after_worker_crash():
     (renders / "setengah.mp4").write_bytes(b"x" * 100)
     for p in (renders / "tmp_abc", renders / "sub_x.ass", renders / "setengah.mp4"):
         _make_old(p)
-    lifecycle.sweep(now=time.time() + 100 * H)
+    lifecycle.sweep(now=lifecycle.info(pid2)["expires_at"] + 0.5 * lifecycle.MEDIA_JOB_GRACE_HOURS * H)
     assert (renders / "tmp_abc").exists() and (renders / "setengah.mp4").exists()  # job aktif: tidak disentuh
 
     # (c) Sesudah job selesai/batal: sisa render terputus dibersihkan, render tercatat tetap ada.

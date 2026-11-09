@@ -185,3 +185,18 @@ def test_running_job_of_dead_worker_is_reported_and_recovered(client, fleet):
 
 def test_unknown_queue_without_any_registered_worker_is_not_ready(fleet):
     assert monitor.queue_state("antrean-yang-tidak-pernah-ada") == "tanpa_worker"
+
+
+def test_downloaded_url_waiting_for_offline_analysis_says_so(client, fleet):
+    """P0.1: unduhan dari link selesai, worker analisis mati -> status menyebut keduanya dengan jujur."""
+    pid = storage.create_project("p01-link")["id"]
+    job = jobs.submit("analyze", "analisis", pid, {"language": None, "after_download": True}, "Analisis video")
+    view = jobs.view(jobs.get(job["id"]))
+    assert view["wait"]["reason"] == "worker_tidak_aktif"
+    assert view["message"].startswith("Video dari link sudah berhasil diunduh. Analisis menunggu: server analisis video")
+    assert "%" not in view["message"]
+    plain = jobs.view(jobs.get(jobs.submit("render", "render", pid, {}, "Render")["id"]))
+    assert plain["message"].startswith("Server render video sedang tidak aktif")
+    fleet.up("analisis", ["analisis", "render"])                  # worker kembali: pesan tidak lagi "tidak aktif"
+    assert jobs.view(jobs.get(job["id"]))["wait"]["reason"] != "worker_tidak_aktif"
+    storage.delete_project(pid)

@@ -198,9 +198,12 @@ Video sumber, preview, dan hasil render bersifat **sementara**:
 - dihapus otomatis `MEDIA_RETENTION_HOURS` (bawaan 2 jam) setelah aktivitas terakhir pengguna,
   dan paling lama `MEDIA_MAX_HOURS` (bawaan 5 jam) sejak upload;
 - membuka atau memantau proyek tidak memperpanjang masa simpan; mengedit, merender, atau mengunduh memperpanjangnya;
-- media yang sedang dipakai tidak pernah dihapus: pekerjaan antre/berjalan (termasuk yang sedang dipulihkan
-  setelah worker mati), upload yang sedang ditulis, dan file yang sedang diunduh. Setelah pemakaian terakhir
-  selesai, media yang sudah lewat masa simpan langsung dihapus;
+- media yang sedang dipakai tidak dihapus: pekerjaan yang benar-benar berjalan (FFmpeg/Whisper aktif), upload
+  yang sedang ditulis, dan file yang sedang diunduh. Setelah pemakaian terakhir selesai, media yang sudah lewat masa
+  simpan langsung dihapus;
+- pekerjaan yang masih antre atau worker-nya mati menahan media paling lama masa simpan + `MEDIA_JOB_GRACE_HOURS`
+  (bawaan 1 jam, waktu bagi worker untuk pulih). Setelah itu pekerjaan diakhiri "gagal (kedaluwarsa)" dengan
+  pesan jelas dan media dihapus, sehingga tidak ada media yang tersimpan tanpa batas waktu;
 - riwayat hasil render tetap tercatat, tetapi file yang sudah dihapus tidak ditawarkan untuk diunduh;
 - akun, unit, tema, Guidebook, dan riwayat proyek tetap tersimpan.
 

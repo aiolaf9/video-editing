@@ -133,6 +133,40 @@ jobs:
           path: junit-sqlite.xml
           retention-days: 14
 
+  test-browser:
+    name: Uji browser (worker mati sungguhan, Chromium)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            requirements-browser.txt
+      - run: pip install -r requirements-dev.txt -r requirements-browser.txt
+      - name: Chromium untuk Playwright
+        run: python -m playwright install --with-deps chromium
+      - name: Pytest -m browser (web + worker io + worker analisis sebagai proses nyata, SIGKILL worker analisis)
+        env:
+          BROWSER_ARTIFACTS: browser-shots
+        run: pytest -q -p no:cacheprovider -m browser --junitxml=junit-browser.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: uji-browser
+          path: |
+            junit-browser.xml
+            browser-shots/
+          if-no-files-found: ignore
+          retention-days: 14
+
   test-postgres:
     name: Tes PostgreSQL (seluruh regresi + migrasi PG)
     runs-on: ubuntu-24.04

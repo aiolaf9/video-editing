@@ -128,8 +128,10 @@ def test_animation_plan_endpoints_and_render(sample_video, fake_transcript, monk
     saved = client.put(f"/api/projects/{pid}/plan", json=items).json()
     assert saved[0]["text"] == "Diedit manual"
 
-    # Tanpa API key: pesan jelas, bukan crash.
+    # Tanpa API key: pesan jelas, bukan crash. (Penyedia dipilih eksplisit: bawaan P0 = tanpa AI eksternal, dan tes
+    # tidak boleh bergantung pada pengaturan yang ditinggalkan tes lain.)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client.put("/api/settings", json={"provider": "claude", "clear_key": True, "model": "claude-haiku-5-5"})
     r = client.post(f"/api/projects/{pid}/plan/ai", json=rng)
     assert r.status_code == 400 and "API key" in r.json()["detail"]
     monkeypatch.setattr(plan, "ask_claude", lambda *a, **k: [{"type": "keyword", "start": 2, "end": 3, "text": "AI"}])

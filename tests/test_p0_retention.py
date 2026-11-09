@@ -81,6 +81,11 @@ def test_active_job_protects_media_past_the_limit(policy_2_5):
     job = jobs.submit("render", "render", pid, {}, "lindung", queue="uji-p0-simpan")
     far = time.time() + 6 * H                                                              # lewat 2 jam & 5 jam
     assert jobs.claim(("uji-p0-simpan",), "w-p0")["id"] == job["id"]                       # job sedang berjalan
+    from sqlalchemy import update
+
+    from app import db
+    with db.engine().begin() as c:                      # heartbeat hidup: FFmpeg benar-benar sedang jalan
+        c.execute(update(db.jobs).where(db.jobs.c.id == job["id"]).values(heartbeat=far - 5))
     lifecycle.sweep(now=far)
     assert (PROJECTS_DIR / pid / "source.mp4").exists()                                    # job aktif: tidak dihapus
     assert (PROJECTS_DIR / pid / "renders" / "klip.mp4").exists()

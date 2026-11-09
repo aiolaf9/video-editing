@@ -25,6 +25,14 @@ def _expire(pid, hours=30):
     _set_media(pid, uploaded_at=time.time() - hours * H, last_activity=time.time() - hours * H)
 
 
+def _expire_within_job_grace(pid):
+    """Masa simpan baru saja habis (setengah toleransi pemulihan job yang lalu): job aktif masih melindungi media.
+    Setelah toleransi habis, job yang tidak hidup diakhiri (tests/test_p01_lifecycle.py)."""
+    row = lifecycle.info(pid)
+    shift = row["expires_at"] - time.time() + 0.5 * lifecycle.MEDIA_JOB_GRACE_HOURS * H
+    _set_media(pid, uploaded_at=row["uploaded_at"] - shift, last_activity=row["last_activity"] - shift)
+
+
 def _state(pid):
     return lifecycle.info(pid)["state"]
 
@@ -244,7 +252,7 @@ def test_queued_job_runs_after_expiry_then_media_collected(monkeypatch):
     pid = _project()
     first = jobs.submit("render", "render", pid, {}, "a", queue="uji-collect")
     second = jobs.submit("render", "render", pid, {}, "b", queue="uji-collect")
-    _expire(pid, hours=80)
+    _expire_within_job_grace(pid)
     lifecycle.sweep()
     assert _state(pid) == "kedaluwarsa" and (PROJECTS_DIR / pid / "source.mp4").exists()
     ran = []
@@ -271,7 +279,7 @@ def test_recovering_worker_job_keeps_media():
     jobs.claim(("uji-pulih",), "w-mati")
     with db.engine().begin() as c:  # worker mati: heartbeat basi, belum dipulihkan
         c.execute(update(db.jobs).where(db.jobs.c.id == job["id"]).values(heartbeat=time.time() - 9999))
-    _expire(pid, hours=80)
+    _expire_within_job_grace(pid)
     lifecycle.sweep()
     assert (PROJECTS_DIR / pid / "source.mp4").exists()
     jobs.requeue_stale()  # dipulihkan ke antrean: tetap dilindungi

@@ -1,0 +1,2 @@
+# Hanya untuk uji browser sungguhan di CI (pytest -m browser). Bukan dependensi produksi.
+playwright==1.63.0

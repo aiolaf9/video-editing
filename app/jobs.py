@@ -225,6 +225,8 @@ def view_many(items: list[dict]) -> list[dict]:
 
 NO_WORKER_QUEUED_MESSAGE = ("Server pemrosesan sedang tidak aktif. Pekerjaan Anda tetap tersimpan dan akan "
                             "dilanjutkan otomatis saat server aktif kembali.")
+QUEUE_SERVER = {"analisis": "Server analisis video", "render": "Server render video", "io": "Server pengunduh video"}
+DOWNLOADED_PREFIX = "Video dari link sudah berhasil diunduh. Analisis menunggu: "
 WORKER_LOST_MESSAGE = ("Server pemrosesan berhenti merespons. Pekerjaan Anda tetap tersimpan dan akan diulang "
                        "otomatis saat server aktif kembali.")
 BUSY_MESSAGE = "Menunggu kapasitas server (memori/CPU sedang dipakai pekerjaan lain); akan mulai otomatis."
@@ -234,7 +236,11 @@ def _waiting_message(job: dict, ahead: int, cap: Optional[dict]) -> tuple[str, s
     """(pesan, kode alasan) untuk job 'antre' menurut status worker antreannya saat ini."""
     state = None if cap is None else cap.get(job["queue"], {}).get("state", "tanpa_worker")
     if state in ("tanpa_worker", "mampu_offline"):
-        return NO_WORKER_QUEUED_MESSAGE, "worker_tidak_aktif"
+        server = QUEUE_SERVER.get(job["queue"])
+        msg = NO_WORKER_QUEUED_MESSAGE.replace("Server pemrosesan", server, 1) if server else NO_WORKER_QUEUED_MESSAGE
+        if job.get("task") == "analyze" and _payload(job).get("after_download"):
+            msg = DOWNLOADED_PREFIX + msg[0].lower() + msg[1:]
+        return msg, "worker_tidak_aktif"
     if state == "konfigurasi":
         return job["message"] or "Menunggu server dengan kapasitas memori yang cukup.", "kapasitas_tidak_cukup"
     if state == "sementara":
@@ -242,6 +248,16 @@ def _waiting_message(job: dict, ahead: int, cap: Optional[dict]) -> tuple[str, s
     if ahead:
         return f"Menunggu giliran ({ahead} pekerjaan lain sedang/akan diproses)...", "antrean"
     return job["message"] or "Menunggu giliran...", "antrean"
+
+
+def _payload(job: dict) -> dict:
+    raw = job.get("payload")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return {}
 
 
 def _fmt_wait(seconds: float) -> str:

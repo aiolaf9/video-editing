@@ -11,6 +11,9 @@ Aturan
 Keamanan terhadap race condition
 - Job aktif (antre/jalan/berhenti) = "lease" atas media proyeknya. Upload yang sedang ditulis dan file
   yang sedang diunduh memegang lease di tabel media_leases (kedaluwarsa sendiri bila prosesnya mati).
+- Batas pemulihan (P0.1, expire_held_jobs): lease job yang TIDAK hidup (antre, dibatalkan, atau heartbeat basi)
+  berakhir pada masa simpan + MEDIA_JOB_GRACE_HOURS; job diakhiri `gagal` (kedaluwarsa) lalu media dihapus. Job yang
+  prosesnya hidup tidak pernah dihentikan di sini; batasnya batas waktu job (watchdog worker).
 - Kuota unit direservasi secara atomik: baris unit dikunci (PostgreSQL row lock; SQLite kunci tulis)
   sehingga dua upload bersamaan tidak bisa sama-sama lolos melewati kuota.
 - Penghapusan dua fase: (1) tandai `menghapus` secara atomik, (2) periksa ulang job aktif SESUDAH
@@ -32,7 +35,7 @@ from typing import Iterator, Optional
 from sqlalchemy import and_, delete, func, insert, or_, select, text, update
 
 from . import db
-from .config import (DATA_DIR, DISK_MIN_FREE_MB, DISK_MIN_FREE_PCT, INCOMPLETE_UPLOAD_HOURS, MEDIA_LIFECYCLE,
+from .config import (DATA_DIR, DISK_MIN_FREE_MB, DISK_MIN_FREE_PCT, INCOMPLETE_UPLOAD_HOURS, MEDIA_JOB_GRACE_HOURS, MEDIA_LIFECYCLE,
                      MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS, MEDIA_WARN_HOURS, PROJECTS_DIR,
                      STORAGE_QUOTA_MB_DEFAULT, TEMP_FILE_GRACE_MINUTES, UPLOAD_TMP_DIR)
 
@@ -48,6 +51,9 @@ LEASE_TTL = {"upload": 600.0, "download": 300.0}  # diperpanjang berkala selama 
 LEASE_RENEW_EVERY = 60.0
 _OWNER = f"{socket.gethostname()}-{os.getpid()}"[:80]
 ACTIVE_JOB = ("antre", "jalan", "berhenti")
+JOB_LIVE_AFTER = 120.0             # = jobs.STALE_AFTER: heartbeat job lebih tua dari ini = prosesnya mati
+EXPIRED_JOB_ERROR = ("Kedaluwarsa: server pemrosesan tidak tersedia sampai batas penyimpanan media habis. "
+                     "File video sudah dihapus otomatis; unggah ulang video untuk mencoba lagi.")
 _SWEEP_LOCK_KEY = 727275
 
 
@@ -420,6 +426,9 @@ def _finish_delete(pid: str, reason: str, now: float) -> bool:
     pm = db.project_media.c
     with db.engine().connect() as c:  # fase 2: periksa ulang lease SESUDAH klaim
         busy = pid in _busy_projects(c, [pid], now)
+    # Pengaman kedua: file proyek masih dibuka proses di mesin/container ini (mis. FFmpeg/Whisper yang worker-nya
+    # tampak mati karena heartbeat terlambat). Di container lain tidak terlihat; di sana heartbeat job yang dipakai.
+    busy = busy or _in_use(PROJECTS_DIR / pid, _open_paths())
     if busy:
         with db.engine().begin() as c:
             c.execute(update(db.project_media).where(pm.project_id == pid, pm.state == "menghapus").values(
@@ -440,6 +449,43 @@ def _expired_candidates(now: float) -> list[str]:
         expired = [r[0] for r in c.execute(select(pm.project_id).where(pm.state == "tersedia", _expired_clause(now)))]
         busy = _busy_projects(c, expired, now) if expired else set()
     return [pid for pid in expired if pid not in busy]
+
+
+def _live_job(now: float):
+    """Job yang prosesnya benar-benar hidup (FFmpeg/Whisper sedang memakai file): jalan/berhenti + heartbeat baru."""
+    j = db.jobs.c
+    return and_(j.status.in_(("jalan", "berhenti")), j.heartbeat >= now - JOB_LIVE_AFTER)
+
+
+def expire_held_jobs(now: Optional[float] = None) -> list[str]:
+    """Batas pemulihan job (P0.1). Media yang lewat masa simpan + MEDIA_JOB_GRACE_HOURS tidak lagi ditahan job yang
+    antre, dibatalkan, atau milik worker mati: job itu diakhiri `gagal` (kedaluwarsa) secara atomik. Job yang
+    prosesnya hidup tidak disentuh. Mengembalikan proyek yang job-nya diakhiri (medianya lalu dihapus sweep)."""
+    now = now or time.time()
+    pm, j = db.project_media.c, db.jobs.c
+    with db.engine().connect() as c:
+        overdue = [r[0] for r in c.execute(select(pm.project_id).where(
+            pm.state == "tersedia", _expired_clause(now - MEDIA_JOB_GRACE_HOURS * HOUR)))]
+    ended: list[str] = []
+    for pid in overdue:
+        with db.engine().begin() as c:
+            # Satu UPDATE bersyarat: worker yang baru saja mengambil job (heartbeat baru) tidak ikut terhenti.
+            rows = c.execute(update(db.jobs).where(
+                j.project_id == pid, j.status.in_(ACTIVE_JOB), ~_live_job(now)).values(
+                status="gagal", error=EXPIRED_JOB_ERROR, message="Kedaluwarsa", finished=now, heartbeat=now,
+                worker=None).returning(j.task)).fetchall()
+        if not rows:
+            continue
+        ended.append(pid)
+        log.warning("Media %s lewat batas pemulihan: %d job diakhiri (kedaluwarsa).", pid, len(rows))
+        if {"analyze", "download"} & {r[0] for r in rows}:
+            from . import storage
+            try:
+                if (storage.load_project(pid) or {}).get("status") != "siap":
+                    storage.update_project(pid, status="gagal")
+            except Exception:  # metadata proyek hilang: penghapusan media tetap berjalan
+                log.exception("Status proyek %s tidak dapat diperbarui", pid)
+    return ended
 
 
 def _stuck_deleting(now: float) -> list[str]:
@@ -626,6 +672,7 @@ def _sweep_locked(now: float, result: dict) -> dict:
             from . import uploads
             result["uploads_expired"] = uploads.expire(now)  # upload terputus yang tidak dilanjutkan
             result["leases_expired"] = _expire_leases(now)
+            result["jobs_expired"] = len(expire_held_jobs(now))
             for pid in _expired_candidates(now):
                 result["expired"] += delete_media(pid, "kedaluwarsa", now)
             for pid in _stuck_deleting(now):  # hapus yang sempat terputus (worker mati di tengah jalan)

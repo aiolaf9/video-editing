@@ -87,6 +87,10 @@ MEDIA_MAX_HOURS = float(os.environ.get("MEDIA_MAX_HOURS", "5"))
 # Peringatan di UI sebelum media dihapus. Bawaan seperempat masa simpan (maks. 3 jam): 30 menit untuk 2 jam, sehingga
 # peringatan tidak tampil terus sejak upload.
 MEDIA_WARN_HOURS = float(os.environ.get("MEDIA_WARN_HOURS", str(min(3.0, MEDIA_RETENTION_HOURS / 4))))
+# Batas pemulihan job (P0.1): job yang masih antre, dibatalkan, atau worker-nya mati (heartbeat basi) hanya melindungi
+# media sampai masa simpan + toleransi ini. Lewat dari itu job diakhiri "gagal (kedaluwarsa)" dan media dihapus.
+# Job yang BENAR-BENAR berjalan (heartbeat hidup: FFmpeg/Whisper aktif) tidak dihentikan; batasnya batas waktu job.
+MEDIA_JOB_GRACE_HOURS = float(os.environ.get("MEDIA_JOB_GRACE_HOURS", "1"))
 # Pembersihan cadangan di proses web (mode server, worker terpisah): media tetap terhapus walau semua worker mati.
 WEB_CLEANUP = os.environ.get("WEB_CLEANUP", "1") == "1"
 CLEANUP_INTERVAL = float(os.environ.get("CLEANUP_INTERVAL", "300"))       # detik antar pembersihan

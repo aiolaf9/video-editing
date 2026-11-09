@@ -1,0 +1,18 @@
+# KHUSUS SIMULASI CI (.github/workflows/kvm2.yml), bukan untuk VPS: semua container aplikasi dimasukkan ke slice
+# systemd `kvm2sim.slice` (CPUQuota=200%, MemoryMax=8G, tanpa swap) yang meniru Hostinger KVM 2. Batas per container
+# tetap dari docker-compose.yml + deploy/compose.kvm2.yml + deploy/kvm2.env.example.
+services:
+  db:
+    cgroup_parent: kvm2sim.slice
+  migrate:
+    cgroup_parent: kvm2sim.slice
+  web:
+    cgroup_parent: kvm2sim.slice
+  worker-analisis:
+    cgroup_parent: kvm2sim.slice
+  worker-render:
+    cgroup_parent: kvm2sim.slice
+  worker-io:
+    cgroup_parent: kvm2sim.slice
+  caddy:
+    cgroup_parent: kvm2sim.slice

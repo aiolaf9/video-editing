@@ -264,6 +264,9 @@ function startPolling() {
     try {
       const wasReady = p.status === "siap";
       state.project = await api(`/api/projects/${p.id}`);
+      // Nama/status proyek berubah (mis. unduhan dari link selesai sementara analisis masih menunggu):
+      // perbarui daftar Proyek juga, jangan menunggu semua job selesai.
+      if (state.project.name !== p.name || state.project.status !== p.status) refreshProjects();
       await refreshProjectData();
       if (!wasReady && state.project.status === "siap") {
         toast((state.transcript.segments || []).length ? "Analisis selesai! Pilih klip favorit Anda."
