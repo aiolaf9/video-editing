@@ -132,7 +132,10 @@ def containers():
                      "limit_mb": (info["HostConfig"]["Memory"] or 0) // 2**20,
                      "cpus": (info["HostConfig"]["NanoCpus"] or 0) / 1e9,
                      "peak_mb": int(read(scope / "memory.peak", "0")) // 2**20,
-                     "in_slice": scope.exists(), "oom_kill": events(scope / "memory.events").get("oom_kill", 0)})
+                     # CgroupParent tetap tercatat setelah container keluar (mis. migrate); folder scope-nya tidak.
+                     "in_slice": info["HostConfig"].get("CgroupParent") == SLICE.name,
+                     "running": info["State"]["Running"],
+                     "oom_kill": events(scope / "memory.events").get("oom_kill", 0)})
     return rows
 
 
@@ -153,9 +156,16 @@ def main():
     b = upload(long_)
     renders = []
     for start in (0, 25, 50):
-        code, res = call("POST", f"/api/projects/{a}/render",
-                         {"start": start, "end": start + 25, "title": f"sim-{start}", "aspect": "9:16"})
-        renders.append({"start": start, "code": code, "job": (res or {}).get("id")})
+        # Profil KVM 2: MAX_PENDING_PER_USER=3. Saat batas tercapai aplikasi menolak dengan 429 (perilaku yang benar);
+        # pengguna mencoba lagi setelah ada slot kosong. Penolakan dicatat sebagai bukti batas antrean bekerja.
+        body = {"start": start, "end": start + 25, "title": f"sim-{start}", "aspect": "9:16"}
+        rejected, deadline = 0, time.time() + TIMEOUT
+        code, res = call("POST", f"/api/projects/{a}/render", body)
+        while code == 429 and time.time() < deadline:
+            rejected += 1
+            time.sleep(10)
+            code, res = call("POST", f"/api/projects/{a}/render", body)
+        renders.append({"start": start, "code": code, "job": (res or {}).get("id"), "ditolak_429_dulu": rejected})
     pb = wait_ready(b, TIMEOUT)
     deadline = time.time() + 900
     while time.time() < deadline and any(j["status"] in ("antre", "jalan", "berhenti") for j in project(a)["jobs"]):
