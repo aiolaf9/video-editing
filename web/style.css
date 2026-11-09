@@ -282,3 +282,83 @@ table.grid td select, table.grid td input { padding: 4px 6px; }
   .transcript .seg-edit { opacity: 1; }
 }
 #clipList li.notice { list-style: none; padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--accent-2); border-radius: 8px; color: var(--text); font-size: 13px; }
+
+/* ===================== P2: PWA & editor di HP ===================== */
+.install-btn { white-space: nowrap; }
+.install-help { max-width: min(420px, 90vw); background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 18px; }
+.install-help::backdrop { background: rgba(0,0,0,.6); }
+.mobile-only { display: none !important; }
+.tl-h { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -7px; pointer-events: auto; cursor: ew-resize;
+  touch-action: none; z-index: 2; }
+.tl-h::after { content: ""; position: absolute; left: 5px; top: 22%; bottom: 22%; width: 4px; border-radius: 2px;
+  background: var(--accent-2); }
+.tl-h[data-h="start"] { left: 0; }
+.tl-h[data-h="end"] { left: 100%; }
+.timeline { touch-action: pan-y; }
+
+@media (max-width: 760px) {
+  .mobile-only { display: revert !important; }
+  .mobile-bar.mobile-only[hidden] { display: none !important; }
+  .topbar { padding: 8px 10px; padding-top: max(8px, env(safe-area-inset-top)); gap: 8px; }
+  .topbar .brand { font-size: 15px; white-space: nowrap; }
+  .topbar-right { flex-wrap: wrap; justify-content: flex-end; gap: 4px; min-width: 0; }
+  .install-btn .lbl { display: none; }
+  .install-btn { padding: 6px 10px; }
+  .health { display: none; }
+  .workspace { padding: 0 10px 12px; }
+  body.project-open .sidebar { display: none; }
+  /* Kolom grid tidak boleh melebar mengikuti isi yang bisa digeser (tab, pintasan): tanpa ini halaman lebih lebar
+     dari layar dan browser HP memperkecil tampilan. */
+  .layout, .editor { grid-template-columns: minmax(0, 1fr); }
+  .layout > *, .editor > *, .player-col, .style-col { min-width: 0; }
+  /* Isi kolom pemutar menjadi anak langsung .editor: pratinjau sticky tetap terlihat saat menggulir ke pengaturan
+     (sticky hanya berlaku di dalam induknya). */
+  .editor { display: block; }
+  .player-col { display: contents; }
+  .editor > * + *, .style-col { margin-top: 10px; }
+  .project-head .actions { gap: 6px; }
+  .project-head .actions button { padding: 6px 10px; font-size: 13px; }
+  .save-state { order: 3; }
+  .project-head { gap: 6px; margin-top: 8px; }
+  .project-head .title-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .project-head h1 { font-size: 17px; flex: 1 1 auto; min-width: 0; margin: 0; }
+  .back-btn { flex: 0 0 auto; }
+  /* Pratinjau selebar layar & menempel di atas saat menggulir ke pengaturan. */
+  .player-wrap { position: sticky; top: 0; z-index: 6; margin: 0 -10px; border-radius: 0; }
+  .timeline { height: 48px; margin-top: 8px; }
+  .tl-h { width: 30px; margin-left: -15px; }
+  .tl-h::after { left: 12px; width: 6px; }
+  .trim { gap: 6px; }
+  .trim label input { width: 72px; }
+  .mobile-nav { display: flex !important; gap: 6px; overflow-x: auto; padding: 8px 0 4px; scrollbar-width: none;
+    -webkit-overflow-scrolling: touch; }
+  .mobile-nav::-webkit-scrollbar { display: none; }
+  .mobile-nav button { flex: 0 0 auto; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line);
+    font-weight: 600; padding: 8px 14px; }
+  .tabs { overflow-x: auto; scrollbar-width: none; }
+  .tab { flex: 0 0 auto; white-space: nowrap; }
+  /* Bilah aksi bawah: tombol besar yang mudah dijangkau ibu jari. */
+  .mobile-bar { display: grid !important; grid-template-columns: repeat(4, 1fr); gap: 6px; position: fixed; left: 0;
+    right: 0; bottom: 0; z-index: 20; padding: 8px 10px; padding-bottom: max(8px, env(safe-area-inset-bottom));
+    background: var(--panel); border-top: 1px solid var(--line); box-shadow: 0 -6px 20px rgba(0,0,0,.35); }
+  .mobile-bar button { min-height: 48px; font-weight: 700; padding: 6px 4px; font-size: 14px; background: var(--panel-2);
+    border: 1px solid var(--line); }
+  .mobile-bar .primary { background: var(--accent); }
+  body.project-open { padding-bottom: calc(72px + env(safe-area-inset-bottom)); }
+  body.project-open .toast { bottom: calc(80px + env(safe-area-inset-bottom)); }
+  .style-col .card { scroll-margin-top: 12px; }
+  .user-menu a, .user-menu .linklike { padding: 8px 6px; }
+}
+
+@media (pointer: coarse) {
+  button, select, .seg button { min-height: 44px; }
+  /* 16 px mencegah iPhone memperbesar halaman saat kolom diketuk. */
+  input[type="text"], input[type="number"], input[type="email"], input[type="password"], input[type="url"],
+  select, textarea { font-size: 16px; }
+  input[type="range"] { height: 32px; }
+  input[type="range"]::-webkit-slider-thumb { width: 28px; height: 28px; }
+  input[type="range"]::-moz-range-thumb { width: 28px; height: 28px; }
+  input[type="checkbox"] { width: 22px; height: 22px; }
+  .crop-handle { padding: 8px 16px; font-size: 14px; }
+}

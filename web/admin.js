@@ -260,6 +260,7 @@ function bind() {
   $("nav").addEventListener("click", (e) => { if (e.target.dataset.sec) show(e.target.dataset.sec); });
   $("logoutBtn").addEventListener("click", async () => {
     try { await api("/api/auth/logout", { method: "POST" }); } catch { /* abaikan */ }
+    if (window.pwaClearCaches) await window.pwaClearCaches();
     location.replace("/login.html");
   });
 

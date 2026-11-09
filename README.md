@@ -27,6 +27,7 @@ Transkrip dibuat oleh Whisper secara lokal, editing oleh FFmpeg, dan pemilihan k
 | Guidebook | Aturan gaya edit Anda sendiri, dipakai setiap kali AI membuat rencana animasi agar hasil konsisten |
 | Akun & unit | Login email + password. Peran **Admin**, **Admin Unit**, **Editor**. Proyek terpisah per unit, guidebook & kuota per unit, halaman Admin dengan statistik pemakaian |
 | Resep editing (P1) | Semua pengaturan editing tersimpan per proyek di server (autosave, indikator *Menyimpan/Tersimpan/Gagal*), sama di semua perangkat; edit dari dua perangkat tidak saling menimpa diam-diam. Pratinjau subtitle, crop, filter, dan animasi langsung di browser tanpa membuat MP4; render memakai resep yang sama. Template subtitle bawaan, preset pribadi, unit, dan global. Lihat `docs/EDITOR_P1.md`. |
+| Aplikasi & HP (P2) | Bisa dipasang ke layar utama Android, iPhone, Windows, dan Mac (PWA). Editor nyaman di HP: pratinjau besar yang menempel, bilah aksi bawah, timeline bisa diseret dengan jari, tombol sentuh besar. Video dan data pribadi tidak disimpan di cache perangkat. Lihat `docs/PWA_MOBILE_P2.md`. |
 | Render massal | Centang beberapa klip, render sekaligus. Bisa pakai GPU NVIDIA/Intel/AMD/Mac (otomatis kembali ke CPU bila gagal). |
 
 ## Instalasi (satu komputer)

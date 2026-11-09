@@ -2,15 +2,26 @@
 <html lang="id">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Video Editing AI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <meta name="description" content="Edit video jadi klip vertikal dengan subtitle otomatis.">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/favicon-32.png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Video Studio">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <script src="/pwa.js" defer></script>
+  <title>AI Video Studio</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">🎬 Video Editing AI</div>
+  <div class="brand">🎬 AI Video Studio</div>
   <div class="topbar-right">
     <div id="health" class="health"></div>
+    <button type="button" class="ghost install-btn" id="installBtn" hidden title="Pasang aplikasi" aria-label="Pasang aplikasi">📲<span class="lbl"> Pasang aplikasi</span></button>
     <div class="user-menu">
       <div class="who" id="whoami"></div>
       <a href="/admin.html" id="adminLink" hidden>⚙ Admin</a>
@@ -19,6 +30,11 @@
     </div>
   </div>
 </header>
+
+<dialog id="installHelp" class="install-help">
+  <p id="installHelpText"></p>
+  <button type="button" id="installHelpClose">Mengerti</button>
+</dialog>
 
 <div class="layout">
   <!-- ============ Sidebar: proyek ============ -->
@@ -66,6 +82,7 @@
     <div id="projectView" hidden>
       <div class="project-head">
         <div class="title-wrap">
+          <button type="button" class="ghost mobile-only back-btn" id="backBtn" aria-label="Kembali ke daftar proyek">← Proyek</button>
           <h1 id="projectTitle"></h1>
           <span id="mediaBadge" class="media-badge" hidden></span>
           <button type="button" id="saveState" class="save-state" hidden title="Status penyimpanan otomatis resep editing"></button>
@@ -113,7 +130,10 @@
 
           <div class="timeline" id="timeline">
             <div class="tl-clips" id="tlClips"></div>
-            <div class="tl-sel" id="tlSel"></div>
+            <div class="tl-sel" id="tlSel">
+              <span class="tl-h" data-h="start" title="Seret untuk mengubah awal klip" aria-label="Awal klip"></span>
+              <span class="tl-h" data-h="end" title="Seret untuk mengubah akhir klip" aria-label="Akhir klip"></span>
+            </div>
             <div class="tl-head" id="tlHead"></div>
           </div>
 
@@ -126,7 +146,16 @@
             <button id="playClipBtn">▶ Putar klip</button>
           </div>
 
-          <div class="tabs">
+          <nav class="mobile-nav mobile-only" id="mobileNav" aria-label="Bagian editor">
+            <button type="button" data-target="secClips">✨ Klip</button>
+            <button type="button" data-target="secFormat">📐 Format</button>
+            <button type="button" data-target="secColor">🎨 Warna</button>
+            <button type="button" data-target="secSubtitle">💬 Subtitle</button>
+            <button type="button" data-target="secMusic">🎵 Musik</button>
+            <button type="button" data-target="secRender">🎬 Render</button>
+          </nav>
+
+          <div class="tabs" id="secClips">
             <button class="tab active" data-tab="clipsTab">✨ Klip pilihan AI</button>
             <button class="tab" data-tab="animTab">🎞 Animasi <span id="animCount"></span></button>
             <button class="tab" data-tab="transcriptTab">📝 Transkrip</button>
@@ -202,7 +231,7 @@
 
         <!-- ============ Panel gaya ============ -->
         <div class="style-col">
-          <section class="card">
+          <section class="card" id="secFormat">
             <h3>Format</h3>
             <div class="seg" id="aspectSeg">
               <button data-v="9:16" class="active">9:16</button>
@@ -216,7 +245,7 @@
             <p class="hint">Seret tombol "⇔ geser" di video atau pakai slider agar wajah tetap di tengah.</p>
           </section>
 
-          <section class="card">
+          <section class="card" id="secColor">
             <h3>Warna & tune</h3>
             <label class="field">Filter
               <select id="colorSelect">
@@ -246,7 +275,7 @@
             <label class="check"><input type="checkbox" id="fadeCheck" checked> Fade in/out</label>
           </section>
 
-          <section class="card">
+          <section class="card" id="secSubtitle">
             <h3>Subtitle</h3>
             <label class="field">Template
               <select id="templateSelect"><option value="">— Pilih template —</option></select>
@@ -295,7 +324,7 @@
             <label class="check"><input type="checkbox" id="subUpper" checked> HURUF BESAR</label>
           </section>
 
-          <section class="card">
+          <section class="card" id="secMusic">
             <h3>Backsound</h3>
             <label class="field">Musik
               <select id="musicSelect"><option value="">Tanpa musik</option></select>
@@ -308,7 +337,7 @@
             <label class="check"><input type="checkbox" id="normCheck" checked> Samakan volume (standar TikTok/Reels)</label>
           </section>
 
-          <section class="card">
+          <section class="card" id="secRender">
             <h3>Render</h3>
             <label class="field">Akselerasi
               <select id="encoderSelect">
@@ -323,6 +352,12 @@
           </section>
         </div>
       </div>
+    </div>
+    <div class="mobile-bar mobile-only" id="mobileBar" hidden>
+      <button type="button" id="mbPlay">▶ Putar</button>
+      <button type="button" id="mbStart">⏮ Awal</button>
+      <button type="button" id="mbEnd">Akhir ⏭</button>
+      <button type="button" class="primary" id="mbRender">🎬 Render</button>
     </div>
   </main>
 </div>

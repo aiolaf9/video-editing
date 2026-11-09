@@ -227,7 +227,7 @@ function markDirty() {
   rs.timer = setTimeout(saveRecipe, SAVE_DELAY);
 }
 
-async function saveRecipe() {
+async function saveRecipe(keepalive = false) {
   clearTimeout(rs.timer);
   if (!state.project || rs.conflict) return;
   if (rs.saving) { rs.timer = setTimeout(saveRecipe, 300); return; }
@@ -238,7 +238,7 @@ async function saveRecipe() {
   setSaveState("saving");
   try {
     const res = await fetch(`/api/projects/${pid}/recipe`, { method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body) });
+      body: JSON.stringify(body), keepalive });
     const data = await res.json().catch(() => null);
     if (res.status === 401) { location.replace("/login.html"); return; }
     if (!state.project || state.project.id !== pid) return;
@@ -535,6 +535,8 @@ async function openProject(id) {
   state.checked.clear();
   state.activeClip = -1;
   state.project = project;
+  document.body.classList.add("project-open");
+  $("mobileBar").hidden = false;
   await loadRecipe(id);
   $("emptyState").hidden = true;
   $("projectView").hidden = false;
@@ -723,6 +725,74 @@ function updatePlayhead() {
   $("tlHead").style.left = ($("player").currentTime / dur) * 100 + "%";
 }
 
+// Pegangan awal/akhir di timeline (P2): seret dengan jari atau mouse. Video ikut menuju titik yang diseret
+// (dibatasi ~8x per detik agar ringan); rentang tersimpan otomatis lewat resep.
+const tlDrag = { which: null, lastSeek: 0, justEnded: false };
+const MIN_CLIP = 1.0;
+
+function bindTimelineHandles() {
+  const tl = $("timeline");
+  tl.querySelectorAll(".tl-h").forEach((h) => {
+    h.addEventListener("pointerdown", (e) => {
+      if (!state.project || !state.project.duration) return;
+      e.preventDefault();
+      e.stopPropagation();
+      tlDrag.which = h.dataset.h;
+      try { h.setPointerCapture(e.pointerId); } catch { /* pointer sudah dilepas */ }
+    });
+    h.addEventListener("pointermove", (e) => {
+      if (tlDrag.which !== h.dataset.h) return;
+      const r = tl.getBoundingClientRect();
+      const dur = state.project.duration;
+      const t = Math.max(0, Math.min(dur, ((e.clientX - r.left) / r.width) * dur));
+      if (tlDrag.which === "start") setSelection(Math.min(t, state.sel.end - MIN_CLIP), state.sel.end);
+      else setSelection(state.sel.start, Math.max(t, state.sel.start + MIN_CLIP));
+      const now = performance.now();
+      if (now - tlDrag.lastSeek > 120) { tlDrag.lastSeek = now; $("player").currentTime = tlDrag.which === "start" ? state.sel.start : state.sel.end; }
+    });
+    const end = () => {
+      if (!tlDrag.which) return;
+      tlDrag.which = null;
+      tlDrag.justEnded = true;
+      setTimeout(() => { tlDrag.justEnded = false; }, 250);
+    };
+    h.addEventListener("pointerup", end);
+    h.addEventListener("pointercancel", end);
+  });
+}
+
+// HP (P2): tombol kembali ke daftar, bilah aksi bawah, pintasan bagian, simpan saat aplikasi ke latar belakang.
+function scrollToSection(id) {
+  const el = $(id);
+  if (!el) return;
+  const wrap = $("playerWrap");
+  const sticky = getComputedStyle(wrap).position === "sticky" ? wrap.getBoundingClientRect().height : 0;
+  window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - sticky - 8, behavior: "smooth" });
+}
+
+function bindMobile() {
+  $("backBtn").addEventListener("click", () => {
+    document.body.classList.remove("project-open");
+    $("mobileBar").hidden = true;
+    $("player").pause();
+    window.scrollTo({ top: 0 });
+  });
+  $("mbPlay").addEventListener("click", () => {
+    const player = $("player");
+    if (!player.paused && state.playingClip) player.pause(); else playSelection();
+  });
+  $("mbStart").addEventListener("click", () => $("setStartBtn").click());
+  $("mbEnd").addEventListener("click", () => $("setEndBtn").click());
+  $("mbRender").addEventListener("click", () => $("renderBtn").click());
+  $("mobileNav").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-target]");
+    if (b) scrollToSection(b.dataset.target);
+  });
+  const flush = () => { if (state.project && rs.dirty && !rs.saving && !rs.conflict) saveRecipe(true); };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
+  window.addEventListener("pagehide", flush);
+}
+
 // ------------------------------------------------------------ transkrip
 function renderTranscript() {
   const box = $("transcriptBox");
@@ -763,7 +833,7 @@ function editSegment(si) {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ segments: [{ index: si, text: ta.value }] }),
       });
-      state.words = state.transcript.segments.flatMap((s) => s.words && s.words.length ? s.words : []);
+      state.words = state.transcript.segments.flatMap(segWords);
       renderTranscript();
       updateCaptionPreview();
       toast("Koreksi disimpan. Subtitle render berikutnya memakai teks ini.");
@@ -1426,7 +1496,7 @@ function bind() {
   let drag = null;
   handle.addEventListener("pointerdown", (e) => {
     drag = { x: e.clientX, start: +$("cropX").value, range: +frame.dataset.range || 1 };
-    handle.setPointerCapture(e.pointerId);
+    try { handle.setPointerCapture(e.pointerId); } catch { /* pointer sudah dilepas */ }
   });
   handle.addEventListener("pointermove", (e) => {
     if (!drag) return;
@@ -1435,8 +1505,11 @@ function bind() {
     layoutCropFrame();
   });
   handle.addEventListener("pointerup", () => { if (drag) { drag = null; markDirty(); } });
+  handle.addEventListener("pointercancel", () => { if (drag) { drag = null; markDirty(); } });
 
+  bindTimelineHandles();
   $("timeline").addEventListener("click", (e) => {
+    if (tlDrag.justEnded) return;
     const r = e.currentTarget.getBoundingClientRect();
     const dur = state.project && state.project.duration;
     if (!dur) return;
@@ -1448,6 +1521,7 @@ function bind() {
   $("setStartBtn").addEventListener("click", () => setSelection(player.currentTime, Math.max(state.sel.end, player.currentTime + 1)));
   $("setEndBtn").addEventListener("click", () => setSelection(Math.min(state.sel.start, player.currentTime - 1), player.currentTime));
   $("playClipBtn").addEventListener("click", playSelection);
+  bindMobile();
 
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
 
@@ -1757,6 +1831,7 @@ setInterval(() => { if (state.project) renderMedia(); }, 60_000);
 loadSettings();
 $("logoutBtn").addEventListener("click", async () => {
   try { await api("/api/auth/logout", { method: "POST" }); } catch { /* abaikan */ }
+  if (window.pwaClearCaches) await window.pwaClearCaches();
   location.replace("/login.html");
 });
 loadEditorConfig();

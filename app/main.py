@@ -2,6 +2,7 @@
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -226,6 +227,18 @@ async def same_origin_guard(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    path = request.url.path
+    if path.startswith("/api/"):
+        # P2 (PWA): data akun/proyek, gambar mini, video pratinjau & hasil render tidak pernah disimpan di cache
+        # browser maupun cache offline (service worker juga tidak menyentuh /api/).
+        response.headers["Cache-Control"] = "no-store"
+    elif path == "/sw.js":
+        response.headers["Cache-Control"] = "no-cache"          # versi service worker baru langsung terbaca
+        response.headers["Service-Worker-Allowed"] = "/"
+    elif path == "/" or path.endswith((".html", ".js", ".css", ".webmanifest")):
+        # Halaman & kode aplikasi selalu divalidasi ulang (ETag -> 304 murah): setelah server diperbarui, browser
+        # tidak memakai app.js lama yang tidak cocok dengan API baru.
+        response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
 
@@ -1315,5 +1328,6 @@ def admin_stats(user: dict = CurrentUser):
     return {"queues": jobs.queue_stats(), "last_30_days": per_unit, "storage": storage_info}
 
 
+mimetypes.add_type("application/manifest+json", ".webmanifest")   # manifest PWA (P2)
 app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

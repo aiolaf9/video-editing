@@ -134,9 +134,9 @@ jobs:
           retention-days: 14
 
   test-browser:
-    name: Uji browser (worker mati sungguhan, Chromium)
+    name: Uji browser (worker mati sungguhan, editor, PWA & HP; Chromium + WebKit)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -151,9 +151,9 @@ jobs:
             requirements-dev.txt
             requirements-browser.txt
       - run: pip install -r requirements-dev.txt -r requirements-browser.txt
-      - name: Chromium untuk Playwright
-        run: python -m playwright install --with-deps chromium
-      - name: Pytest -m browser (web + worker io + worker analisis sebagai proses nyata, SIGKILL worker analisis)
+      - name: Chromium & WebKit (mesin Safari) untuk Playwright
+        run: python -m playwright install --with-deps chromium webkit
+      - name: Pytest -m browser (web & worker sebagai proses nyata; P0.1, P1 editor, P2 PWA & HP emulasi)
         env:
           BROWSER_ARTIFACTS: browser-shots
         run: pytest -q -p no:cacheprovider -m browser --junitxml=junit-browser.xml
