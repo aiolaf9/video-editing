@@ -29,13 +29,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Putaran 2 (M1.1): pengaturan bawaan baru, dua run per model (determinisme), + set bising SNR 10 dB.
-          - model: base
-            variants: "m11,m11#2"
+          # Putaran 3: bawaan M1.1 vs mode potongan ucapan (2 run masing-masing), set bersih & bising berpasangan.
           - model: small
-            variants: "m11,m11#2"
+            variants: "m11,m11_chunk,m11_chunk#2"
           - model: large-v3-turbo
-            variants: "m11,m11#2"
+            variants: "m11,m11_chunk,m11_chunk#2"
     env:
       HF_HUB_DISABLE_TELEMETRY: "1"
     steps:
@@ -55,7 +53,7 @@ jobs:
         run: |
           mkdir -p out
           python bench/m11/asr_eval.py "$RUNNER_TEMP/corpus" "out/asr-${{ matrix.model }}.jsonl" \
-            --models "${{ matrix.model }}" --variants "${{ matrix.variants }}" --sets id_nodup,id_long,id_noisy_snr10
+            --models "${{ matrix.model }}" --variants "${{ matrix.variants }}" --sets id_nodup,id_long,id_dialog,id_noisy_snr10
       - name: Ringkasan
         if: always()
         run: |

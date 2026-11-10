@@ -182,10 +182,14 @@ def _low_quality(seg, chunk_seconds: float) -> bool:
 
 def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset: float, kind: str,
                       vocabulary: Optional[list] = None) -> tuple[list, str]:
-    from .transcribe import PUNCTUATION_PROMPTS, hotwords_text, segment_dict
+    from .transcribe import PUNCTUATION_PROMPTS, decode_options, hotwords_text, segment_dict
 
+    opts = decode_options()       # beam & temperature sama dengan jalur utama (M1.1: temperature 0)
     kw = {"language": language or None, "initial_prompt": PUNCTUATION_PROMPTS.get(language or ""),
-          "word_timestamps": True, "vad_filter": False, "condition_on_previous_text": False, "beam_size": 5}
+          "word_timestamps": True, "vad_filter": False, "condition_on_previous_text": False,
+          "beam_size": int(opts["beam_size"])}
+    if opts.get("temperature") is not None:
+        kw["temperature"] = opts["temperature"]
     hot = hotwords_text(vocabulary)
     if hot:
         kw["hotwords"] = hot

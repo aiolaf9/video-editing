@@ -39,6 +39,9 @@ VARIANTS = {
     "noprev_vocab": {"language": "id", "decode": {"condition_on_previous_text": False}, "vocab": True},
     # M1.1 bawaan (DEFAULT_DECODE di app/transcribe.py), bahasa Indonesia. "m11#2" = run ulang (uji determinisme).
     "m11": {"language": "id", "decode": {}},
+    # Putaran 3: bawaan M1.1 + transkripsi per potongan ucapan VAD <= 20 dtk (W5, WHISPER_CHUNKED) -> apakah teks yang
+    # hilang pada audio panjang (turbo: CER 15,5 % vs 2,5 % kalimat) berasal dari jendela decoding 30 dtk.
+    "m11_chunk": {"language": "id", "decode": {}, "env": {"WHISPER_CHUNKED": "1"}},
     "lang_id_vocab": {"language": "id", "decode": {"condition_on_previous_text": True}, "vocab": True},
 }
 UNSURE_P = 0.5
@@ -96,6 +99,7 @@ def child(model: str, run_name: str, items_json: Path, out: Path, vocab: list[st
     variant = run_name.split("#")[0]
     os.environ["WHISPER_MODEL"] = model
     os.environ["WHISPER_DECODE"] = json.dumps(VARIANTS[variant]["decode"])
+    os.environ.update(VARIANTS[variant].get("env", {}))      # sebelum app diimpor (config dibaca saat impor)
     from app import media, transcribe
 
     if VARIANTS[variant].get("vocab"):

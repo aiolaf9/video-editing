@@ -127,6 +127,33 @@ Kesimpulan putaran 1 (dipakai sebagai bawaan):
 
 Sampel ini hanya 5 kalimat panjang (bug durasi diperbaiki di `034cba6`); diuji ulang dengan bawaan baru.
 
+### Putaran 2 — bawaan M1.1, dua run per model (run [42784852435](https://github.com/aiolaf9/video-editing/actions/runs/42784852435), commit `30ae9e0`)
+
+Bawaan M1.1 (`condition_on_previous_text=False`, temperature 0, bahasa id, tanpa hotwords). Dua run terpisah per
+model; **kedua run menghasilkan transkrip identik (hash sama) untuk semua model & set** — determinisme terbukti di
+runner ini (CPU int8, ubuntu-24.04, 4 vCPU). Belum diuji di Windows/CPU lain; `--eval --runs 2` di komputer NH
+memeriksanya lagi. Bising = `id_dialog` + noise pink SNR 10 dB (24 kalimat, 269 dtk).
+
+| Model | WER panjang | CER panjang | WER kalimat | CER kalimat | WER bising | CER bising | RTF panjang / kalimat / bising | RAM puncak (2 run) |
+|---|---|---|---|---|---|---|---|---|
+| base | 29,7 % | 9,7 % | 31,9 % | 11,4 % | 69,4 % | 47,0 % | 0,04 / 0,06 / 0,03 | 904–933 MB |
+| small | **14,0 %** | **4,4 %** | 17,2 % | 4,9 % | 50,9 % | 42,1 % | 0,19 / 0,30 / 0,15 | 1160–1342 MB |
+| large-v3-turbo | 20,1 % | 15,5 % | **6,2 %** | **2,5 %** | **30,3 %** | **21,0 %** | 0,24 / 0,59 / 0,25 | 1747–1877 MB |
+
+Variasi antar-run: 0 (WER, CER & teks identik); RTF ±1 %, RAM ±8–15 % (run pertama memuat model dari disk).
+
+Temuan putaran 2:
+
+1. **small** terbaik untuk audio panjang bersih (14,0 %); base 2x lebih banyak salah.
+2. **turbo** jauh terbaik untuk kalimat (6,2 %) dan audio bising (30,3 % vs small 50,9 %), tetapi pada audio panjang
+   CER 15,5 % (kalimat 2,5 %) = **bagian ucapan hilang**, bukan salah eja. Belum layak untuk video panjang sampai
+   penyebabnya diperbaiki; putaran 3 menguji mode potongan ucapan (≤ 20 dtk).
+3. **Bising vs bersih: berbeda sangat signifikan** untuk semua model (base 2,3x, small 3,6x, turbo 4,9x WER kalimat
+   bersih). RTF bising yang sangat rendah (base 0,03) menandakan ucapan ikut terbuang oleh VAD/decoder. Ceramah dengan
+   musik latar, gema masjid, atau mikrofon jauh perlu dicek manual lebih teliti.
+4. Penanda "perlu ditinjau" tetap hanya bantuan: recall turbo pada audio panjang 4 % (hampir semua kesalahan tidak
+   bertanda).
+
 ### Paket "Kualitas tinggi" (opsional) & uji dengan video NH asli
 
 - **Paket model tambahan** `NH-AI-Clip-Studio-Model-KualitasTinggi.exe` (Whisper large-v3-turbo, MIT) **tidak**
