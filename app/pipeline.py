@@ -347,6 +347,8 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
         transcript = recipe.effective_transcript(pid, fixes=req.text_fixes, seg_edits=req.seg_edits) or {}
         opts = subtitle_options(req.subtitles, pid)
         opts.zones = subtitle_zones(frame, req, height / max(1, width))
+        opts.sections = tuple(((x.start - req.start) / req.speed, (x.end - req.start) / req.speed, x.style)
+                              for x in req.subtitles.sections if x.end > req.start and x.start < req.end)
         ass = build_ass(transcript, req.start, req.end, width, height, opts, speed=req.speed)
         if "Dialogue:" in ass:
             subs = workdir / f"{tag}.ass"

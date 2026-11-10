@@ -158,7 +158,7 @@ function recipeFromControls() {
       emphasis: $("subEmphasis").checked, emphasis_color: $("subEmphasisColor").value.toUpperCase(),
       outline_color: $("subOutlineColor").value.toUpperCase(), outline: +$("subOutline").value,
       shadow: +$("subShadow").value, box: $("subBox").checked, box_color: $("subBoxColor").value.toUpperCase(),
-      box_opacity: +$("subBoxOpacity").value,
+      box_opacity: +$("subBoxOpacity").value, sections: (state.subSections || []).slice(0, 60),
     },
     audio: { music: $("musicSelect").value || null, volume: +$("musicVolume").value, ducking: $("duckCheck").checked,
       normalize: $("normCheck").checked },
@@ -185,7 +185,8 @@ function applySubExtras(s) {
   setControl("subOutline", s.outline ?? 1); setControl("subShadow", s.shadow ?? 1);
   setControl("subBox", !!s.box); setControl("subBoxColor", (s.box_color || "#000000").toLowerCase());
   setControl("subBoxOpacity", s.box_opacity ?? 0.6);
-  if (window.Studio) window.Studio.markPreset(s.style);
+  if (s.sections) state.subSections = s.sections;
+  if (window.Studio) { window.Studio.markPreset(s.style); window.Studio.renderSubSections(); }
 }
 
 function setControl(id, value) {
@@ -253,6 +254,7 @@ function setSaveState(kind, detail = "") {
 
 function markDirty() {
   if (!state.project || rs.loading) return;
+  if (window.Studio) window.Studio.onDirty();       // M2.4 riwayat undo/redo
   saveSettings();
   rs.dirty = true;
   if (!rs.conflict) setSaveState("dirty");
@@ -414,6 +416,7 @@ async function loadRecipe(pid) {
   rs.conflict = null;
   $("conflictBanner").hidden = true;
   rs.retry = 0;
+  if (window.Studio) window.Studio.resetHistory();
   if (cur.version > 0) {
     applyServerRecipe(cur);
   } else {
@@ -1720,6 +1723,7 @@ function renderPlan() {
 
 let planSaveTimer = null;
 function savePlanSoon() {
+  if (window.Studio) window.Studio.onDirty();
   clearTimeout(planSaveTimer);
   planSaveTimer = setTimeout(async () => {
     try {

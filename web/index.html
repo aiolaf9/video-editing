@@ -148,6 +148,10 @@
           <h1 id="projectTitle"></h1>
           <span id="mediaBadge" class="media-badge" hidden></span>
           <button type="button" id="saveState" class="save-state" hidden title="Status penyimpanan otomatis resep editing"></button>
+          <span class="undo-redo">
+            <button type="button" class="ghost small" id="undoBtn" disabled title="Batalkan perubahan gaya/bingkai/animasi (Ctrl+Z)">↶ Urungkan</button>
+            <button type="button" class="ghost small" id="redoBtn" disabled title="Ulangi (Ctrl+Shift+Z / Ctrl+Y)">↷ Ulangi</button>
+          </span>
         </div>
         <div class="actions">
           <button class="ghost" id="reanalyzeBtn">Analisis ulang</button>
@@ -341,6 +345,17 @@
 
         <!-- ============ Panel gaya ============ -->
         <div class="style-col">
+          <section class="card" id="secAuto">
+            <h3>✨ Gaya otomatis</h3>
+            <p class="hint" id="autoStyleText">Pilih klip untuk melihat rekomendasi.</p>
+            <label class="field">Jenis konten
+              <select id="autoStyleCat"></select>
+            </label>
+            <p class="hint" id="autoStyleWhy"></p>
+            <label class="check"><input type="checkbox" id="autoStyleMotion" checked> Tambahkan elemen motion yang disarankan (hook, lower-third, CTA, angka)</label>
+            <button type="button" id="autoStyleApply">Terapkan gaya ini</button>
+            <p class="hint">Rekomendasi memakai aturan lokal (kata di transkrip + deteksi papan/wajah), bukan AI. Semua pengaturan tetap bisa diubah dan dibatalkan (↶).</p>
+          </section>
           <section class="card" id="secFormat">
             <h3>Format</h3>
             <div class="seg" id="aspectSeg">
@@ -424,7 +439,12 @@
             </div>
             <label class="check"><input type="checkbox" id="subEnabled" checked> Tampilkan subtitle</label>
             <div class="field">Galeri gaya animasi <span class="hint">(klik untuk memakai; arahkan kursor untuk melihat gerakannya)</span></div>
+            <div class="seg apply-seg" id="presetScope" role="group" aria-label="Terapkan gaya ke">
+              <button type="button" data-v="all" class="active">Seluruh klip</button>
+              <button type="button" data-v="part" title="Hanya kalimat di posisi video sekarang">Kalimat ini saja</button>
+            </div>
             <div class="preset-gallery" id="presetGallery" role="listbox" aria-label="Galeri gaya subtitle"></div>
+            <div class="sub-sections" id="subSections"></div>
             <label class="field">Gaya
               <select id="subStyle">
                 <option value="karaoke">Karaoke (kata aktif berwarna)</option>

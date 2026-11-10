@@ -117,6 +117,36 @@ def test_smart_framing_controls_and_preview_clip(studio_server, sample_video):
                 and time.time() < deadline:
             time.sleep(0.3)
         assert any(o["type"] == "lower_third" and o["label"] == "Pemateri" for o in _recipe(page, pid)["overlays"])
+        # Auto Style: rekomendasi beralasan -> pilih "Fundraising" -> Terapkan -> gaya & motion berubah.
+        page.wait_for_function("document.getElementById('autoStyleText').textContent.includes('Rekomendasi')", timeout=15000)
+        page.select_option("#autoStyleCat", "fundraising")
+        page.wait_for_function("document.getElementById('autoStyleWhy').textContent.includes('Bounce')", timeout=15000)
+        before_style = page.input_value("#subStyle")
+        page.click("#autoStyleApply")
+        assert page.input_value("#subStyle") == "bounce" and page.input_value("#colorSelect") == "vivid"
+        deadline = time.time() + 10
+        while _recipe(page, pid)["subtitles"]["style"] != "bounce" and time.time() < deadline:
+            time.sleep(0.3)
+        assert _recipe(page, pid)["look"]["color"] == "vivid"
+        # Urungkan / Ulangi (tombol & Ctrl+Z)
+        page.wait_for_selector("#undoBtn:not([disabled])")
+        page.click("#undoBtn")
+        assert page.input_value("#subStyle") == before_style and page.input_value("#colorSelect") != "vivid"
+        page.keyboard.press("Control+Shift+Z")
+        assert page.input_value("#subStyle") == "bounce"
+        # Gaya untuk satu kalimat saja
+        page.click("#presetScope button[data-v=part]")
+        page.evaluate("document.getElementById('player').currentTime = 1.0")
+        page.click(".preset-card[data-id=neon]")
+        page.wait_for_selector("#subSections .ss-row")
+        assert page.input_value("#subStyle") == "bounce"                          # gaya utama tidak berubah
+        deadline = time.time() + 10
+        while not _recipe(page, pid)["subtitles"]["sections"] and time.time() < deadline:
+            time.sleep(0.3)
+        assert _recipe(page, pid)["subtitles"]["sections"][0]["style"] == "neon"
+        if shots:
+            page.locator("#secAuto").scroll_into_view_if_needed()
+            page.screenshot(path=str(Path(shots) / "m2-autostyle.png"))
         page.click("#previewClipBtn")
         page.wait_for_selector("#previewClipBox:not([hidden])", timeout=60000)
         page.wait_for_function("document.getElementById('previewClip').readyState >= 1", timeout=30000)

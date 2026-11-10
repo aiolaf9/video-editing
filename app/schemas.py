@@ -8,6 +8,13 @@ SUB_STYLES = Literal["karaoke", "pop", "word", "simple", "bounce", "slide", "zoo
 HEX = r"^#[0-9A-Fa-f]{6}$"
 
 
+class SubSection(BaseModel):
+    """M2.4: gaya animasi subtitle untuk satu bagian (detik sumber); font & warna tetap mengikuti pengaturan utama."""
+    start: float = Field(ge=0, le=86400)
+    end: float = Field(gt=0, le=86400)
+    style: SUB_STYLES
+
+
 class SubtitleSettings(BaseModel):
     enabled: bool = True
     style: SUB_STYLES = "karaoke"
@@ -28,6 +35,7 @@ class SubtitleSettings(BaseModel):
     pos_y: Optional[float] = Field(None, ge=0.05, le=0.95)
     emphasis: bool = False
     emphasis_color: str = Field("#FFD43B", pattern=HEX)
+    sections: list[SubSection] = Field(default_factory=list, max_length=60)
 
 
 class MusicSettings(BaseModel):

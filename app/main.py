@@ -1230,6 +1230,20 @@ def get_asset(pid: str, name: str, user: dict = CurrentUser):
     return FileResponse(path)
 
 
+@app.get("/api/projects/{pid}/auto-style")
+def auto_style(pid: str, start: float, end: float, category: Optional[str] = None, user: dict = CurrentUser):
+    """M2.5: rekomendasi gaya (aturan lokal yang dapat dijelaskan) untuk rentang klip; `category` = pilihan pengguna."""
+    _project_for(pid, user)
+    from . import autostyle, framing, pipeline
+    tr = recipe.effective_transcript(pid) or {}
+    summ = framing.summarize(pipeline.framing_data(pid), start, end)
+    res = autostyle.classify(tr, start, end, summ)
+    rec = autostyle.recommendation(category or res["category"])
+    rec["items"] = autostyle.motion_items(rec, tr, start, end)
+    res["recommendation"] = rec
+    return res
+
+
 @app.get("/api/subtitle-presets")
 def subtitle_presets(user: dict = CurrentUser):
     """M2.2: daftar preset subtitle animasi untuk galeri."""

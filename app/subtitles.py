@@ -76,6 +76,7 @@ class SubtitleOptions:
     emphasis: bool = False      # sorot kata penting (istilah kosakata, angka, kata kunci panjang)
     emphasis_color: str = "#FFD43B"
     emphasis_terms: tuple = ()  # istilah kosakata (dari app/vocab) yang dianggap penting
+    sections: tuple = ()        # ((mulai, akhir, gaya), ...) di timeline output: gaya animasi per bagian (M2.4)
     zones: tuple = ()           # ((mulai, akhir, y 0..1), ...) di timeline output: posisi khusus per bagian
     #                             (mis. garis sambung papan/wajah pada tata letak Materi + Wajah)
 
@@ -241,15 +242,35 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
     cx = width // 2
     pos = rf"\an5\pos({cx},{cy})"
 
-    chunks = chunk_words(words, per_line)
-    default_pos, default_legacy, default_cy = pos, legacy, cy
+    # M2.4: gaya animasi per bagian (opts.sections). Kata dikelompokkan per gaya lalu dipotong jadi baris.
+    base_style, base_per_line = style, per_line
+
+    def style_at(t: float) -> str:
+        return next((z[2] for z in opts.sections if z[0] <= t < z[1] and z[2] in STYLES), base_style)
+    chunks, chunk_styles = [], []
+    run: list[dict] = []
+    run_style = None
+    for w in words + [None]:
+        st = style_at(w["start"]) if w else None
+        if run and (w is None or st != run_style):
+            pl = 1 if run_style == "word" else (base_per_line if base_style != "word" else max(1, min(int(opts.words_per_line), 8)))
+            for c in chunk_words(run, pl):
+                chunks.append(c)
+                chunk_styles.append(run_style)
+            run = []
+        if w:
+            run.append(w)
+            run_style = st
+    default_pos, default_cy = pos, cy
     for ci, chunk in enumerate(chunks):
+        style = chunk_styles[ci]
         zone = next((z for z in opts.zones if z[0] <= chunk[0]["start"] < z[1]), None)
         if zone:
             cy = int(height * zone[2])
             pos, legacy = rf"\an5\pos({cx},{cy})", False
         else:
-            pos, legacy, cy = default_pos, default_legacy, default_cy
+            pos, cy = default_pos, default_cy
+            legacy = style in LEGACY_STYLES and opts.pos_y is None
         tokens = [_clean(w["word"], opts.uppercase) for w in chunk]
         imp = important_words(chunk, terms) if opts.emphasis else set()
         base_tok = [rf"{{\c{emph}}}{t}{{\c{primary}}}" if i in imp else t for i, t in enumerate(tokens)]
