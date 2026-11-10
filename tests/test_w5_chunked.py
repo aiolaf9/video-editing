@@ -107,7 +107,7 @@ def _energy_vad(audio):
 def tone(monkeypatch):
     model = ToneModel()
     monkeypatch.setattr(chunked, "_speech_regions", _energy_vad)
-    monkeypatch.setattr(transcribe, "_get_model", lambda force_cpu=False: model)
+    monkeypatch.setattr(transcribe, "_get_model", lambda force_cpu=False, name=None: model)
     monkeypatch.setattr(config, "WHISPER_CHUNKED", True)
     monkeypatch.setattr(config, "WHISPER_DECODE_WINDOW_SECONDS", 30.0)
     monkeypatch.setattr(config, "WHISPER_CHUNK_MAX_SECONDS", 10.0)
@@ -129,7 +129,7 @@ def test_flag_off_keeps_legacy_pipeline(monkeypatch, tmp_path):
     assert config.WHISPER_CHUNKED is False                       # bawaan produksi: nonaktif
     seen = []
     monkeypatch.setattr(media, "decode_audio", lambda p, **k: seen.append(p) or np.zeros(RATE, np.float32))
-    monkeypatch.setattr(transcribe, "_get_model", lambda force_cpu=False: ToneModel())
+    monkeypatch.setattr(transcribe, "_get_model", lambda force_cpu=False, name=None: ToneModel())
     transcribe.transcribe(tmp_path / "x.wav", 1.0, "id")
     assert seen                                                  # jalur lama (decode seluruh audio) yang dipakai
 

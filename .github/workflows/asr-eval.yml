@@ -1,0 +1,78 @@
+# M1.1: evaluasi transkripsi bahasa Indonesia (WER/CER, RTF, RAM, ketepatan penanda "perlu ditinjau") lewat fungsi
+# aplikasi. Korpus: Google FLEURS id_id (CC-BY 4.0) — ucapan baca, BUKAN ceramah bercampur istilah Arab; sampel NH
+# dengan transkrip rujukan manual dievaluasi dengan skrip yang sama (--samples) bila tersedia. Tanpa secret.
+name: ASR eval (Indonesia)
+
+on:
+  push:
+    branches: ["desktop/**"]
+    paths:
+      - "bench/m11/**"
+      - "app/transcribe.py"
+      - "app/chunked.py"
+      - ".github/workflows/asr-eval.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asr-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model: base
+            variants: m1,auto3,lang_id,noprev,noprev_t0,noprev_hst,noprev_vad,noprev_vocab
+          - model: small
+            variants: m1,auto3,lang_id,noprev,noprev_t0,noprev_hst,noprev_vad,noprev_vocab,lang_id_vocab
+          - model: large-v3-turbo
+            variants: lang_id,noprev,noprev_vocab
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Pasang dependensi
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          python -m pip install -q -r requirements.txt
+      - name: Korpus FLEURS (id)
+        run: python bench/p552/fleurs_corpus.py "$RUNNER_TEMP/corpus" --clean 20 --long-seconds 600
+      - name: Evaluasi ${{ matrix.model }}
+        run: |
+          mkdir -p out
+          python bench/m11/asr_eval.py "$RUNNER_TEMP/corpus" "out/asr-${{ matrix.model }}.jsonl" \
+            --models "${{ matrix.model }}" --variants "${{ matrix.variants }}" --sets id_nodup,id_long
+      - name: Ringkasan
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, glob
+          print("| model | varian | set | WER | CER | RTF | RAM puncak MB | presisi tanda | recall tanda | % ditandai |")
+          print("|---|---|---|---|---|---|---|---|---|---|")
+          for f in glob.glob("out/*.jsonl"):
+              for line in open(f, encoding="utf-8"):
+                  r = json.loads(line)
+                  if "wer" in r:
+                      print(f"| {r['model']} | {r['variant']} | {r['set']} | {r['wer']:.1%} | {r['cer']:.1%} | {r['rtf']} | "
+                            f"{r['peak_rss_mb']} | {r['flag_precision']} | {r['flag_recall']} | {r['flagged_share']} |")
+                  elif "error" in r:
+                      print(f"| {r['model']} | {r['variant']} | GAGAL | | | | | | | |")
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: asr-eval-${{ matrix.model }}
+          path: out/
+          retention-days: 30

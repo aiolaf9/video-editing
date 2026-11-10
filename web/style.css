@@ -362,3 +362,63 @@ table.grid td select, table.grid td input { padding: 4px 6px; }
   input[type="checkbox"] { width: 22px; height: 22px; }
   .crop-handle { padding: 8px 16px; font-size: 14px; }
 }
+
+/* ---------------------------------------------------------- editor subtitle (M1.1) */
+.sub-toolbar { position: sticky; top: 0; z-index: 2; background: var(--panel); padding-bottom: 6px; }
+.find-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.find-row input[type=search], .find-row input[type=text] { flex: 1 1 140px; min-width: 0; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 8px; }
+.filter-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.filter-row .chip { font-size: 12px; padding: 4px 10px; cursor: pointer; font-weight: 500; }
+.filter-row .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.small { font-size: 12px; }
+button.small { padding: 4px 8px; }
+.sub-editor { max-height: 62vh; overflow: auto; }
+.sub-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+.sub-row.reviewed { opacity: .8; }
+.sub-row.reviewed .sub-text { border-left-color: var(--ok); }
+.sub-row.edited .t-val::after { content: " ✎"; color: var(--muted); }
+.sub-time { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.sub-time .t-val { font-variant-numeric: tabular-nums; color: var(--text); padding: 0 2px; }
+.sub-time .t-sep { padding: 0 2px; }
+.sub-time button.nudge { background: var(--panel-2); border: 1px solid var(--line); padding: 0 7px; font-weight: 600; min-width: 24px; }
+.sub-time button.icon { padding: 1px 7px; }
+.sub-text { grid-column: 1; min-height: 28px; padding: 6px 8px; border-radius: 6px; border-left: 3px solid transparent; background: var(--bg);
+  cursor: text; line-height: 1.6; outline: none; }
+.sub-text:hover { box-shadow: inset 0 0 0 1px var(--line); }
+.sub-text.editing { box-shadow: inset 0 0 0 2px var(--accent-2); white-space: pre-wrap; }
+.sub-side { grid-column: 2; grid-row: 2; align-self: start; }
+.sub-side .rev { background: var(--panel-2); border: 1px solid var(--line); font-weight: 500; font-size: 12px; white-space: nowrap; }
+.sub-side .rev.on { background: rgba(61, 220, 151, .15); border-color: var(--ok); color: var(--ok); }
+.transcript .w.unsure { text-decoration: underline wavy #ff9f43; text-underline-offset: 3px; }
+.sub-sugg { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.sugg { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; background: rgba(255, 212, 59, .1); border: 1px solid rgba(255, 212, 59, .45);
+  border-radius: 999px; padding: 2px 4px 2px 10px; }
+.sugg s { color: var(--muted); }
+.sugg button { padding: 0 7px; font-size: 12px; border-radius: 999px; }
+.sugg .sugg-ok { background: var(--ok); color: #000; }
+.sugg .sugg-no { background: var(--panel-2); border: 1px solid var(--line); }
+.word-times { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; padding: 6px; background: var(--panel-2); border-radius: 8px; }
+.word-times .wt { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; }
+.word-times .wt span { min-width: 3em; }
+.word-times input { width: 5.2em; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+.word-times .row { flex-basis: 100%; }
+.bulk-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px; margin: 4px 0; background: var(--panel-2); border-radius: 8px; font-size: 13px; }
+.bulk-term { display: inline-flex; align-items: center; gap: 4px; }
+.review-dialog, .vocab-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+.review-dialog { max-width: min(480px, 92vw); }
+.vocab-dialog { width: min(820px, 96vw); }
+.review-dialog::backdrop, .vocab-dialog::backdrop { background: rgba(0,0,0,.6); }
+.review-list { max-height: 40vh; overflow: auto; padding-left: 18px; }
+.vocab-table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.vocab-table th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 500; padding: 4px; }
+.vocab-table td { padding: 3px 4px; }
+.vocab-table input, .vocab-table select { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; }
+.vocab-dialog .row { display: flex; gap: 8px; align-items: center; }
+@media (max-width: 760px) {
+  .sub-row { grid-template-columns: minmax(0, 1fr); }
+  .sub-side { grid-column: 1; grid-row: auto; }
+  .sub-time button.nudge, .sub-time button.icon, .sub-side .rev, .sugg button { min-height: 36px; }
+  .vocab-table thead { display: none; }
+  .vocab-table tr { display: grid; grid-template-columns: 1fr auto; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+}

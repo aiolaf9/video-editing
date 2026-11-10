@@ -23,7 +23,8 @@ import urllib.request
 from pathlib import Path
 
 APP_NAME = "NH AI Clip Studio"
-PREFERRED_PORT = 47811          # port tetap (bila bebas) agar penyimpanan lokal jendela konsisten antar peluncuran
+PREFERRED_PORT = 47811
+DESKTOP_MODELS = ("base", "small")   # dibundel installer: base = Cepat, small = Akurat (lihat docs/M1_1_TRANSKRIP.md)          # port tetap (bila bebas) agar penyimpanan lokal jendela konsisten antar peluncuran
 log = logging.getLogger("nh-desktop")
 
 
@@ -66,18 +67,25 @@ def configure_env(data_dir: Path, export_dir: Path) -> str:
         "HF_HUB_OFFLINE": "1",            # tidak pernah mengunduh model saat berjalan
         "TRANSFORMERS_OFFLINE": "1",
         "HF_HUB_DISABLE_TELEMETRY": "1",
-        "WHISPER_MODEL": "base",
     }
-    model_dir = res / "whisper-base"
-    if (model_dir / "model.bin").exists():
-        forced["WHISPER_MODEL_DIR"] = str(model_dir)
+    # M1.1: model per mode kualitas, dari folder bundel installer (whisper-<nama>). Akurat = bawaan.
+    models = {name: str(res / f"whisper-{name}") for name in DESKTOP_MODELS
+              if (res / f"whisper-{name}" / "model.bin").exists()}
+    fast = next((m for m in ("base",) if m in models), None)
+    accurate = next((m for m in ("small", "base") if m in models), None)
+    if models:
+        forced["WHISPER_MODEL_PATHS"] = json.dumps(models)
+        forced["WHISPER_MODEL"] = accurate or fast
+        forced["WHISPER_MODEL_FAST"] = fast or accurate
+        forced["WHISPER_MODEL_ACCURATE"] = accurate or fast
+        forced["WHISPER_QUALITY_DEFAULT"] = "akurat"
     for name, env in (("ffmpeg", "FFMPEG_BIN"), ("ffprobe", "FFPROBE_BIN")):
         found = _bundled(name)
         if found:
             forced[env] = found
     os.environ.update(forced)
     os.environ.setdefault("MAX_UPLOAD_MB", "20480")
-    for name in ("DATABASE_URL", "ADMIN_EMAIL", "ADMIN_PASSWORD", "AI_PROVIDER"):
+    for name in ("DATABASE_URL", "ADMIN_EMAIL", "ADMIN_PASSWORD", "AI_PROVIDER", "WHISPER_MODEL_DIR"):
         os.environ.pop(name, None)       # konfigurasi server/web tidak berlaku di desktop
     return key
 
@@ -260,7 +268,9 @@ def run_selftest(args) -> int:
         server = LocalServer(free_port())
         server.start()
         from desktop import selftest
-        report = selftest.run(server.base, key, Path(args.selftest), export_dir)
+        ref = Path(args.reference).read_text(encoding="utf-8") if args.reference else ""
+        report = selftest.run(server.base, key, Path(args.selftest), export_dir, language=args.language,
+                              quality=args.quality, reference=ref)
     except Exception as exc:
         log.exception("Selftest gagal")
         report = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -278,6 +288,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="NH-AI-Clip-Studio")
     parser.add_argument("--selftest", metavar="VIDEO", help="uji jalur lengkap tanpa jendela")
     parser.add_argument("--report", help="tulis laporan selftest (JSON) ke berkas ini")
+    parser.add_argument("--language", default="en", help="bahasa ucapan video selftest")
+    parser.add_argument("--quality", default="", help="mode kualitas selftest: cepat / akurat")
+    parser.add_argument("--reference", help="transkrip rujukan (teks) untuk WER/CER selftest")
     parser.add_argument("--data-dir", help="folder data (bawaan: %%LOCALAPPDATA%%\\NH AI Clip Studio)")
     parser.add_argument("--export-dir", help="folder ekspor (bawaan: Videos\\NH AI Clip Studio)")
     args = parser.parse_args(argv)

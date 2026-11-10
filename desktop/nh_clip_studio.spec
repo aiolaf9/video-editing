@@ -19,15 +19,18 @@ datas = [
     (os.path.join(ROOT, "fonts"), "fonts"),
     (os.path.join(ROOT, "models"), "models"),                      # YuNet (MIT)
     (os.path.join(ROOT, "app", "migrations"), os.path.join("app", "migrations")),   # Alembic membaca .py migrasi
+    (os.path.join(ROOT, "app", "data"), os.path.join("app", "data")),               # kosakata bawaan (M1.1)
     (need(os.path.join(STAGE, "bin")), "bin"),                     # ffmpeg.exe, ffprobe.exe (GPLv3, lihat notices)
-    (need(os.path.join(STAGE, "whisper-base", "model.bin")), "whisper-base"),
     (os.path.join(ROOT, "desktop", "THIRD_PARTY_NOTICES.md"), "."),
     (need(os.path.join(STAGE, "licenses")), "licenses"),
 ]
-for name in ("config.json", "tokenizer.json", "vocabulary.txt", "vocabulary.json", "README.md"):
-    path = os.path.join(STAGE, "whisper-base", name)
-    if os.path.exists(path):
-        datas.append((path, "whisper-base"))
+for model in ("base", "small"):              # Cepat & Akurat (desktop/launcher.py DESKTOP_MODELS)
+    folder = f"whisper-{model}"
+    datas.append((need(os.path.join(STAGE, folder, "model.bin")), folder))
+    for name in ("config.json", "tokenizer.json", "vocabulary.txt", "vocabulary.json", "README.md", "SOURCE.json"):
+        path = os.path.join(STAGE, folder, name)
+        if os.path.exists(path):
+            datas.append((path, folder))
 datas += collect_data_files("faster_whisper")       # model VAD Silero (onnx)
 datas += collect_data_files("webview")
 

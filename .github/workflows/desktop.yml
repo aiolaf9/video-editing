@@ -26,7 +26,7 @@ env:
   PYTHON_VERSION: "3.12"
   FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip
   FFMPEG_SHA256: 04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4  # pragma: allowlist secret (sha256 berkas publik)
-  WHISPER_REPO: Systran/faster-whisper-base
+  WHISPER_REPOS: "base=Systran/faster-whisper-base small=Systran/faster-whisper-small"
   PYTHONUTF8: "1"
 
 jobs:
@@ -80,27 +80,47 @@ jobs:
           }
           & build/desktop/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
-      - name: Unduh model Whisper base (lisensi MIT) dan ikon
+      - name: Unduh model Whisper base (Cepat) & small (Akurat), lisensi MIT, dan ikon
         run: |
-          python desktop/ci/fetch_whisper.py $env:WHISPER_REPO build/desktop/whisper-base
-          if ($LASTEXITCODE -ne 0) { throw "unduh model gagal" }
-          Get-ChildItem build/desktop/whisper-base | Select-Object Name, Length
+          foreach ($pair in $env:WHISPER_REPOS.Split(" ")) {
+            $name, $repo = $pair.Split("=")
+            python desktop/ci/fetch_whisper.py $repo "build/desktop/whisper-$name"
+            if ($LASTEXITCODE -ne 0) { throw "unduh model $name gagal" }
+            Get-ChildItem "build/desktop/whisper-$name" | Select-Object Name, Length
+          }
           python -c "from PIL import Image; Image.open('web/icons/icon-512.png').save('build/desktop/app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 
-      - name: Buat sampel video ucapan (SAPI, offline)
+      - name: Buat sampel video bahasa Indonesia asli (FLEURS id_id, CC-BY 4.0) + transkrip rujukan
         run: |
           New-Item -ItemType Directory -Force build/test | Out-Null
-          ./desktop/ci/make_speech.ps1 -Text desktop/ci/speech.txt -Ffmpeg build/desktop/bin/ffmpeg.exe -Out build/test/speech.mp4
+          python desktop/ci/make_id_sample.py build/desktop/bin/ffmpeg.exe build/test/speech.mp4 --seconds 150
+          if ($LASTEXITCODE -ne 0) { throw "sampel Indonesia gagal" }
 
       - name: Selftest dari kode sumber
         env:
           FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
           FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
-          WHISPER_MODEL_DIR: ${{ github.workspace }}\build\desktop\whisper-base
+          WHISPER_MODEL_FAST: base
+          WHISPER_MODEL_ACCURATE: small
+          WHISPER_MODEL: small
         run: |
+          $env:WHISPER_MODEL_PATHS = (@{ base = "$PWD\build\desktop\whisper-base"; small = "$PWD\build\desktop\whisper-small" } | ConvertTo-Json -Compress)
           python -m desktop.launcher --selftest build/test/speech.mp4 --report build/test/report-source.json `
+            --language id --quality akurat --reference build/test/speech.txt `
             --data-dir "$env:RUNNER_TEMP\src-data" --export-dir "$env:RUNNER_TEMP\src-export"
           if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP\src-data\logs\desktop.log" -Tail 80; throw "selftest sumber gagal" }
+
+      - name: Bukti sebelum/sesudah (M1 vs M1.1, rentang & video sama, tanpa koreksi manual)
+        env:
+          FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
+          FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
+          WHISPER_MODEL_FAST: base
+          WHISPER_MODEL_ACCURATE: small
+          WHISPER_MODEL: small
+        run: |
+          $env:WHISPER_MODEL_PATHS = (@{ base = "$PWD\build\desktop\whisper-base"; small = "$PWD\build\desktop\whisper-small" } | ConvertTo-Json -Compress)
+          python desktop/ci/before_after.py build/test/speech.mp4 build/test/speech.txt build/compare --start 0 --end 40
+          if ($LASTEXITCODE -ne 0) { throw "sebelum/sesudah gagal" }
 
       - name: Build PyInstaller (onedir)
         run: |
@@ -131,6 +151,7 @@ jobs:
           $env:PATH = "$env:WINDIR\System32;$env:WINDIR;$env:WINDIR\System32\Wbem"
           Remove-Item Env:PYTHONPATH, Env:PYTHONHOME -ErrorAction SilentlyContinue
           $p = Start-Process $exe -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-frozen.json`"", `
+            "--language", "id", "--quality", "akurat", "--reference", "`"$PWD\build\test\speech.txt`"", `
             "--data-dir", "`"$env:RUNNER_TEMP\frozen-data`"", "--export-dir", "`"$env:RUNNER_TEMP\frozen-export`"" -Wait -PassThru
           Get-Content build/test/report-frozen.json -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\frozen-data\logs\desktop.log" -Tail 120; throw "selftest exe gagal ($($p.ExitCode))" }
@@ -164,7 +185,9 @@ jobs:
           New-NetFirewallRule -DisplayName "nh-block-installed" -Direction Outbound -Program $exe `
             -RemoteAddress @("0.0.0.0-126.255.255.255", "128.0.0.0-255.255.255.255", "2000::/3") -Action Block | Out-Null
           # Folder bawaan pengguna: %LOCALAPPDATA%\NH AI Clip Studio dan Videos\NH AI Clip Studio
-          $p = Start-Process $exe -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-installed.json`"" -Wait -PassThru
+          # Mode Cepat (base) di aplikasi terpasang: kedua mode terbukti jalan dari bundel installer.
+          $p = Start-Process $exe -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-installed.json`"", `
+            "--language", "id", "--quality", "cepat", "--reference", "`"$PWD\build\test\speech.txt`"" -Wait -PassThru
           Get-Content build/test/report-installed.json -ErrorAction SilentlyContinue
           $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
           if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "selftest aplikasi terpasang gagal" }
@@ -213,7 +236,7 @@ jobs:
             $f = "build/test/report-$r.json"
             if (Test-Path $f) {
               $j = Get-Content $f -Raw | ConvertFrom-Json
-              "- selftest ${r}: ok=$($j.ok) analisis=$($j.analysis_seconds)s render=$($j.render_seconds)s kata=$($j.transcript_words) mp4=$($j.outputs.Count)" >> $env:GITHUB_STEP_SUMMARY
+              "- selftest ${r}: ok=$($j.ok) model=$($j.model) ($($j.quality)) WER=$($j.accuracy.wer) CER=$($j.accuracy.cer) analisis=$($j.analysis_seconds)s/$($j.video_seconds)s render=$($j.render_seconds)s kata=$($j.transcript_words) tidak-yakin=$($j.unsure_share) mp4=$($j.outputs.Count)" >> $env:GITHUB_STEP_SUMMARY
             } else { "- selftest ${r}: tidak ada laporan" >> $env:GITHUB_STEP_SUMMARY }
           }
 
@@ -238,4 +261,12 @@ jobs:
             build/test/*.png
             build/desktop/licenses/
             build-freeze.txt
+          retention-days: 30
+
+      - name: Unggah bukti sebelum/sesudah (MP4)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: m11-sebelum-sesudah
+          path: build/compare/
           retention-days: 30

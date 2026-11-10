@@ -282,10 +282,14 @@ def test_mobile_editor_touch_flow(mstack, tmp_path, engine, device):
 
         # Koreksi teks subtitle lewat tab Transkrip.
         page.tap('.tab[data-tab="transcriptTab"]')
-        page.tap("#transcriptBox .seg-edit >> nth=0")
-        page.fill("#transcriptBox textarea.seg-text", "Koreksi dari HP")
-        page.tap("#transcriptBox .seg-save")
-        _wait(lambda: _recipe(st)["recipe"]["text_fixes"].get("0") == "Koreksi dari HP", 10, "koreksi tersimpan", st)
+        # M1.1: editor subtitle visual — ketuk teks baris, ketik langsung, Enter menyimpan.
+        page.tap('#transcriptBox .sub-row[data-s="0"] .sub-text')
+        page.wait_for_selector('#transcriptBox .sub-row[data-s="0"] .sub-text.editing')
+        page.keyboard.press("Control+A")
+        page.keyboard.type("Koreksi dari HP")
+        page.keyboard.press("Enter")
+        _wait(lambda: (_recipe(st)["recipe"]["seg_edits"].get("0") or {}).get("text") == "Koreksi dari HP", 10,
+              "koreksi tersimpan", st)
 
         # Aplikasi ke latar belakang (pindah aplikasi / layar dikunci): perubahan langsung disimpan, tanpa menunggu.
         page.eval_on_selector("#saturation", "e => { e.value = '0.7'; e.dispatchEvent(new Event('change', {bubbles: true})); }")

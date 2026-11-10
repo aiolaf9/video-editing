@@ -44,9 +44,10 @@ class Client:
     def json(self, method, path, payload):
         return self.request(method, path, json.dumps(payload).encode(), {"Content-Type": "application/json"})
 
-    def upload(self, path: Path, language: str):
+    def upload(self, path: Path, language: str, quality: str = ""):
         boundary = uuid.uuid4().hex
         parts = [f"--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{language}\r\n".encode(),
+                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"quality\"\r\n\r\n{quality}\r\n".encode(),
                  (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{path.name}\"\r\n"
                   "Content-Type: video/mp4\r\n\r\n").encode(), path.read_bytes(), f"\r\n--{boundary}--\r\n".encode()]
         return self.request("POST", "/api/projects", b"".join(parts),
@@ -78,8 +79,33 @@ def probe(path: Path) -> dict:
     return json.loads(out)
 
 
+def _norm(text: str) -> list[str]:
+    import re
+    import unicodedata
+    t = unicodedata.normalize("NFKC", text).lower()
+    return re.sub(r"[^\w\s]|_", " ", t).split()
+
+
+def _dist(a: list, b: list) -> int:
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def wer_cer(ref: str, hyp: str) -> dict:
+    r, h = _norm(ref), _norm(hyp)
+    rc, hc = list("".join(r)), list("".join(h))
+    return {"wer": round(_dist(r, h) / max(1, len(r)), 4), "cer": round(_dist(rc, hc) / max(1, len(rc)), 4),
+            "ref_words": len(r)}
+
+
 def run(base: str, key: str, video: Path, export_dir: Path, language: str = "en",
-        analysis_timeout: float = 1800, render_timeout: float = 1800) -> dict:
+        analysis_timeout: float = 1800, render_timeout: float = 1800, quality: str = "",
+        reference: str = "") -> dict:
     t0 = time.time()
     report: dict = {"ok": False, "steps": []}
     step = report["steps"].append
@@ -97,7 +123,7 @@ def run(base: str, key: str, video: Path, export_dir: Path, language: str = "en"
     report["whisper_model_dir"] = os.environ.get("WHISPER_MODEL_DIR", "(tidak dibundel)")
     step("masuk tanpa login: OK")
 
-    status, res = c.upload(video, language)
+    status, res = c.upload(video, language, quality)
     _check(status == 200, f"upload: {status} {res}")
     pid, t_up = res["project"]["id"], time.time()
     job = _wait(c, res["job"]["id"], analysis_timeout)
@@ -113,6 +139,14 @@ def run(base: str, key: str, video: Path, export_dir: Path, language: str = "en"
     _check(len(words) >= 10, f"transkrip terlalu sedikit kata: {words}")
     report["transcript_words"] = len(words)
     report["transcript_sample"] = " ".join(words[:25])
+    report["model"] = transcript.get("model")
+    report["quality"] = transcript.get("quality")
+    report["language"] = transcript.get("language")
+    probs = [w.get("p") for s in transcript.get("segments", []) for w in s.get("words", []) if w.get("p") is not None]
+    report["unsure_share"] = round(sum(p < 0.5 for p in probs) / len(probs), 3) if probs else None
+    if reference:
+        report["accuracy"] = wer_cer(reference, " ".join(words))
+        step(f"akurasi vs rujukan: WER {report['accuracy']['wer']:.1%}, CER {report['accuracy']['cer']:.1%}")
     step(f"transkrip: {len(words)} kata")
 
     status, clips = c.get(f"/api/projects/{pid}/clips")

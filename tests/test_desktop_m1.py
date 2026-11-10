@@ -170,3 +170,34 @@ def test_oslock_exclusive_between_handles(tmp_path):
         oslock.unlock(a)
         assert oslock.try_lock(b)
         oslock.unlock(b)
+
+
+def test_launcher_maps_bundled_models_to_quality_modes(tmp_path, monkeypatch):
+    """M1.1: installer membundel whisper-base (Cepat) & whisper-small (Akurat); peluncur memetakannya per mode."""
+    from desktop import launcher
+    for name in ("base", "small"):
+        (tmp_path / f"whisper-{name}").mkdir()
+        (tmp_path / f"whisper-{name}" / "model.bin").write_bytes(b"x")
+    monkeypatch.setattr(launcher, "resource_dir", lambda: tmp_path)
+    for k in ("WHISPER_MODEL", "WHISPER_MODEL_FAST", "WHISPER_MODEL_ACCURATE", "WHISPER_MODEL_PATHS",
+              "WHISPER_QUALITY_DEFAULT", "DESKTOP_MODE", "DESKTOP_LAUNCH_KEY", "VIDEO_APP_DATA", "EXPORT_DIR",
+              "EMBEDDED_WORKERS", "MEDIA_LIFECYCLE", "AUTO_MIGRATE", "COOKIE_SECURE", "ALLOW_URL_IMPORT",
+              "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY", "MAX_UPLOAD_MB"):
+        monkeypatch.delenv(k, raising=False)
+    import os
+    saved = dict(os.environ)
+    try:
+        launcher.configure_env(tmp_path / "data", tmp_path / "export")
+        paths = json.loads(os.environ["WHISPER_MODEL_PATHS"])
+        assert paths == {"base": str(tmp_path / "whisper-base"), "small": str(tmp_path / "whisper-small")}
+        assert os.environ["WHISPER_MODEL_FAST"] == "base" and os.environ["WHISPER_MODEL_ACCURATE"] == "small"
+        assert os.environ["WHISPER_MODEL"] == "small" and os.environ["WHISPER_QUALITY_DEFAULT"] == "akurat"
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_selftest_wer_cer():
+    from desktop import selftest
+    r = selftest.wer_cer("Insya Allah kita bayar zakat.", "insya allah kita bayar jakat")
+    assert r["wer"] == 0.2 and r["ref_words"] == 5 and 0 < r["cer"] < 0.1

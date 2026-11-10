@@ -33,6 +33,7 @@ class PlanItem(BaseModel):
 
 MAX_OVERLAYS = 300
 MAX_TEXT_FIXES = 500
+MAX_SEG_EDITS = 5000
 
 
 class RenderRequest(BaseModel):
@@ -58,6 +59,7 @@ class RenderRequest(BaseModel):
     # Snapshot resep (P1, render dari resep): None = pakai isi resep proyek saat render dijalankan.
     overlays: Optional[list[PlanItem]] = Field(None, max_length=MAX_OVERLAYS)
     text_fixes: Optional[dict[str, str]] = Field(None, max_length=MAX_TEXT_FIXES)
+    seg_edits: Optional[dict[str, dict]] = Field(None, max_length=MAX_SEG_EDITS)   # M1.1: koreksi + timing
 
     @model_validator(mode="after")
     def _check_range(self):
@@ -71,15 +73,36 @@ class RenderRequest(BaseModel):
 class UrlImport(BaseModel):
     url: str = Field(min_length=8, max_length=2000)
     language: Optional[str] = None
+    quality: Optional[str] = None
+
+
+class WordTime(BaseModel):
+    i: int = Field(ge=0, le=400)
+    start: float = Field(ge=0, le=86400)
+    end: float = Field(ge=0, le=86400)
 
 
 class SegmentEdit(BaseModel):
+    """Satu koreksi segmen: teks (timing kata dijaga), rentang segmen, dan/atau waktu per kata (M1.1)."""
     index: int = Field(ge=0)
-    text: str = Field(max_length=2000)
+    text: Optional[str] = Field(None, max_length=2000)
+    start: Optional[float] = Field(None, ge=0, le=86400)
+    end: Optional[float] = Field(None, ge=0, le=86400)
+    word_times: Optional[list[WordTime]] = Field(None, max_length=400)
 
 
 class TranscriptEdit(BaseModel):
-    segments: list[SegmentEdit] = Field(min_length=1, max_length=500)
+    segments: list[SegmentEdit] = Field(default_factory=list, max_length=500)
+    reviewed: list[int] = Field(default_factory=list, max_length=5000)        # tandai sudah ditinjau
+    unreviewed: list[int] = Field(default_factory=list, max_length=5000)      # batalkan tanda tinjau
+
+
+class ReplaceRequest(BaseModel):
+    find: str = Field(min_length=1, max_length=200)
+    replace: str = Field("", max_length=200)
+    case_sensitive: bool = False
+    whole_word: bool = True
+    dry_run: bool = True
 
 
 class SuggestRequest(BaseModel):

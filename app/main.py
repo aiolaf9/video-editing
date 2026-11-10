@@ -28,7 +28,7 @@ from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPRO
                      MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
                      METRICS_TOKEN, UPLOAD_CHUNK_MB, UPLOAD_RESUME_HOURS, UPLOAD_TMP_DIR,
                      WEB_DIR, WHISPER_MODEL)
-from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest,
+from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest, ReplaceRequest,
                       RenderRequest, Settings, SuggestRequest, TranscriptEdit, UnitIn, UrlImport, UserCreate,
                       UserUpdate)
 from .schemas import MAX_OVERLAYS
@@ -449,7 +449,25 @@ def me(user: dict = CurrentUser):
     data["desktop"] = DESKTOP_MODE
     if DESKTOP_MODE:
         data["export_dir"] = str(EXPORT_DIR) if EXPORT_DIR else None
+    data["transcribe"] = _transcribe_info()
     return data
+
+
+def _transcribe_info() -> dict:
+    """Pilihan kualitas transkripsi untuk antarmuka (M1.1). Angka RAM = perkiraan admission (config); waktu = RTF
+    terukur di runner CI 4 vCPU (bench/RESULTS_M1_1.md), bukan janji di setiap komputer."""
+    from . import config, transcribe
+    fast, accurate = os.environ.get("WHISPER_MODEL_FAST"), os.environ.get("WHISPER_MODEL_ACCURATE")
+    if not (fast or accurate):
+        return {"qualities": [], "default": None}
+    rtf = {"base": 0.18, "small": 0.37, "large-v3-turbo": None}
+    out = []
+    for key, label in (("cepat", "Cepat"), ("akurat", "Akurat")):
+        model = transcribe.model_for(key)
+        out.append({"id": key, "label": label, "model": model,
+                    "ram_mb": config.analysis_need_mb(600, model),
+                    "minutes_per_10min": round(rtf[model] * 10, 1) if rtf.get(model) else None})
+    return {"qualities": out, "default": os.environ.get("WHISPER_QUALITY_DEFAULT", "akurat")}
 
 
 # ------------------------------------------------------------------ desktop (NH AI Clip Studio, M1)
@@ -556,9 +574,14 @@ def _target_unit(user: dict) -> Optional[str]:
     raise HTTPException(400, "Akun Anda belum masuk ke unit mana pun. Hubungi admin.")
 
 
+def _quality(value: Optional[str]) -> Optional[str]:
+    """Mode kualitas transkripsi (M1.1). Tidak dikenal = None (model bawaan server)."""
+    return value if value in ("cepat", "akurat") else None
+
+
 @app.post("/api/projects")
 def upload_project(request: Request, file: UploadFile = File(...), language: Optional[str] = Form(None),
-                   user: dict = CurrentUser):
+                   quality: Optional[str] = Form(None), user: dict = CurrentUser):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in VIDEO_EXTS:
         raise HTTPException(400, f"Format {ext or '(tanpa ekstensi)'} tidak didukung.")
@@ -583,7 +606,8 @@ def upload_project(request: Request, file: UploadFile = File(...), language: Opt
         raise
     meta = storage.update_project(pid, source=f"source{ext}", status="antre")
     # Worker sudah diperiksa sebelum file disalin; file yang sudah diterima tidak ditolak di akhir.
-    job = _queue_job("analyze", "analisis", meta, user, {"language": language or None}, "Analisis video",
+    job = _queue_job("analyze", "analisis", meta, user, {"language": language or None, "quality": _quality(quality)},
+                     "Analisis video",
                      require_worker=False)
     return {"project": meta, "job": job}
 
@@ -610,7 +634,8 @@ def import_url(body: UrlImport, user: dict = CurrentUser):
     meta = storage.create_project("Mengunduh...", unit_id, user["id"])
     meta = storage.update_project(meta["id"], status="antre", url=body.url)
     job = _queue_job("download", "analisis", meta, user,
-                     {"url": body.url, "language": body.language, "trusted": trusted}, "Unduh video")
+                     {"url": body.url, "language": body.language, "quality": _quality(body.quality),
+                      "trusted": trusted}, "Unduh video")
     return {"project": meta, "job": job}
 
 
@@ -691,8 +716,9 @@ def _start_analysis(row: dict, user: dict) -> dict:
     if existing:  # finalisasi yang dilanjutkan setelah crash: jangan menggandakan analisis
         return jobs.view(existing[-1])
     meta = storage.load_project(row["project_id"])
-    language = json.loads(row.get("meta") or "{}").get("language")
-    return _queue_job("analyze", "analisis", meta, user, {"language": language}, "Analisis video",
+    info = json.loads(row.get("meta") or "{}")
+    return _queue_job("analyze", "analisis", meta, user, {"language": info.get("language"),
+                                                          "quality": info.get("quality")}, "Analisis video",
                       require_worker=False)  # upload sudah diterima: job disimpan & menunggu worker
 
 
@@ -764,20 +790,21 @@ def delete_project(pid: str, user: dict = CurrentUser):
 
 
 @app.post("/api/projects/{pid}/reanalyze")
-def reanalyze(pid: str, language: Optional[str] = None, user: dict = CurrentUser):
+def reanalyze(pid: str, language: Optional[str] = None, quality: Optional[str] = None, user: dict = CurrentUser):
     meta = _project_for(pid, user)
     if any(j["status"] in jobs.ACTIVE and j["kind"] == "analisis" for j in jobs.for_project(pid)):
         raise HTTPException(409, "Analisis sedang berjalan.")
     if not meta.get("source"):
         raise HTTPException(409, "Video sumber tidak ada. Unggah ulang videonya.")
     _check_pending(user)
-    job = _queue_job("analyze", "analisis", meta, user, {"language": language, "reanalyze": True}, "Analisis ulang")
+    job = _queue_job("analyze", "analisis", meta, user, {"language": language, "quality": _quality(quality), "reanalyze": True}, "Analisis ulang")
 
     def clear_fixes(r: recipe.Recipe) -> recipe.Recipe:   # nomor segmen transkrip baru berbeda dari yang lama
-        r.text_fixes = {}
+        r.text_fixes, r.seg_edits, r.reviewed, r.vocab_ignored = {}, {}, [], []
         return r
 
-    if recipe.load(pid)["recipe"].text_fixes:
+    old = recipe.load(pid)["recipe"]
+    if old.text_fixes or old.seg_edits or old.reviewed or old.vocab_ignored:
         recipe.server_update(pid, clear_fixes, user["id"])
     return job
 
@@ -790,28 +817,155 @@ def get_transcript(pid: str, user: dict = CurrentUser):
 
 @app.put("/api/projects/{pid}/transcript")
 def edit_transcript(pid: str, body: TranscriptEdit, response: Response, user: dict = CurrentUser):
-    """Koreksi teks segmen transkrip. Disimpan di resep (database) sebagai koreksi per segmen; transkrip mentah
-    tidak diubah. Pratinjau & render berikutnya memakai teks ini untuk subtitle."""
-    from . import transcript_edit
+    """Koreksi transkrip (teks, rentang segmen, waktu kata) dan tanda "sudah ditinjau". Disimpan di resep
+    (database); transkrip mentah tidak diubah. Pratinjau & render memakai hasil ini untuk subtitle."""
     _project_for(pid, user)
-    if any(j["status"] in jobs.ACTIVE and j["kind"] == "analisis" for j in jobs.for_project(pid)):
-        raise HTTPException(409, "Analisis sedang berjalan. Tunggu sampai selesai sebelum mengoreksi transkrip.")
-    raw = storage.read_data(pid, "transcript")
-    if raw is None:
-        raise HTTPException(409, "Video belum selesai dianalisis.")
+    _transcript_editable(pid)
     edits = [e.model_dump() for e in body.segments]
-    try:
-        transcript_edit.apply_edits(json.loads(json.dumps(raw)), edits)   # validasi terhadap transkrip ini
-    except transcript_edit.EditError as exc:
-        raise HTTPException(422, str(exc))
+    if not edits and not body.reviewed and not body.unreviewed:
+        raise HTTPException(422, "Tidak ada perubahan.")
 
     def change(r: recipe.Recipe) -> recipe.Recipe:
-        r.text_fixes.update({str(e["index"]): " ".join(str(e["text"]).split()) for e in edits})
+        _apply_transcript_edits(pid, r, edits)
+        r.reviewed = sorted((set(r.reviewed) | set(body.reviewed)) - set(body.unreviewed))
         return r
 
     state = _recipe_update(pid, change, user, response)
     _touch(pid)
-    return recipe.apply_text_fixes(raw, state["recipe"].text_fixes)
+    return recipe.effective_transcript(pid, state["recipe"])
+
+
+def _transcript_editable(pid: str) -> None:
+    if any(j["status"] in jobs.ACTIVE and j["kind"] == "analisis" for j in jobs.for_project(pid)):
+        raise HTTPException(409, "Analisis sedang berjalan. Tunggu sampai selesai sebelum mengoreksi transkrip.")
+    if storage.read_data(pid, "transcript") is None:
+        raise HTTPException(409, "Video belum selesai dianalisis.")
+
+
+def _apply_transcript_edits(pid: str, r: recipe.Recipe, edits: list[dict]) -> None:
+    """Terapkan koreksi pada transkrip efektif resep `r` dan simpan segmen hasilnya ke r.seg_edits."""
+    from . import transcript_edit
+    if not edits:
+        return
+    current = recipe.effective_transcript(pid, r)
+    try:
+        transcript_edit.apply_edits(current, edits)
+    except transcript_edit.EditError as exc:
+        raise HTTPException(422, str(exc))
+    for e in edits:
+        key = str(e["index"])
+        r.seg_edits[key] = recipe.SegEdit(**transcript_edit.pack(current["segments"][e["index"]]))
+        r.text_fixes.pop(key, None)          # format lama digantikan koreksi lengkap
+
+
+@app.post("/api/projects/{pid}/transcript/replace")
+def replace_transcript(pid: str, body: ReplaceRequest, response: Response, user: dict = CurrentUser):
+    """Cari & ganti di seluruh transkrip. dry_run (bawaan) hanya menghitung & menampilkan contoh."""
+    from . import transcript_edit
+    _project_for(pid, user)
+    _transcript_editable(pid)
+    current = recipe.effective_transcript(pid) or {"segments": []}
+    try:
+        hits = transcript_edit.find_replace(current["segments"], body.find, body.replace, body.case_sensitive,
+                                            body.whole_word)
+    except transcript_edit.EditError as exc:
+        raise HTTPException(422, str(exc))
+    if len(hits) > 500:
+        raise HTTPException(422, f"Terlalu banyak segmen cocok ({len(hits)}). Persempit kata yang dicari.")
+    preview = [{"index": i, "before": a, "after": b, "start": current["segments"][i]["start"]} for i, a, b in hits]
+    if body.dry_run or not hits:
+        return {"count": len(hits), "preview": preview[:100], "applied": False}
+    edits = [{"index": i, "text": b} for i, _a, b in hits]
+    state = _recipe_update(pid, lambda r: (_apply_transcript_edits(pid, r, edits), r)[1], user, response)
+    _touch(pid)
+    return {"count": len(hits), "preview": preview[:100], "applied": True,
+            "transcript": recipe.effective_transcript(pid, state["recipe"])}
+
+
+@app.get("/api/projects/{pid}/transcript/review")
+def transcript_review(pid: str, start: Optional[float] = None, end: Optional[float] = None,
+                      user: dict = CurrentUser):
+    """Kata yang perlu ditinjau (keyakinan Whisper rendah) di rentang klip, kecuali segmen yang sudah ditinjau.
+    Dipakai editor (filter "perlu ditinjau") dan konfirmasi sebelum render."""
+    from . import transcript_edit
+    _project_for(pid, user)
+    tr = recipe.effective_transcript(pid) or {"segments": []}
+    words = transcript_edit.unsure_words(tr["segments"], start, end)
+    return {"count": len(words), "words": words[:300], "threshold": transcript_edit.UNSURE_P}
+
+
+# ------------------------------------------------------------------ kosakata & saran istilah (M1.1)
+
+def _vocab_scope(user: dict) -> Optional[str]:
+    """Desktop & admin global: kosakata global. Admin unit: kosakata unitnya."""
+    if DESKTOP_MODE or user["role"] == "admin":
+        return None
+    return user.get("unit_id")
+
+
+@app.get("/api/vocab")
+def get_vocab(user: dict = CurrentUser):
+    from . import vocab
+    scope = _vocab_scope(user)
+    own = vocab.stored(scope)
+    return {"scope": "unit" if scope else "global", "entries": own["entries"],
+            "use_defaults": own.get("use_defaults", True), "defaults": vocab.defaults(),
+            "can_edit": DESKTOP_MODE or user["role"] in ("admin", "unit_admin"),
+            "effective_count": len(vocab.effective(user.get("unit_id")))}
+
+
+@app.put("/api/vocab")
+def put_vocab(body: dict, user: dict = CurrentUser):
+    from pydantic import ValidationError
+
+    from . import vocab
+    if not (DESKTOP_MODE or user["role"] in ("admin", "unit_admin")):
+        raise HTTPException(403, "Hanya admin yang dapat mengubah kosakata.")
+    try:
+        data = vocab.VocabIn(**body)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors()[0].get("msg", "Kosakata tidak sah."))
+    return vocab.save(_vocab_scope(user), data)
+
+
+@app.get("/api/projects/{pid}/transcript/suggestions")
+def transcript_suggestions(pid: str, user: dict = CurrentUser):
+    """Saran istilah dari kosakata. Tidak ada yang diterapkan sebelum pengguna menerimanya."""
+    from . import vocab
+    meta = _project_for(pid, user)
+    r = recipe.load(pid)["recipe"]
+    tr = recipe.effective_transcript(pid, r) or {"segments": []}
+    return vocab.suggest(tr["segments"], vocab.effective(meta.get("unit_id")), set(r.vocab_ignored))
+
+
+@app.post("/api/projects/{pid}/transcript/suggestions")
+def decide_suggestions(pid: str, body: dict, response: Response, user: dict = CurrentUser):
+    """{"accept": [id], "ignore": [id]}: terima (teks segmen diganti, timing kata dijaga) atau tolak (diingat)."""
+    from . import vocab
+    meta = _project_for(pid, user)
+    _transcript_editable(pid)
+    accept, ignore = list(body.get("accept") or [])[:500], list(body.get("ignore") or [])[:500]
+    if not accept and not ignore:
+        raise HTTPException(422, "Tidak ada saran yang dipilih.")
+
+    def change(r: recipe.Recipe) -> recipe.Recipe:
+        tr = recipe.effective_transcript(pid, r) or {"segments": []}
+        current = {s["id"]: s for s in vocab.suggest(tr["segments"], vocab.effective(meta.get("unit_id")),
+                                                    set(r.vocab_ignored))}
+        missing = [i for i in accept if i not in current]
+        if missing:
+            raise HTTPException(409, "Transkrip sudah berubah. Muat ulang saran istilah.")
+        by_seg: dict[int, list] = {}
+        for sid in accept:
+            by_seg.setdefault(current[sid]["seg"], []).append(current[sid])
+        edits = [{"index": si, "text": vocab.apply_to_text(tr["segments"][si], items)} for si, items in by_seg.items()]
+        _apply_transcript_edits(pid, r, edits)
+        r.vocab_ignored = sorted(set(r.vocab_ignored) | {i for i in ignore if isinstance(i, str) and len(i) <= 200})
+        return r
+
+    state = _recipe_update(pid, change, user, response)
+    _touch(pid)
+    return recipe.effective_transcript(pid, state["recipe"])
 
 
 @app.get("/api/projects/{pid}/clips")

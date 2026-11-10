@@ -24,7 +24,7 @@ def _container(monkeypatch, limit_mb, state):
                                                                               "processes": 1})
     monkeypatch.setattr(resources, "_inflight", {})
     monkeypatch.setattr(resources, "_own_base", None)
-    monkeypatch.setattr(resources, "_model_loaded", lambda: False)
+    monkeypatch.setattr(resources, "_model_loaded", lambda *_a: False)
     monkeypatch.setattr(worker, "_holds", {})
     monkeypatch.setattr(worker, "_backoff", {})
 
@@ -59,11 +59,11 @@ def test_need_covers_measured_peaks_with_margin():
 
 
 def test_job_need_uses_project_duration_and_loaded_model(client, monkeypatch):
-    monkeypatch.setattr(resources, "_model_loaded", lambda: False)
+    monkeypatch.setattr(resources, "_model_loaded", lambda *_a: False)
     jid, pid = _analyze_job("durasi", 1800, "uji-w5-need")
     data = jobs.get(jid)
     assert resources.job_need_mb(data) == config.analysis_need_mb(1800)
-    monkeypatch.setattr(resources, "_model_loaded", lambda: True)
+    monkeypatch.setattr(resources, "_model_loaded", lambda *_a: True)
     assert resources.job_need_mb(data) == config.analysis_need_mb(1800) - config.whisper_resident_mb()
     jid2, _ = _analyze_job("tanpa-durasi", None, "uji-w5-need")
     assert resources.job_need_mb(jobs.get(jid2)) == resources.required_mb("uji-w5-need")
@@ -190,7 +190,7 @@ def test_safe_analyze_capacity_wait_restores_project_status(client, monkeypatch)
     pid = storage.create_project("status")["id"]
     storage.update_project(pid, status="siap")
 
-    def analyze(job, pid, language=None):
+    def analyze(job, pid, language=None, quality=None):
         storage.update_project(pid, status="dianalisis")
         raise resources.CapacityWait("RAM penuh")
     monkeypatch.setattr(pipeline, "analyze", analyze)

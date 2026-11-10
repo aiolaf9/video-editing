@@ -110,7 +110,7 @@ def test_unresponsive_job_is_abandoned_not_stuck(client, ready_project, monkeypa
 
 
 def test_cancel_reanalysis_keeps_ready_project(client, ready_project, monkeypatch):
-    def slow_transcribe(path, duration, language=None, progress=None):
+    def slow_transcribe(path, duration, language=None, progress=None, **_kw):
         for i in range(400):
             time.sleep(0.05)
             if progress:
@@ -131,7 +131,7 @@ def test_cancel_reanalysis_keeps_ready_project(client, ready_project, monkeypatc
 
 
 def test_cancel_new_analysis_marks_project_cancelled(client, sample_video, monkeypatch):
-    def slow_transcribe(path, duration, language=None, progress=None):
+    def slow_transcribe(path, duration, language=None, progress=None, **_kw):
         for i in range(400):
             time.sleep(0.05)
             if progress:

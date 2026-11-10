@@ -47,7 +47,7 @@ def child_main(spec_path: str, out_path: str) -> None:
         fake = importlib.util.module_from_spec(mspec)
         mspec.loader.exec_module(fake)
         model = fake.Model()
-        transcribe._get_model = lambda force_cpu=False: model
+        transcribe._get_model = lambda force_cpu=False, name=None: model
         fake.patch()
 
     t0 = time.perf_counter()

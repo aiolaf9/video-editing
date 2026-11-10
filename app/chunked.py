@@ -180,12 +180,16 @@ def _low_quality(seg, chunk_seconds: float) -> bool:
             or (chunk_seconds < 1.0 and nsp > 0.3 and lp < -0.8))
 
 
-def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset: float, kind: str) -> tuple[list, str]:
-    from .transcribe import PUNCTUATION_PROMPTS
+def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset: float, kind: str,
+                      vocabulary: Optional[list] = None) -> tuple[list, str]:
+    from .transcribe import PUNCTUATION_PROMPTS, hotwords_text, segment_dict
 
-    segments, info = model.transcribe(
-        audio, language=language or None, initial_prompt=PUNCTUATION_PROMPTS.get(language or ""),
-        word_timestamps=True, vad_filter=False, condition_on_previous_text=False, beam_size=5)
+    kw = {"language": language or None, "initial_prompt": PUNCTUATION_PROMPTS.get(language or ""),
+          "word_timestamps": True, "vad_filter": False, "condition_on_previous_text": False, "beam_size": 5}
+    hot = hotwords_text(vocabulary)
+    if hot:
+        kw["hotwords"] = hot
+    segments, info = model.transcribe(audio, **kw)
     out = []
     for seg in segments:
         jobcontrol.check()   # titik batal/timeout per segmen
@@ -194,10 +198,7 @@ def _transcribe_piece(model, audio: np.ndarray, language: Optional[str], offset:
             continue
         if config.WHISPER_SEGMENT_FILTER and _low_quality(seg, len(audio) / RATE):
             continue
-        words = [{"start": round(w.start + offset, 3), "end": round(w.end + offset, 3), "word": w.word.strip()}
-                 for w in (seg.words or []) if w.word.strip()]
-        out.append({"start": round(seg.start + offset, 3), "end": round(seg.end + offset, 3),
-                    "text": seg.text.strip(), "words": words})
+        out.append(segment_dict(seg, offset))
     return out, getattr(info, "language", None) or language
 
 
@@ -225,8 +226,8 @@ def _reconcile(prev: list, cur: list, cut: float) -> tuple[list, list]:
 
 
 def transcribe_chunked(model, path: Path, duration: float, language: Optional[str],
-                       progress: Optional[Callable[[float], None]]) -> dict:
-    from .transcribe import _detect_language
+                       progress: Optional[Callable[[float], None]], vocabulary: Optional[list] = None) -> dict:
+    from .transcribe import detect_language
 
     block = config.WHISPER_DECODE_WINDOW_SECONDS
     buf = np.empty(0, dtype=np.float32)
@@ -247,11 +248,11 @@ def transcribe_chunked(model, path: Path, duration: float, language: Optional[st
             if lang is None and chunks:
                 speech = [buf[s:e] for s, e, k in chunks if k == "speech"][:4]
                 if speech:
-                    lang = _detect_language(model, np.concatenate(speech)[: RATE * 30])
+                    lang = detect_language(model, np.concatenate(speech)[: RATE * 30], 1)
             for s, e, kind in chunks:
                 jobcontrol.check()
                 offset = buf_start + s / RATE
-                piece, detected = _transcribe_piece(model, buf[s:e], lang, offset, kind)
+                piece, detected = _transcribe_piece(model, buf[s:e], lang, offset, kind, vocabulary)
                 lang = lang or detected
                 if prev_piece is not None and prev_end is not None and offset < prev_end:   # overlap potongan terkendali
                     cut = (offset + prev_end) / 2

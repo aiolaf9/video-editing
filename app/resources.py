@@ -232,10 +232,11 @@ def required_mb(queue: str) -> int:
     return need
 
 
-def _model_loaded() -> bool:
+def _model_loaded(name: Optional[str] = None) -> bool:
+    """Model Whisper (bernama `name`, bila diberikan) sudah tinggal di proses ini."""
     try:
         from . import transcribe
-        return transcribe._model is not None
+        return transcribe._model is not None and (name is None or transcribe._model_name == name)
     except ImportError:
         return False
 
@@ -250,7 +251,20 @@ def job_need_mb(job: dict) -> int:
     duration = project_duration(job.get("project_id"))
     if duration is None:
         return required_mb(queue)
-    return analysis_job_need_mb(duration)
+    return analysis_job_need_mb(duration, _job_model(job))
+
+
+def _job_model(job: dict) -> Optional[str]:
+    """Model Whisper untuk mode kualitas di payload job (M1.1); None = model bawaan."""
+    try:
+        payload = job.get("payload") or {}
+        if isinstance(payload, str):
+            import json
+            payload = json.loads(payload)
+        from . import transcribe
+        return transcribe.model_for(payload.get("quality"))
+    except Exception:
+        return None
 
 
 def project_duration(pid: Optional[str]) -> Optional[float]:
@@ -268,19 +282,21 @@ def project_duration(pid: Optional[str]) -> Optional[float]:
         return None
 
 
-def analysis_job_need_mb(duration: Optional[float]) -> int:
-    """Kebutuhan RAM job analisis untuk audio berdurasi `duration` di proses ini (lihat job_need_mb)."""
-    from .config import analysis_need_mb, whisper_resident_mb
-    need = analysis_need_mb(duration)
-    if _model_loaded():
-        need -= whisper_resident_mb()
+def analysis_job_need_mb(duration: Optional[float], model: Optional[str] = None) -> int:
+    """Kebutuhan RAM job analisis untuk audio berdurasi `duration` di proses ini (lihat job_need_mb). Model lain
+    dari yang sedang dimuat = model lama dilepas dulu, jadi tidak dikurangi bagian residen."""
+    from .config import WHISPER_MODEL, analysis_need_mb, whisper_resident_mb
+    model = model or WHISPER_MODEL
+    need = analysis_need_mb(duration, model)
+    if _model_loaded(model):
+        need -= whisper_resident_mb(model)
     return max(need, TASK_MEM_MB.get("analisis_loaded", 600))
 
 
-def ensure_job_memory(job_id: str, duration: Optional[float]) -> None:
+def ensure_job_memory(job_id: str, duration: Optional[float], model: Optional[str] = None) -> None:
     """Dipanggil setelah probe: naikkan reservasi job ini ke kebutuhan sebenarnya (lihat adjust_reservation).
     Job yang tidak berjalan lewat worker (tanpa reservasi) hanya diperiksa terhadap batas permanen."""
-    need = analysis_job_need_mb(duration)
+    need = analysis_job_need_mb(duration, model)
     if job_id not in _inflight:
         why = exceeds_capacity(need)
         if why:

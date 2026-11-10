@@ -53,7 +53,7 @@ def _run_task(job: jobs.Job):
     pid, p = job.project_id, job.payload
     _media_ready(pid)
     if job.task == "analyze":
-        result = pipeline.safe_analyze(job, pid, p.get("language"))
+        result = pipeline.safe_analyze(job, pid, p.get("language"), p.get("quality"))
         db.record_usage("analyze", job.unit_id, job.user_id)
         return result
     if job.task == "download":
@@ -66,7 +66,8 @@ def _run_task(job: jobs.Job):
             storage.update_project(pid, status="gagal", name="Unduhan melebihi kuota")
             lifecycle.refresh_bytes(pid)
             raise
-        jobs.submit("analyze", "analisis", pid, {"language": p.get("language"), "after_download": True}, "Analisis video",
+        jobs.submit("analyze", "analisis", pid, {"language": p.get("language"), "quality": p.get("quality"),
+                                                  "after_download": True}, "Analisis video",
                     user_id=job.user_id, unit_id=job.unit_id)
         return {"downloaded": True}
     if job.task == "render":

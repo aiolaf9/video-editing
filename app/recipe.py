@@ -24,10 +24,10 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from . import db
-from .schemas import MAX_OVERLAYS, MAX_TEXT_FIXES, MusicSettings, PlanItem, RenderRequest, SubtitleSettings
+from .schemas import MAX_OVERLAYS, MAX_SEG_EDITS, MAX_TEXT_FIXES, MusicSettings, PlanItem, RenderRequest, SubtitleSettings
 
 SCHEMA_VERSION = 1
-MAX_RECIPE_BYTES = 256 * 1024          # batas ukuran JSON resep tersimpan
+MAX_RECIPE_BYTES = 1536 * 1024         # batas ukuran JSON resep tersimpan (M1.1: koreksi + timing per kata)
 MAX_TEXT_FIX_CHARS = 2000
 MAX_TEXT_FIX_TOTAL = 100_000
 FONT_PATTERN = r"^[A-Za-z0-9 _-]{1,60}$"   # nama font masuk ke berkas ASS: tanpa koma/kurung kurawal
@@ -80,6 +80,24 @@ class Audio(_Strict):
     normalize: bool = True
 
 
+class SegEdit(_Strict):
+    """Koreksi satu segmen transkrip (M1.1): teks, rentang, dan kata ringkas [kata, mulai, akhir, p]."""
+    text: str = Field("", max_length=2000)
+    start: float = Field(ge=0, le=86400)
+    end: float = Field(ge=0, le=86400)
+    words: list[tuple[str, float, float, float]] = Field(default_factory=list, max_length=400)
+
+    @field_validator("words")
+    @classmethod
+    def _words(cls, value):
+        prev = -1.0
+        for word, start, end, p in value:
+            if not word or len(word) > 100 or end < start or start < prev - 0.001 or not 0 <= p <= 1:
+                raise ValueError("Kata koreksi tidak sah.")
+            prev = start
+        return value
+
+
 class Recipe(_Strict):
     v: Literal[1] = SCHEMA_VERSION
     selection: Optional[Range] = None
@@ -94,6 +112,9 @@ class Recipe(_Strict):
     animations: bool = True
     overlays: Optional[list[PlanItem]] = Field(None, max_length=MAX_OVERLAYS)
     text_fixes: dict[str, str] = Field(default_factory=dict, max_length=MAX_TEXT_FIXES)
+    seg_edits: dict[str, SegEdit] = Field(default_factory=dict, max_length=MAX_SEG_EDITS)
+    reviewed: list[int] = Field(default_factory=list, max_length=20000)        # segmen yang sudah ditinjau
+    vocab_ignored: list[str] = Field(default_factory=list, max_length=2000)    # saran istilah yang ditolak
     template_id: Optional[str] = Field(None, max_length=40, pattern=r"^[A-Za-z0-9_:-]+$")
     encoder: Literal["cpu", "nvidia", "intel", "amd", "mac"] = "cpu"
     language: Optional[str] = Field(None, max_length=10, pattern=r"^[a-z]{2,3}$")
@@ -114,6 +135,27 @@ class Recipe(_Strict):
         if total > MAX_TEXT_FIX_TOTAL:
             raise ValueError("Total koreksi teks terlalu besar.")
         return out
+
+    @field_validator("seg_edits")
+    @classmethod
+    def _seg_keys(cls, value: dict) -> dict:
+        if any(not k.isdigit() or int(k) > 100_000 for k in value):
+            raise ValueError("Kunci koreksi harus nomor segmen.")
+        return {str(int(k)): v for k, v in value.items()}
+
+    @field_validator("reviewed")
+    @classmethod
+    def _reviewed(cls, value: list[int]) -> list[int]:
+        if any(i < 0 or i > 100_000 for i in value):
+            raise ValueError("Nomor segmen tidak sah.")
+        return sorted(set(value))
+
+    @field_validator("vocab_ignored")
+    @classmethod
+    def _ignored(cls, value: list[str]) -> list[str]:
+        if any(len(k) > 200 for k in value):
+            raise ValueError("Kunci saran terlalu panjang.")
+        return sorted(set(value))
 
 
 class Conflict(Exception):
@@ -217,12 +259,17 @@ def apply_text_fixes(transcript: Optional[dict], fixes: dict[str, str]) -> Optio
         return out
 
 
-def effective_transcript(pid: str, recipe: Optional[Recipe] = None, fixes: Optional[dict] = None) -> Optional[dict]:
-    from . import storage
+def effective_transcript(pid: str, recipe: Optional[Recipe] = None, fixes: Optional[dict] = None,
+                         seg_edits: Optional[dict] = None, reviewed: Optional[list] = None) -> Optional[dict]:
+    """Transkrip mentah + koreksi pengguna (format lama text_fixes, lalu seg_edits M1.1). Tanpa snapshot (render
+    lama di antrean, pratinjau) dipakai isi resep proyek saat ini."""
+    from . import storage, transcript_edit
     raw = storage.read_data(pid, "transcript")
-    if fixes is None:
-        fixes = (recipe or load(pid)["recipe"]).text_fixes
-    return apply_text_fixes(raw, fixes)
+    if fixes is None and seg_edits is None:
+        r = recipe or load(pid)["recipe"]
+        fixes, seg_edits = r.text_fixes, {k: v.model_dump() for k, v in r.seg_edits.items()}
+        reviewed = r.reviewed if reviewed is None else reviewed
+    return transcript_edit.apply_seg_edits(apply_text_fixes(raw, fixes or {}), seg_edits or {}, reviewed)
 
 
 def to_render_request(pid: str, recipe: Recipe, start: float, end: float, title: str = "") -> RenderRequest:
@@ -238,6 +285,7 @@ def to_render_request(pid: str, recipe: Recipe, start: float, end: float, title:
         music=MusicSettings(file=recipe.audio.music, volume=recipe.audio.volume, ducking=recipe.audio.ducking),
         overlays=[PlanItem(**i) for i in effective_overlays(pid, recipe)],
         text_fixes=dict(recipe.text_fixes),
+        seg_edits={k: v.model_dump() for k, v in recipe.seg_edits.items()},
     )
 
 

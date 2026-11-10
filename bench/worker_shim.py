@@ -25,7 +25,7 @@ def _whisper_threads() -> int:
         return transcribe.WHISPER_THREADS  # kode lama: 0 = otomatis (semua core)
 
 
-def fake_transcribe(path, duration, language=None, progress=None):
+def fake_transcribe(path, duration, language=None, progress=None, **_kw):  # M1.1: quality, vocabulary
     frames = max(10, int(duration * BURN_FRAMES_PER_SEC))
     args = ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=25", "-frames:v", str(frames),
             "-c:v", "libx264", "-preset", "medium", "-threads", str(_whisper_threads()), "-f", "null", "-"]

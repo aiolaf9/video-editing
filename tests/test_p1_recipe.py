@@ -144,7 +144,7 @@ def test_server_side_changes_merge_with_device_edits(client, fake_transcript):
     r = client.put(f"/api/projects/{pid}/transcript", json={"segments": [{"index": 1, "text": "Karena editnya rapi"}]})
     assert r.status_code == 200 and int(r.headers["X-Recipe-Version"]) == v + 1
     state = client.get(f"/api/projects/{pid}/recipe").json()
-    assert state["recipe"]["aspect"] == "4:5" and state["recipe"]["text_fixes"] == {"1": "Karena editnya rapi"}
+    assert state["recipe"]["aspect"] == "4:5" and state["recipe"]["seg_edits"]["1"]["text"] == "Karena editnya rapi"
 
 
 # ------------------------------------------------------------------ validasi & keamanan
@@ -270,7 +270,7 @@ def test_render_from_recipe_uses_saved_recipe_snapshot(client, sample_video, fak
     assert job.status_code == 200, job.text
     payload = json.loads(jobs.get(job.json()["id"])["payload"])
     assert payload["recipe_version"] == v and payload["request"]["aspect"] == "1:1"
-    assert payload["request"]["text_fixes"] == {"0": "KOREKSI satu dua tiga"}
+    assert payload["request"]["seg_edits"]["0"]["text"] == "KOREKSI satu dua tiga"
     # Edit setelah render diajukan tidak mengubah render yang sudah antre.
     later = client.get(f"/api/projects/{pid}/recipe").json()
     later["recipe"]["aspect"] = "16:9"

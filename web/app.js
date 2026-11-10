@@ -154,6 +154,9 @@ function recipeFromControls() {
     animations: $("animEnabled").checked,
     overlays: base.overlays === undefined ? null : base.overlays,
     text_fixes: base.text_fixes || {},
+    seg_edits: base.seg_edits || {},
+    reviewed: base.reviewed || [],
+    vocab_ignored: base.vocab_ignored || [],
     template_id: state.templateId || null,
     encoder: $("encoderSelect").value,
     language: $("langSelect").value || null,
@@ -302,7 +305,7 @@ function showConflict(current, mine) {
 function applyServerRecipe(cur) {
   rs.loading = true;
   try {
-    const fixesChanged = JSON.stringify((rs.recipe || {}).text_fixes || {}) !== JSON.stringify(cur.recipe.text_fixes || {});
+    const fixesChanged = TRANSCRIPT_FIELDS.some((k) => JSON.stringify((rs.recipe || {})[k] || null) !== JSON.stringify(cur.recipe[k] || null));
     rs.version = cur.version;
     rs.recipe = cur.recipe;
     rs.dirty = false;
@@ -329,6 +332,7 @@ async function reloadTranscript() {
   state.words = tr.segments.flatMap(segWords);
   renderTranscript();
   updateCaptionPreview();
+  scheduleSuggestions();
 }
 
 // Perubahan resep oleh server atas permintaan pengguna ini (koreksi teks, rencana animasi): ambil kolom yang diubah
@@ -344,14 +348,22 @@ async function syncServerRecipe(headerVersion) {
   }
   // Perubahan kita sendiri: layar sudah diperbarui dari respons; cukup ambil versi & kolom milik server.
   rs.version = Math.max(rs.version, cur.version);
-  rs.recipe = { ...(rs.recipe || cur.recipe), text_fixes: cur.recipe.text_fixes, overlays: cur.recipe.overlays };
+  rs.recipe = { ...(rs.recipe || cur.recipe), ...serverFields(cur.recipe) };
   if (!rs.dirty && !rs.saving) { rs.savedAt = Date.now(); setSaveState("saved"); }
 }
 
-// Sama kecuali koreksi teks & overlay (kolom yang diubah server atas permintaan editor ini).
+// Kolom resep yang diubah server atas permintaan editor (koreksi transkrip, tinjau, saran istilah, animasi):
+// autosave pengaturan selalu membawa nilai terbaru dari server agar koreksi tidak tertimpa.
+const TRANSCRIPT_FIELDS = ["text_fixes", "seg_edits", "reviewed", "vocab_ignored"];
+const SERVER_FIELDS = [...TRANSCRIPT_FIELDS, "overlays"];
+function serverFields(r) {
+  return Object.fromEntries(SERVER_FIELDS.map((k) => [k, r[k]]));
+}
+
+// Sama kecuali kolom milik server (lihat SERVER_FIELDS).
 function sameSettings(a, b) {
   if (!a || !b) return false;
-  const strip = (r) => JSON.stringify({ ...r, text_fixes: null, overlays: null });
+  const strip = (r) => JSON.stringify({ ...r, ...Object.fromEntries(SERVER_FIELDS.map((k) => [k, null])) });
   return strip(a) === strip(b);
 }
 
@@ -580,6 +592,7 @@ async function refreshProjectData() {
       state.faces = faces;
       layoutCropFrame();  // data wajah baru tersedia: posisikan ulang bingkai
       renderTranscript();
+      scheduleSuggestions();
       renderClips();
       rs.loading = true;   // memasang rentang dari resep bukan perubahan pengguna
       try {
@@ -793,57 +806,7 @@ function bindMobile() {
   window.addEventListener("pagehide", flush);
 }
 
-// ------------------------------------------------------------ transkrip
-function renderTranscript() {
-  const box = $("transcriptBox");
-  const segs = state.transcript.segments || [];
-  if (!segs.length) {
-    box.innerHTML = '<p class="muted">Tidak ada ucapan yang terdeteksi.</p>';
-    return;
-  }
-  let idx = 0;
-  box.innerHTML = segs.map((s, si) => {
-    const words = s.words && s.words.length
-      ? s.words.map((w) => `<span class="w" data-i="${idx++}" data-t="${w.start}">${esc(w.word)}</span>`).join(" ")
-      : `<span class="w" data-t="${s.start}">${esc(s.text)}</span>`;
-    return `<div class="seg" data-s="${si}"><span class="ts">${fmt(s.start)}</span>${words}` +
-      ` <button type="button" class="seg-edit" data-s="${si}" title="Koreksi teks segmen ini (dipakai untuk subtitle)">Koreksi</button></div>`;
-  }).join("");
-  highlightTranscriptRange();
-}
-
-// Koreksi transkrip: teks segmen disimpan ke server dan dipakai sebagai subtitle saat render berikutnya.
-function editSegment(si) {
-  const seg = state.transcript.segments[si];
-  const row = document.querySelector(`#transcriptBox .seg[data-s="${si}"]`);
-  if (!seg || !row || row.querySelector("textarea")) return;
-  const current = seg.words && seg.words.length ? seg.words.map((w) => w.word).join(" ") : seg.text || "";
-  row.innerHTML = `<span class="ts">${fmt(seg.start)}</span>` +
-    `<textarea class="seg-text" rows="2" maxlength="2000">${esc(current)}</textarea>` +
-    `<span class="seg-actions"><button type="button" class="seg-save primary">Simpan</button>` +
-    `<button type="button" class="seg-cancel">Batal</button></span>`;
-  const ta = row.querySelector("textarea");
-  ta.focus();
-  row.querySelector(".seg-cancel").addEventListener("click", renderTranscript);
-  row.querySelector(".seg-save").addEventListener("click", async () => {
-    const btn = row.querySelector(".seg-save");
-    btn.disabled = true;
-    try {
-      state.transcript = await api(`/api/projects/${state.project.id}/transcript`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ segments: [{ index: si, text: ta.value }] }),
-      });
-      state.words = state.transcript.segments.flatMap(segWords);
-      renderTranscript();
-      updateCaptionPreview();
-      toast("Koreksi disimpan. Subtitle render berikutnya memakai teks ini.");
-    } catch (err) {
-      btn.disabled = false;
-      toast(err.message, true);
-    }
-  });
-}
-
+// ------------------------------------------------------------ transkrip (editor: web/subeditor.js)
 function highlightTranscriptRange() {
   const { start, end } = state.sel;
   document.querySelectorAll("#transcriptBox .w[data-i]").forEach((el) => {
@@ -1176,7 +1139,8 @@ class Upload {
       this.url = null;
     }
     const lang = $("langSelect").value;
-    const meta = `filename ${b64(this.file.name)}` + (lang ? `,language ${b64(lang)}` : "");
+    const quality = selectedQuality();
+    const meta = `filename ${b64(this.file.name)}` + (lang ? `,language ${b64(lang)}` : "") + (quality ? `,quality ${b64(quality)}` : "");
     const { res, detail } = await this.request("POST", { "Upload-Length": String(this.size), "Upload-Metadata": meta });
     if (res.status !== 201) throw new UploadFailure(res.status, detail || `Upload ditolak (${res.status}).`);
     this.url = res.headers.get("Location");
@@ -1435,7 +1399,7 @@ function bind() {
   $("urlForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
-      const res = await postJSON("/api/projects/from-url", { url: $("urlInput").value.trim(), language: $("langSelect").value || null });
+      const res = await postJSON("/api/projects/from-url", { url: $("urlInput").value.trim(), language: $("langSelect").value || null, quality: selectedQuality() });
       $("urlInput").value = "";
       await refreshProjects();
       await openProject(res.project.id);
@@ -1469,7 +1433,12 @@ function bind() {
   $("reanalyzeBtn").addEventListener("click", async () => {
     try {
       const lang = $("langSelect").value;
-      await api(`/api/projects/${state.project.id}/reanalyze${lang ? "?language=" + lang : ""}`, { method: "POST" });
+      const q = new URLSearchParams();
+      if (lang) q.set("language", lang);
+      if (selectedQuality()) q.set("quality", selectedQuality());
+      if (rs.recipe && Object.keys(rs.recipe.seg_edits || {}).length
+          && !confirm("Analisis ulang membuat transkrip baru: koreksi subtitle di proyek ini akan dihapus. Lanjutkan?")) return;
+      await api(`/api/projects/${state.project.id}/reanalyze${q.toString() ? "?" + q : ""}`, { method: "POST" });
       state.project = await api(`/api/projects/${state.project.id}`);
       state.words = []; state.clips = [];
       renderStatus();
@@ -1538,13 +1507,7 @@ function bind() {
     selectClip(i);
   });
 
-  $("transcriptBox").addEventListener("click", (e) => {
-    const ed = e.target.closest(".seg-edit");
-    if (ed) { editSegment(+ed.dataset.s); return; }
-    if (e.target.closest("textarea, .seg-actions")) return;
-    const w = e.target.closest(".w");
-    if (w) { player.currentTime = +w.dataset.t; }
-  });
+  initSubEditor(player);
 
   $("suggestBtn").addEventListener("click", async () => {
     try {
@@ -1561,6 +1524,7 @@ function bind() {
     try {
       const clip = state.clips[state.activeClip];
       const same = clip && Math.abs(clip.start - state.sel.start) < 0.05 && Math.abs(clip.end - state.sel.end) < 0.05;
+      if (!(await confirmReviewed([state.sel]))) return;
       await submitRender(state.sel.start, state.sel.end, same ? `Klip #${state.activeClip + 1}` : "");
       await afterRenderSubmit(1);
     } catch (err) { toast(err.message, true); }
@@ -1570,6 +1534,7 @@ function bind() {
     if (!state.checked.size) { toast("Centang dulu klip yang ingin dirender.", true); return; }
     try {
       const idx = [...state.checked].sort((a, b) => a - b);
+      if (!(await confirmReviewed(idx.map((i) => state.clips[i])))) return;
       for (const i of idx) await submitRender(state.clips[i].start, state.clips[i].end, `Klip #${i + 1}`);
       await afterRenderSubmit(idx.length);
     } catch (err) { toast(err.message, true); }
@@ -1582,6 +1547,7 @@ function bind() {
     try {
       await flushRecipe();
       const idx = [...state.checked].sort((a, b) => a - b);
+      if (!(await confirmReviewed(idx.map((i) => state.clips[i])))) return;
       const clips = idx.map((i) => ({ start: state.clips[i].start, end: state.clips[i].end, title: `Klip #${i + 1}` }));
       let res;
       try {
@@ -1640,7 +1606,7 @@ function bind() {
     $("conflictBanner").hidden = true;
     // Simpan pengaturan di layar ini di atas versi terbaru; koreksi teks & animasi dari server tetap dipakai.
     rs.version = c.current.version;
-    rs.recipe = { ...c.mine, text_fixes: c.current.recipe.text_fixes, overlays: c.current.recipe.overlays };
+    rs.recipe = { ...c.mine, ...serverFields(c.current.recipe) };
     rs.dirty = true;
     saveRecipe();
   });
@@ -1754,11 +1720,35 @@ async function loadMe() {
     $("retentionText").textContent = `${pol.retention_hours} jam setelah aktivitas terakhir, paling lama ${pol.max_hours} jam sejak upload`;
   }
   if (me.desktop) applyDesktopMode(me);
+  setupQuality(me.transcribe || {});
   $("aiName").textContent = me.ai.name;
   $("planAiBtn").hidden = !me.ai.enabled;   // bawaan: tanpa AI eksternal, hanya ⚡ Otomatis (lokal)
   $("planAiBtn").disabled = !me.ai.ready;
   $("planAiBtn").title = me.ai.ready ? "Otomatis lewat API AI yang diatur admin"
     : "API AI belum diatur admin. Pakai 'Salin prompt' dulu.";
+}
+
+// Kualitas transkripsi (M1.1): Cepat / Akurat, dengan perkiraan RAM & waktu. Pilihan diingat di perangkat ini.
+function setupQuality(info) {
+  const qs = info.qualities || [];
+  $("qualityField").hidden = !qs.length;
+  if (!qs.length) return;
+  let saved = null;
+  try { saved = localStorage.getItem("avs-quality"); } catch { /* penyimpanan tidak tersedia */ }
+  $("qualitySelect").innerHTML = qs.map((q) => `<option value="${q.id}">${esc(q.label)}</option>`).join("");
+  $("qualitySelect").value = qs.some((q) => q.id === saved) ? saved : (info.default || qs[qs.length - 1].id);
+  const hint = () => {
+    const q = qs.find((x) => x.id === $("qualitySelect").value);
+    const gb = (q.ram_mb / 1024).toFixed(1);
+    $("qualityHint").textContent = `Butuh RAM ±${gb} GB` + (q.minutes_per_10min ? `, ±${q.minutes_per_10min} menit per 10 menit video (CPU 4 inti)` : "")
+      + (q.id === "cepat" ? ". Lebih banyak salah kata: periksa subtitle." : ". Lebih sedikit salah kata, lebih lama.");
+  };
+  hint();
+  $("qualitySelect").onchange = () => { hint(); try { localStorage.setItem("avs-quality", $("qualitySelect").value); } catch { /* abaikan */ } };
+}
+
+function selectedQuality() {
+  return $("qualityField").hidden ? null : $("qualitySelect").value || null;
 }
 
 // Aplikasi desktop: satu pengguna lokal tanpa login; proyek tersimpan di komputer ini (tidak dihapus otomatis).
@@ -1773,6 +1763,7 @@ function applyDesktopMode(me) {
   note.innerHTML = "💾 Proyek tersimpan di komputer ini dan <b>tidak dihapus otomatis</b>. "
     + "Hanya cache & file sementara yang dibersihkan.";
   $("batchExport").hidden = false;
+  if (!$("langSelect").value) $("langSelect").value = "id";      // ceramah NH: bahasa Indonesia (bukan deteksi 30 dtk)
   $("emptyStart").textContent = "Pilih video dari komputer ini untuk mulai. Semua proses berjalan di komputer ini, tanpa internet.";
   document.querySelector(".upload-hint").textContent = "Video disalin ke folder aplikasi; file asli Anda tidak diubah.";
   if (me.export_dir) {

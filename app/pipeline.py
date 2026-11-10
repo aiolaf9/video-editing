@@ -206,7 +206,7 @@ def _download(job: Job, pid: str, url: str, folder: Path, opts: dict, ydl_class,
     return files[0].name
 
 
-def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
+def analyze(job: Job, pid: str, language: Optional[str] = None, quality: Optional[str] = None) -> dict:
     """Probe -> preview 480p -> energi audio -> transkrip Whisper -> kandidat klip."""
     src = source_path(pid)
     folder = storage.project_dir(pid)
@@ -221,7 +221,7 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
         # Durasi kini diketahui (probe ffprobe, tanpa decode audio): sesuaikan reservasi RAM job sebelum langkah berat.
         # Durasi sudah tersimpan di proyek (update_project di atas), jadi bila job dikembalikan ke antrean karena RAM,
         # klaim berikutnya langsung memakai kebutuhan ini (tanpa siklus klaim-probe-antre berulang).
-        resources.ensure_job_memory(job.id, info["duration"])
+        resources.ensure_job_memory(job.id, info["duration"], transcribe.model_for(quality))
 
     preview = media.make_preview(src, folder / "preview.mp4", info["duration"], info["has_audio"],
                                  job.stage(0, 18, "Membuat preview..."))
@@ -238,7 +238,10 @@ def analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
         job.update(26, "Menganalisis audio...")
         energy = media.audio_energy(src)
         progress = job.stage(28, 92, "Membuat transkrip dengan Whisper (bisa beberapa menit)...")
-        transcript = transcribe.transcribe(src, info["duration"], language, progress)
+        from . import vocab
+        terms = vocab.hotwords(vocab.effective(storage.load_project(pid).get("unit_id")))
+        transcript = transcribe.transcribe(src, info["duration"], language, progress, quality=quality,
+                                           vocabulary=terms)
     storage.write_data(pid, "energy", energy)
     storage.write_data(pid, "transcript", transcript)
 
@@ -284,10 +287,10 @@ def _limit_analysis_time(duration: float) -> None:
         control.check()
 
 
-def safe_analyze(job: Job, pid: str, language: Optional[str] = None) -> dict:
+def safe_analyze(job: Job, pid: str, language: Optional[str] = None, quality: Optional[str] = None) -> dict:
     previous = storage.load_project(pid).get("status")
     try:
-        return analyze(job, pid, language)
+        return analyze(job, pid, language, quality)
     except resources.CapacityWait:
         storage.update_project(pid, status=previous or "antre")   # bukan kegagalan: job kembali ke antrean
         raise
@@ -323,7 +326,7 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
     subs = None
     if req.subtitles.enabled:
         # Transkrip + koreksi teks dari snapshot resep (atau resep proyek bila permintaan tanpa snapshot).
-        transcript = recipe.effective_transcript(pid, fixes=req.text_fixes) or {}
+        transcript = recipe.effective_transcript(pid, fixes=req.text_fixes, seg_edits=req.seg_edits) or {}
         s = req.subtitles
         ass = build_ass(transcript, req.start, req.end, width, height,
                         SubtitleOptions(style=s.style, font=s.font, size=s.size, color=s.color,

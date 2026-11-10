@@ -80,7 +80,7 @@ def test_whisper_receives_decoded_samples_not_a_path(monkeypatch, tmp_path):
             return iter([]), type("Info", (), {"language": "id"})()
 
     monkeypatch.setattr(media, "decode_audio", lambda path: np.zeros(16000, dtype=np.float32) + 0.1)
-    monkeypatch.setattr(transcribe, "_get_model", lambda: FakeModel())
+    monkeypatch.setattr(transcribe, "_get_model", lambda **kw: FakeModel())
     transcribe.transcribe(tmp_path / "berkas-pengguna.mp4", 1.0, language="id")
     assert isinstance(seen["audio"], np.ndarray)
 

@@ -31,6 +31,34 @@
   </div>
 </header>
 
+<dialog id="reviewDialog" class="review-dialog">
+  <h3>Subtitle belum ditinjau</h3>
+  <p id="reviewText"></p>
+  <ul id="reviewList" class="review-list"></ul>
+  <div class="row">
+    <button type="button" id="reviewGoBtn" class="primary">Tinjau dulu</button>
+    <button type="button" id="reviewRenderBtn" class="ghost">Tetap render</button>
+  </div>
+</dialog>
+
+<dialog id="vocabDialog" class="vocab-dialog">
+  <h3>📚 Kosakata transkrip</h3>
+  <p class="hint">Istilah dakwah, Arab, nama lembaga, program, dan nama orang. Dipakai sebagai petunjuk ejaan untuk
+    Whisper saat analisis berikutnya, dan sebagai <b>saran</b> koreksi yang harus Anda setujui. Tidak ada istilah yang
+    diganti otomatis.</p>
+  <label class="inline"><input type="checkbox" id="vocabDefaults" checked> Pakai kosakata bawaan (<span id="vocabDefaultCount"></span> istilah, ejaan KBBI)</label>
+  <table class="vocab-table">
+    <thead><tr><th>Istilah (ejaan benar)</th><th>Varian yang sering salah (pisahkan koma)</th><th>Jenis</th><th></th></tr></thead>
+    <tbody id="vocabRows"></tbody>
+  </table>
+  <div class="row">
+    <button type="button" class="ghost" id="vocabAddBtn">+ Tambah istilah</button>
+    <span class="spacer"></span>
+    <button type="button" class="ghost" id="vocabCloseBtn">Tutup</button>
+    <button type="button" class="primary" id="vocabSaveBtn">Simpan</button>
+  </div>
+</dialog>
+
 <dialog id="installHelp" class="install-help">
   <p id="installHelpText"></p>
   <button type="button" id="installHelpClose">Mengerti</button>
@@ -64,6 +92,10 @@
           <option value="jv">Jawa</option>
           <option value="ms">Melayu</option>
         </select>
+      </label>
+      <label class="field" id="qualityField" hidden>Kualitas transkrip
+        <select id="qualitySelect"></select>
+        <span class="hint" id="qualityHint"></span>
       </label>
     </section>
     <section class="card">
@@ -226,9 +258,29 @@
           </section>
 
           <section class="tab-panel" id="transcriptTab" hidden>
-            <p class="muted">Klik kata untuk lompat ke posisi itu. Lalu pakai tombol "Set awal" / "Set akhir".
-              Tombol "Koreksi" memperbaiki teks segmen; subtitle render berikutnya memakai teks yang dikoreksi.</p>
-            <div id="transcriptBox" class="transcript"></div>
+            <div class="sub-toolbar">
+              <form id="findForm" class="find-row" autocomplete="off">
+                <input type="search" id="findInput" placeholder="Cari kata (Ctrl+F)" aria-label="Cari">
+                <input type="text" id="replaceInput" placeholder="Ganti dengan" aria-label="Ganti dengan">
+                <label class="inline small"><input type="checkbox" id="findWhole" checked> Kata utuh</label>
+                <label class="inline small"><input type="checkbox" id="findCase"> Huruf besar/kecil</label>
+                <button type="submit" class="ghost" id="findBtn">Cari</button>
+                <button type="button" id="replaceAllBtn" disabled>Ganti semua</button>
+              </form>
+              <p id="findResult" class="hint" hidden></p>
+              <div class="filter-row" role="group" aria-label="Tampilkan">
+                <button type="button" class="chip active" data-filter="all">Semua</button>
+                <button type="button" class="chip" data-filter="unsure">⚠ Perlu ditinjau <span id="unsureCount"></span></button>
+                <button type="button" class="chip" data-filter="clip">Di klip terpilih</button>
+                <button type="button" class="chip" data-filter="sugg">💡 Saran istilah <span id="suggCount"></span></button>
+                <span class="spacer"></span>
+                <button type="button" class="ghost small" id="vocabBtn">📚 Kosakata</button>
+              </div>
+            </div>
+            <p class="muted small">Klik teks untuk mengedit langsung (Enter simpan, Esc batal, Tab ke baris berikutnya).
+              Kata <span class="w unsure">bergaris jingga</span> = Whisper kurang yakin. Waktu kata tetap mengikuti ucapan
+              saat teks dikoreksi. Subtitle MP4 memakai teks persis seperti di sini.</p>
+            <div id="transcriptBox" class="transcript sub-editor"></div>
           </section>
 
           <section class="tab-panel" id="rendersTab" hidden>
@@ -374,6 +426,7 @@
 </div>
 
 <div id="toast" class="toast" hidden></div>
+<script src="subeditor.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -39,10 +39,13 @@ def test_edit_different_word_count_spreads_over_segment(fake_transcript):
     t = copy.deepcopy(fake_transcript)
     seg = t["segments"][1]
     start, end = seg["words"][0]["start"], seg["words"][-1]["end"]
+    old = {w["word"].lower(): (w["start"], w["end"]) for w in seg["words"]}
     transcript_edit.apply_edits(t, [{"index": 1, "text": "Editnya rapi"}])
     words = t["segments"][1]["words"]
     assert [w["word"] for w in words] == ["Editnya", "rapi"]
-    assert words[0]["start"] == start and abs(words[-1]["end"] - end) < 0.01
+    # M1.1: kata yang tidak berubah tetap memakai waktu ucapannya (tidak lagi dibagi rata ke seluruh segmen)
+    assert (words[0]["start"], words[0]["end"]) == old["editnya"] and (words[1]["start"], words[1]["end"]) == old["rapi"]
+    assert start <= words[0]["start"] and words[-1]["end"] <= end + 1e-6
     transcript_edit.apply_edits(t, [{"index": 2, "text": "   "}])             # kosong = tanpa subtitle
     assert t["segments"][2]["words"] == [] and t["segments"][2]["text"] == ""
 

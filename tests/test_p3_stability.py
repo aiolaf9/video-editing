@@ -92,7 +92,7 @@ def test_broken_nvidia_smi_means_cpu(tmp_path, monkeypatch, script):
 def test_cuda_load_failure_falls_back_to_cpu(monkeypatch):
     loaded = []
 
-    def fake_load(device):
+    def fake_load(device, name=None):
         if device == "cuda":
             raise RuntimeError("CUDA driver version is insufficient")
         loaded.append(device)

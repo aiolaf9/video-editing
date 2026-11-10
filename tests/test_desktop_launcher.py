@@ -18,7 +18,7 @@ key = launcher.configure_env(d / "data", d / "export")
 launcher.setup_logging(d / "data")
 from app import config, transcribe
 assert config.DESKTOP_MODE and not config.MEDIA_LIFECYCLE and config.EMBEDDED_WORKERS
-assert config.ALLOW_URL_IMPORT == "none" and config.WHISPER_MODEL == "base"
+assert config.ALLOW_URL_IMPORT == "none"
 sentences = ["Kenapa video pendek ini penting untuk dakwah kita semua?", "Ternyata cara membuatnya cukup mudah dan cepat.",
              "Pertama pilih bagian ceramah yang paling kuat.", "Rahasia kedua adalah subtitle yang jelas dibaca.",
              "Jangan lupa ajak penonton untuk berbagi kebaikan.", "Terima kasih sudah menonton sampai akhir video ini."]

@@ -144,7 +144,7 @@ def test_whisper_loop_stops_on_cancel(sample_video, monkeypatch):
                     yield SimpleNamespace(start=i, end=i + 1, text=" kata", words=[])
             return segments(), SimpleNamespace(language="id")
 
-    monkeypatch.setattr(transcribe, "_get_model", lambda force_cpu=False: SlowModel())
+    monkeypatch.setattr(transcribe, "_get_model", lambda force_cpu=False, name=None: SlowModel())
     monkeypatch.setattr(media, "decode_audio", lambda path: np.zeros(16000, dtype=np.float32))
     control = JobControl("uji", timeout=600)
 
