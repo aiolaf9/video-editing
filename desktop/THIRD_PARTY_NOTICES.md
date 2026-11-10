@@ -9,7 +9,7 @@ distribusi publik** (lihat catatan GPL di bawah).
 |---|---|---|---|
 | FFmpeg (build "essentials" gyan.dev) | 7.1.1, `ffmpeg.exe` + `ffprobe.exe`, sha256 zip dikunci di workflow | **GPL v3** (build memakai libx264, libass, dll.) | render & probe video, subtitle (libass) |
 | libass, FreeType, FriBidi, HarfBuzz, x264 | di dalam FFmpeg di atas | ISC, FTL/GPL-2, LGPL-2.1, MIT, GPL-2+ | subtitle & encode H.264 |
-| Model Whisper base (format CTranslate2) | `Systran/faster-whisper-base`, revisi dicatat di `whisper-base/SOURCE.json` | MIT (bobot asli OpenAI Whisper: MIT) | transkripsi lokal |
+| Model Whisper small (format CTranslate2) | `Systran/faster-whisper-small`, revisi dicatat di `whisper-small/SOURCE.json` | MIT (bobot asli OpenAI Whisper: MIT) | transkripsi lokal (model standar) |
 | faster-whisper, CTranslate2 | PyPI | MIT | menjalankan Whisper |
 | Silero VAD (di faster-whisper) | bawaan paket | MIT | deteksi ucapan |
 | onnxruntime, tokenizers, huggingface_hub | PyPI | MIT, Apache-2.0, Apache-2.0 | dependensi faster-whisper (offline) |

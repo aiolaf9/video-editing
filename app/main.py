@@ -28,7 +28,7 @@ from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPRO
                      MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
                      METRICS_TOKEN, UPLOAD_CHUNK_MB, UPLOAD_RESUME_HOURS, UPLOAD_TMP_DIR,
                      WEB_DIR, WHISPER_MODEL)
-from .schemas import (GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest, ReplaceRequest,
+from .schemas import (EvalFolder, EvalStart, GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest, ReplaceRequest,
                       RenderRequest, Settings, SuggestRequest, TranscriptEdit, UnitIn, UrlImport, UserCreate,
                       UserUpdate)
 from .schemas import MAX_OVERLAYS
@@ -453,6 +453,14 @@ def me(user: dict = CurrentUser):
     return data
 
 
+QUALITY_NOTES = {
+    "cepat": "Lebih banyak salah kata: periksa subtitle.",
+    "akurat": "Model standar (Whisper small). Tetap periksa semua subtitle sebelum ekspor.",
+    "tinggi": ("Paling akurat untuk ucapan pendek & audio bising, tetapi lebih lama dan dapat MENGHILANGKAN sebagian "
+               "ucapan pada rekaman panjang (> ±5 menit). Bandingkan dengan Standar & periksa setiap baris."),
+}
+
+
 def _transcribe_info() -> dict:
     """Pilihan kualitas transkripsi untuk antarmuka (M1.1). RAM = perkiraan admission untuk video 10 menit (config);
     waktu = RTF terukur di runner CI 4 vCPU (docs/M1_1_TRANSKRIP.md bagian 4), bukan janji di setiap komputer."""
@@ -460,14 +468,17 @@ def _transcribe_info() -> dict:
     qualities = transcribe.available_qualities()
     if not qualities:
         return {"qualities": [], "default": None}
-    rtf = {"base": 0.09, "small": 0.20}     # putaran 1, temperature 0 tanpa conditioning (bawaan M1.1)
-    labels = {"cepat": "Cepat", "akurat": "Akurat", "tinggi": "Kualitas tinggi (paket tambahan)"}
+    # RTF terukur (bawaan M1.1): Linux CI putaran 2; turbo = Windows CI --eval (CPU 4 thread)
+    rtf = {"base": 0.09, "small": 0.20, "large-v3-turbo": 0.45}
+    labels = {"cepat": "Cepat", "akurat": "Standar" if DESKTOP_MODE else "Akurat",
+              "tinggi": "Kualitas Tinggi (paket tambahan)"}
     out = []
     for key in qualities:
         model = transcribe.model_for(key)
         out.append({"id": key, "label": labels[key], "model": model,
                     "ram_mb": config.analysis_need_mb(600, model),
-                    "minutes_per_10min": round(rtf[model] * 10, 1) if rtf.get(model) else None})
+                    "minutes_per_10min": round(rtf[model] * 10, 1) if rtf.get(model) else None,
+                    "note": QUALITY_NOTES.get(key, "")})
     default = os.environ.get("WHISPER_QUALITY_DEFAULT", "akurat")
     return {"qualities": out, "default": default if default in qualities else qualities[-1]}
 
@@ -500,6 +511,69 @@ def desktop_open_folder(user: dict = CurrentUser):
     if os.name == "nt":
         os.startfile(str(EXPORT_DIR))  # nosec B606 - folder milik aplikasi, bukan masukan pengguna
     return {"path": str(EXPORT_DIR)}
+
+
+def _desktop_only() -> None:
+    if not DESKTOP_MODE:
+        raise HTTPException(404)
+
+
+@app.get("/api/desktop/eval")
+def desktop_eval_status(user: dict = CurrentUser):
+    """Menu "Uji akurasi" (M1.1): status uji yang sedang/terakhir berjalan."""
+    _desktop_only()
+    from . import desktop_eval
+    return desktop_eval.status()
+
+
+@app.post("/api/desktop/eval/scan")
+def desktop_eval_scan(body: EvalFolder, user: dict = CurrentUser):
+    _desktop_only()
+    from . import desktop_eval
+    try:
+        return desktop_eval.scan(body.folder)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/desktop/eval")
+def desktop_eval_start(body: EvalStart, user: dict = CurrentUser):
+    _desktop_only()
+    from . import desktop_eval
+    try:
+        return desktop_eval.start(body.folder, body.runs, body.qualities, data_dir=DATA_DIR)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/desktop/eval/cancel")
+def desktop_eval_cancel(user: dict = CurrentUser):
+    _desktop_only()
+    from . import desktop_eval
+    return desktop_eval.cancel()
+
+
+@app.post("/api/desktop/eval/open")
+def desktop_eval_open(user: dict = CurrentUser):
+    _desktop_only()
+    from . import desktop_eval
+    try:
+        return desktop_eval.open_folder()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/desktop/pick-folder")
+def desktop_pick_folder(user: dict = CurrentUser):
+    """Dialog pilih folder Windows (jendela aplikasi). 501 = tidak tersedia, pakai kolom teks."""
+    _desktop_only()
+    from . import desktop_eval
+    try:
+        return {"folder": desktop_eval.pick_folder()}
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc)) from exc
 
 
 @app.post("/api/auth/password")

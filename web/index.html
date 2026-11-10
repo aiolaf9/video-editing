@@ -21,6 +21,7 @@
   <div class="brand" id="brand">🎬 AI Video Studio</div>
   <div class="topbar-right">
     <div id="health" class="health"></div>
+    <button type="button" class="ghost" id="evalBtn" hidden title="Uji akurasi transkripsi dengan video NH Anda">🧪 Uji akurasi</button>
     <button type="button" class="ghost install-btn" id="installBtn" hidden title="Pasang aplikasi" aria-label="Pasang aplikasi">📲<span class="lbl"> Pasang aplikasi</span></button>
     <div class="user-menu">
       <div class="who" id="whoami"></div>
@@ -57,6 +58,34 @@
     <span class="spacer"></span>
     <button type="button" class="ghost" id="vocabCloseBtn">Tutup</button>
     <button type="button" class="primary" id="vocabSaveBtn">Simpan</button>
+  </div>
+</dialog>
+
+<dialog id="evalDialog" class="eval-dialog">
+  <h3>🧪 Uji akurasi transkripsi</h3>
+  <p class="hint">Uji seberapa tepat transkripsi untuk video NH Anda sendiri, di komputer ini (tanpa internet; video tidak
+    dikirim ke mana pun). Siapkan satu folder berisi 3–5 video dan, untuk setiap video, transkrip yang <b>diketik &amp;
+    diperiksa manusia</b> dengan nama sama: <code>ceramah1.mp4</code> + <code>ceramah1.txt</code>.
+    Panduan lengkap: menu Start → <b>Panduan Uji Akurasi NH</b>.</p>
+  <div class="row">
+    <input type="text" id="evalFolder" placeholder="Contoh: D:\Uji NH" aria-label="Folder uji">
+    <button type="button" class="ghost" id="evalPickBtn">📂 Pilih folder…</button>
+    <button type="button" class="ghost" id="evalScanBtn">Periksa</button>
+  </div>
+  <div id="evalScan"></div>
+  <div class="row">
+    <span>Mode:</span><span id="evalModes"></span>
+    <label class="inline">Run per mode <select id="evalRuns"><option value="1">1</option><option value="2" selected>2</option></select></label>
+  </div>
+  <p class="hint">Proses bisa lama (±2–5 menit per 10 menit video per mode per run). Sebaiknya jangan memproses video lain selama uji.</p>
+  <div id="evalProgress" hidden><progress id="evalBar" value="0" max="1"></progress> <span id="evalNow"></span></div>
+  <div id="evalResult"></div>
+  <div class="row">
+    <button type="button" class="ghost" id="evalOpenBtn" hidden>📂 Buka folder laporan</button>
+    <span class="spacer"></span>
+    <button type="button" class="ghost" id="evalCloseBtn">Tutup</button>
+    <button type="button" class="ghost" id="evalCancelBtn" hidden>Batalkan uji</button>
+    <button type="button" class="primary" id="evalStartBtn" disabled>Mulai uji</button>
   </div>
 </dialog>
 
@@ -428,6 +457,7 @@
 
 <div id="toast" class="toast" hidden></div>
 <script src="subeditor.js"></script>
+<script src="evaltool.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 # Desktop M1 (Windows): bangun NH-AI-Clip-Studio-Setup.exe dan UJI SUNGGUHAN di runner Windows.
-#   1. siapkan bundel: FFmpeg (versi & sha256 dikunci, libass/libx264 diverifikasi), Whisper base (lisensi MIT dicek),
+#   1. siapkan bundel: FFmpeg (versi & sha256 dikunci, libass/libx264 diverifikasi), Whisper small (lisensi MIT dicek; base hanya pembanding, tidak dibundel),
 #      sampel video ucapan (suara SAPI Windows, offline)
 #   2. selftest dari kode sumber
 #   3. PyInstaller (onedir) -> selftest exe beku dengan koneksi keluar DIBLOKIR firewall dan PATH tanpa Python/FFmpeg
@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  actions: read          # unduh installer M1 (artefak run sebelumnya) untuk uji pembaruan M1 -> M1.1
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -26,8 +27,10 @@ env:
   PYTHON_VERSION: "3.12"
   FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip
   FFMPEG_SHA256: 04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4  # pragma: allowlist secret (sha256 berkas publik)
-  WHISPER_REPOS: "base=Systran/faster-whisper-base small=Systran/faster-whisper-small"
+  WHISPER_REPOS: "small=Systran/faster-whisper-small"      # installer utama: model standar saja
+  WHISPER_COMPARE_REPO: Systran/faster-whisper-base           # hanya untuk bukti sebelum/sesudah (perilaku M1), TIDAK dibundel
   WHISPER_ADDON_REPO: mobiuslabsgmbh/faster-whisper-large-v3-turbo
+  M1_RUN_ID: "42754779950"   # build installer M1 (desktop/m1 @ 6952a43) untuk uji pembaruan
   PYTHONUTF8: "1"
 
 jobs:
@@ -81,7 +84,7 @@ jobs:
           }
           & build/desktop/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
-      - name: Unduh model Whisper base (Cepat) & small (Akurat), lisensi MIT, dan ikon
+      - name: Unduh model Whisper small (standar), base (pembanding M1, tidak dibundel), lisensi MIT, dan ikon
         run: |
           foreach ($pair in $env:WHISPER_REPOS.Split(" ")) {
             $name, $repo = $pair.Split("=")
@@ -89,6 +92,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "unduh model $name gagal" }
             Get-ChildItem "build/desktop/whisper-$name" | Select-Object Name, Length
           }
+          python desktop/ci/fetch_whisper.py $env:WHISPER_COMPARE_REPO build/compare-models/whisper-base
+          if ($LASTEXITCODE -ne 0) { throw "unduh model pembanding gagal" }
           # Paket tambahan OPSIONAL (bukan installer utama): large-v3-turbo -> mode "Kualitas tinggi"
           python desktop/ci/fetch_whisper.py $env:WHISPER_ADDON_REPO build/addon/whisper-large-v3-turbo
           if ($LASTEXITCODE -ne 0) { throw "unduh model tambahan gagal" }
@@ -105,11 +110,10 @@ jobs:
         env:
           FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
           FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
-          WHISPER_MODEL_FAST: base
           WHISPER_MODEL_ACCURATE: small
           WHISPER_MODEL: small
         run: |
-          $env:WHISPER_MODEL_PATHS = (@{ base = "$PWD\build\desktop\whisper-base"; small = "$PWD\build\desktop\whisper-small" } | ConvertTo-Json -Compress)
+          $env:WHISPER_MODEL_PATHS = (@{ small = "$PWD\build\desktop\whisper-small" } | ConvertTo-Json -Compress)
           python -m desktop.launcher --selftest build/test/speech.mp4 --report build/test/report-source.json `
             --language id --quality akurat --reference build/test/speech.txt `
             --data-dir "$env:RUNNER_TEMP\src-data" --export-dir "$env:RUNNER_TEMP\src-export"
@@ -119,11 +123,11 @@ jobs:
         env:
           FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
           FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
-          WHISPER_MODEL_FAST: base
           WHISPER_MODEL_ACCURATE: small
           WHISPER_MODEL: small
         run: |
-          $env:WHISPER_MODEL_PATHS = (@{ base = "$PWD\build\desktop\whisper-base"; small = "$PWD\build\desktop\whisper-small" } | ConvertTo-Json -Compress)
+          $env:M1_BASE_MODEL_DIR = "$PWD\build\compare-models\whisper-base"
+          $env:WHISPER_MODEL_PATHS = (@{ small = "$PWD\build\desktop\whisper-small" } | ConvertTo-Json -Compress)
           python desktop/ci/before_after.py build/test/speech.mp4 build/test/speech.txt build/compare --start 0 --end 40
           if ($LASTEXITCODE -ne 0) { throw "sebelum/sesudah gagal" }
 
@@ -137,6 +141,10 @@ jobs:
               Copy-Item "$env:WINDIR\System32\$dll" $internal
             }
           }
+          # Keputusan M1.1: hanya Whisper small di installer utama (base dihapus, turbo = paket tambahan)
+          $bundled = Get-ChildItem $internal -Directory -Filter "whisper-*" | ForEach-Object Name
+          "Model di bundel: $($bundled -join ', ')"
+          if (($bundled -join ',') -ne "whisper-small") { throw "bundel harus hanya berisi whisper-small" }
           $size = (Get-ChildItem dist/NH-AI-Clip-Studio -Recurse | Measure-Object Length -Sum).Sum
           "Ukuran folder aplikasi: {0:N1} MB" -f ($size / 1MB)
 
@@ -166,18 +174,43 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
-          & $iscc "/DAppVersion=0.1.0-m1.${{ github.run_number }}" desktop/installer.iss
+          & $iscc "/DAppVersion=0.1.1-m11.${{ github.run_number }}" desktop/installer.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC gagal" }
           $setup = Get-Item dist/installer/NH-AI-Clip-Studio-Setup.exe
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           "NH-AI-Clip-Studio-Setup.exe: {0:N1} MB, sha256 {1}" -f ($setup.Length / 1MB), $hash | Tee-Object build/test/installer.txt
-          & $iscc "/DAppVersion=0.1.0-m1.${{ github.run_number }}" desktop/model_addon.iss
+          & $iscc "/DAppVersion=0.1.1-m11.${{ github.run_number }}" desktop/model_addon.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC paket model gagal" }
           $addon = Get-Item dist/installer/NH-AI-Clip-Studio-Model-KualitasTinggi.exe
           $ahash = (Get-FileHash $addon -Algorithm SHA256).Hash.ToLower()
           "NH-AI-Clip-Studio-Model-KualitasTinggi.exe (opsional): {0:N1} MB, sha256 {1}" -f ($addon.Length / 1MB), $ahash | Tee-Object -Append build/test/installer.txt
 
-      - name: Pasang diam-diam, selftest aplikasi terpasang, GUI, uninstall
+      - name: Pasang versi M1 & buat proyek dengan M1 (untuk uji pembaruan)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download $env:M1_RUN_ID -R $env:GITHUB_REPOSITORY -n NH-AI-Clip-Studio-Setup -D build/m1
+          if ($LASTEXITCODE -ne 0) { throw "unduh installer M1 gagal" }
+          $m1 = (Resolve-Path build/m1/NH-AI-Clip-Studio-Setup.exe).Path
+          "Installer M1: {0:N1} MB, sha256 {1}" -f ((Get-Item $m1).Length / 1MB), (Get-FileHash $m1 -Algorithm SHA256).Hash.ToLower() | Tee-Object build/test/update.txt
+          $p = Start-Process $m1 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/LOG=`"$PWD\build\test\install-m1.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "instalasi M1 gagal ($($p.ExitCode))" }
+          $app = "$env:LOCALAPPDATA\Programs\NH AI Clip Studio"
+          if (-not (Test-Path "$app\_internal\whisper-base\model.bin")) { throw "M1 terpasang tanpa model base?" }
+          # Proyek nyata dibuat oleh M1: upload -> analisis -> resep editing disimpan -> render MP4 (selftest M1).
+          $p = Start-Process "$app\NH-AI-Clip-Studio.exe" -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-m1.json`"" -Wait -PassThru
+          Get-Content build/test/report-m1.json -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "selftest M1 gagal ($($p.ExitCode))" }
+          $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
+          python -m desktop.datacheck snapshot "$data" build/test/data-before.json
+          python -m desktop.datacheck snapshot "$env:USERPROFILE\Videos\NH AI Clip Studio" build/test/export-before.json
+          if ($LASTEXITCODE -ne 0) { throw "snapshot gagal" }
+          $snap = Get-Content build/test/data-before.json -Raw | ConvertFrom-Json
+          "Data M1: $($snap.files.PSObject.Properties.Count) berkas; tabel: $($snap.tables | ConvertTo-Json -Compress)" | Tee-Object -Append build/test/update.txt
+          if ($snap.tables.projects -lt 1 -or $snap.tables.renders -lt 1) { throw "M1 tidak membuat proyek/render" }
+          exit 0
+
+      - name: Pasang M1.1 di atas M1 (update), periksa data lama, selftest, GUI, uninstall
         run: |
           $setup = (Resolve-Path dist/installer/NH-AI-Clip-Studio-Setup.exe).Path
           $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/TASKS=desktopicon", `
@@ -189,15 +222,33 @@ jobs:
           $lnk = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "NH AI Clip Studio.lnk"
           if (-not $lnk) { throw "shortcut Start Menu tidak ada" }
           "Terpasang di $app; shortcut: $($lnk.FullName)"
+          if (Test-Path "$app\_internal\whisper-base") { throw "berkas model base M1 masih tertinggal setelah update" }
+          if (-not (Test-Path "$app\Panduan Uji Akurasi NH.txt")) { throw "panduan uji NH tidak terpasang" }
+          $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
+          # Uji pembaruan: berkas & tabel proyek M1 utuh setelah installer M1.1 dijalankan, lalu terbaca oleh M1.1.
+          python -m desktop.datacheck snapshot "$data" build/test/data-after-install.json
+          python -m desktop.datacheck compare build/test/data-before.json build/test/data-after-install.json | Tee-Object build/test/update-compare-install.json
+          if ($LASTEXITCODE -ne 0) { throw "data M1 berubah/hilang setelah instalasi M1.1" }
+          $p = Start-Process $exe -ArgumentList "--check-data", "--report", "`"$PWD\build\test\update-check.json`"" -Wait -PassThru
+          Get-Content build/test/update-check.json -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "M1.1 tidak dapat membaca proyek M1" }
+          python -m desktop.datacheck snapshot "$data" build/test/data-after-open.json
+          python -m desktop.datacheck compare build/test/data-before.json build/test/data-after-open.json | Tee-Object build/test/update-compare-open.json
+          if ($LASTEXITCODE -ne 0) { throw "data M1 berubah/hilang setelah M1.1 dibuka" }
+          python -m desktop.datacheck snapshot "$env:USERPROFILE\Videos\NH AI Clip Studio" build/test/export-after.json
+          python -m desktop.datacheck compare build/test/export-before.json build/test/export-after.json | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "hasil ekspor M1 hilang/berubah setelah update" }
+          $chk = Get-Content build/test/update-check.json -Raw | ConvertFrom-Json
+          "Update M1 -> M1.1: $($chk.projects) proyek M1 terbaca (transkrip, resep, klip, render); berkas & tabel utuh; model base lama dibersihkan." | Tee-Object -Append build/test/update.txt
 
           $env:PATH = "$env:WINDIR\System32;$env:WINDIR;$env:WINDIR\System32\Wbem"
           Remove-Item Env:PYTHONPATH, Env:PYTHONHOME -ErrorAction SilentlyContinue
           New-NetFirewallRule -DisplayName "nh-block-installed" -Direction Outbound -Program $exe `
             -RemoteAddress @("0.0.0.0-126.255.255.255", "128.0.0.0-255.255.255.255", "2000::/3") -Action Block | Out-Null
           # Folder bawaan pengguna: %LOCALAPPDATA%\NH AI Clip Studio dan Videos\NH AI Clip Studio
-          # Mode Cepat (base) di aplikasi terpasang: kedua mode terbukti jalan dari bundel installer.
+          # Model standar (small) di aplikasi terpasang, folder bawaan pengguna.
           $p = Start-Process $exe -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-installed.json`"", `
-            "--language", "id", "--quality", "cepat", "--reference", "`"$PWD\build\test\speech.txt`"" -Wait -PassThru
+            "--language", "id", "--quality", "akurat", "--reference", "`"$PWD\build\test\speech.txt`"" -Wait -PassThru
           Get-Content build/test/report-installed.json -ErrorAction SilentlyContinue
           $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
           if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "selftest aplikasi terpasang gagal" }
@@ -212,7 +263,7 @@ jobs:
             "--language", "id", "--quality", "tinggi", "--reference", "`"$PWD\build\test\speech.txt`"", "--export-dir", "`"$env:RUNNER_TEMP\export-tinggi`"" -Wait -PassThru
           Get-Content build/test/report-installed-tinggi.json -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "selftest Kualitas tinggi gagal" }
-          # Alat uji NH (--eval) di Windows: 3 mode x 2 run pada sampel Indonesia (laporan tanpa video).
+          # Alat uji NH (--eval) di Windows: Standar & Kualitas Tinggi x 2 run pada sampel Indonesia (laporan tanpa video).
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\uji-nh" | Out-Null
           Copy-Item build/test/speech.mp4 "$env:RUNNER_TEMP\uji-nh\fleurs-id.mp4"
           Copy-Item build/test/speech.txt "$env:RUNNER_TEMP\uji-nh\fleurs-id.txt"
@@ -262,6 +313,7 @@ jobs:
         run: |
           "## NH AI Clip Studio — build Windows" >> $env:GITHUB_STEP_SUMMARY
           if (Test-Path build/test/installer.txt) { Get-Content build/test/installer.txt >> $env:GITHUB_STEP_SUMMARY }
+          if (Test-Path build/test/update.txt) { Get-Content build/test/update.txt >> $env:GITHUB_STEP_SUMMARY }
           if (Test-Path build/test/laporan-uji.md) { Get-Content build/test/laporan-uji.md >> $env:GITHUB_STEP_SUMMARY }
           foreach ($r in "source", "frozen", "installed", "installed-tinggi") {
             $f = "build/test/report-$r.json"

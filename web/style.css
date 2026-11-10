@@ -422,3 +422,13 @@ button.small { padding: 4px 8px; }
   .vocab-table thead { display: none; }
   .vocab-table tr { display: grid; grid-template-columns: 1fr auto; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 }
+
+/* M1.1: menu Uji akurasi (desktop) */
+.eval-dialog { width: min(920px, 96vw); background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+.eval-dialog::backdrop { background: rgba(0,0,0,.6); }
+.eval-dialog .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.eval-dialog input[type="text"] { flex: 1; min-width: 240px; }
+.eval-dialog .warn { color: #b45309; }
+.eval-dialog progress { width: 260px; vertical-align: middle; }
+.eval-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; }
+.eval-table th, .eval-table td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }

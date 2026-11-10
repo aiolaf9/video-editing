@@ -43,11 +43,18 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
+[InstallDelete]
+; Update dari versi lama: berkas program lama (mis. model base M1, 145 MB) dibersihkan dulu. HANYA folder program;
+; proyek, database, dan hasil editing ada di %LOCALAPPDATA%\NH AI Clip Studio (bukan {app}) dan tidak disentuh.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 Source: "..\dist\NH-AI-Clip-Studio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\docs\PANDUAN_UJI_NH.md"; DestDir: "{app}"; DestName: "Panduan Uji Akurasi NH.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{autoprograms}\Panduan Uji Akurasi NH"; Filename: "{app}\Panduan Uji Akurasi NH.txt"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]

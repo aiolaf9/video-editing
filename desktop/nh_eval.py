@@ -1,6 +1,7 @@
 """Uji akurasi transkripsi dengan video NH ASLI, di komputer NH sendiri (offline, video tidak dikirim ke mana pun).
 
-    NH-AI-Clip-Studio.exe --eval "D:\\Uji NH"  [--runs 2] [--qualities cepat,akurat,tinggi]
+    Di aplikasi: menu "🧪 Uji akurasi" (pilih folder, mulai, lihat tabel hasil).
+    Baris perintah: NH-AI-Clip-Studio.exe --eval "D:\\Uji NH"  [--runs 2] [--qualities akurat,tinggi]
 
 Folder berisi pasangan <nama>.<mp4|mov|mkv|m4a|mp3|wav> + <nama>.txt (transkrip rujukan yang diketik manual, apa
 adanya, termasuk istilah Arab dengan ejaan pedoman NH). Untuk setiap mode x run, transkripsi dijalankan di proses
@@ -105,26 +106,52 @@ def _system() -> dict:
             "ram_available_gb": round(mem.get("available", 0) / 2**30, 1)}
 
 
-def run(folder: Path, runs: int, qualities: list[str]) -> dict:
+def scan(folder: Path) -> dict:
+    """Isi folder uji: pasangan video + .txt, dan video yang belum punya transkrip rujukan."""
+    folder = Path(folder).resolve()
+    if not folder.is_dir():
+        raise ValueError(f"Folder tidak ditemukan: {folder}")
+    media = [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in MEDIA_EXT]
+    pairs = [p for p in media if p.with_suffix(".txt").exists()]
+    return {"folder": str(folder), "pairs": [p.name for p in pairs],
+            "missing_reference": [p.name for p in media if p not in pairs],
+            "empty_reference": [p.name for p in pairs if not p.with_suffix(".txt").read_text(
+                encoding="utf-8", errors="replace").strip()]}
+
+
+def run(folder: Path, runs: int, qualities: list[str], progress=None, stop=None, data_dir: Path | None = None) -> dict:
+    """progress(dict) dipanggil sebelum tiap transkripsi; stop() -> True membatalkan sebelum transkripsi berikutnya."""
     from app import transcribe
-    folder = folder.resolve()
-    pairs = [p for p in sorted(folder.iterdir()) if p.suffix.lower() in MEDIA_EXT and p.with_suffix(".txt").exists()]
+    folder = Path(folder).resolve()
+    info = scan(folder)
+    pairs = [folder / n for n in info["pairs"] if n not in info["empty_reference"]]
     if not pairs:
-        raise SystemExit(f"Tidak ada pasangan video + .txt di {folder}")
+        raise ValueError(f"Tidak ada pasangan video + .txt (berisi teks) di {folder}")
     available = transcribe.available_qualities() or ["akurat"]
     qualities = [q for q in qualities if q in available] or available
     outdir = folder / "hasil"
     outdir.mkdir(exist_ok=True)
     rows = []
+    total, done, cancelled = len(pairs) * len(qualities) * runs, 0, False
+    root = Path(__file__).resolve().parent.parent
     for media in pairs:
         for q in qualities:
             for k in range(1, runs + 1):
+                if stop and stop():
+                    cancelled = True
+                    break
                 res_file = outdir / f"{media.stem}.{q}.run{k}.json"
+                res_file.unlink(missing_ok=True)
                 cmd = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "desktop.launcher"]
                 cmd += ["--eval-child", str(media), q, str(res_file)]
+                if data_dir:
+                    cmd += ["--data-dir", str(data_dir)]
                 print(f"[{media.name}] mode {q}, run {k}/{runs} ...", flush=True)
-                p = subprocess.run(cmd, capture_output=True, text=True,
+                if progress:
+                    progress({"done": done, "total": total, "file": media.name, "quality": q, "run": k})
+                p = subprocess.run(cmd, capture_output=True, text=True, cwd=None if getattr(sys, "frozen", False) else root,
                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                done += 1
                 if p.returncode != 0 or not res_file.exists():
                     rows.append({"file": media.name, "quality": q, "run": k, "error": (p.stderr or "")[-1500:]})
                     continue
@@ -132,6 +159,8 @@ def run(folder: Path, runs: int, qualities: list[str]) -> dict:
                 (outdir / f"{media.stem}.{q}.run{k}.txt").write_text(row["hypothesis"], encoding="utf-8")
                 row["run"] = k
                 rows.append(row)
+    if progress:
+        progress({"done": done, "total": total, "file": None, "quality": None, "run": None})
     summary = []
     for q in qualities:
         ok = [r for r in rows if r.get("quality") == q and "error" not in r]
@@ -150,10 +179,12 @@ def run(folder: Path, runs: int, qualities: list[str]) -> dict:
             "cer_mean": round(sum(r["cer"] for r in ok) / len(ok), 4),
             "rtf_mean": round(sum(r["rtf"] for r in ok) / len(ok), 3),
             "peak_ram_mb_max": max(r["peak_ram_mb"] for r in ok),
-            "runs_identical": identical if runs > 1 else None,
+            # hanya bila tiap berkas punya >= 2 run selesai (uji dibatalkan/gagal -> tidak bisa dinilai)
+            "runs_identical": identical if runs > 1 and all(len(rs) > 1 for rs in by_file.values()) else None,
             "term_accuracy": round(terms_ok / terms_total, 3) if terms_total else None,
             "terms_in_reference": terms_total})
     report = {"system": _system(), "folder": str(folder), "files": [p.name for p in pairs], "runs": runs,
+              "cancelled": cancelled, "skipped_files": info["missing_reference"] + info["empty_reference"],
               "summary": summary, "rows": [{k: v for k, v in r.items() if k != "hypothesis"} for r in rows]}
     (folder / "laporan-uji.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     (folder / "laporan-uji.md").write_text(markdown(report), encoding="utf-8")
@@ -165,6 +196,8 @@ def markdown(rep: dict) -> str:
     lines = ["# Laporan uji transkripsi NH AI Clip Studio", "",
              f"Komputer: {s['os']}, {s['cpu']}, {s['cpu_threads']} thread, RAM {s['ram_total_gb']} GB "
              f"(tersedia saat mulai {s['ram_available_gb']} GB). Berkas: {len(rep['files'])}; run per mode: {rep['runs']}.",
+             *(["", "**Uji dibatalkan sebelum selesai: angka hanya dari run yang sempat jalan.**"]
+               if rep.get("cancelled") else []),
              "", "| Mode | Model | WER rata-rata (min–maks) | CER | RTF | Puncak RAM | Run identik | Istilah benar |",
              "|---|---|---|---|---|---|---|---|"]
     for r in rep["summary"]:

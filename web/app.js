@@ -1719,7 +1719,7 @@ async function loadMe() {
   if (pol.retention_hours) {
     $("retentionText").textContent = `${pol.retention_hours} jam setelah aktivitas terakhir, paling lama ${pol.max_hours} jam sejak upload`;
   }
-  if (me.desktop) applyDesktopMode(me);
+  if (me.desktop) { applyDesktopMode(me); window.EvalTool && window.EvalTool.setup(me); }
   setupQuality(me.transcribe || {});
   $("aiName").textContent = me.ai.name;
   $("planAiBtn").hidden = !me.ai.enabled;   // bawaan: tanpa AI eksternal, hanya ⚡ Otomatis (lokal)
@@ -1741,7 +1741,7 @@ function setupQuality(info) {
     const q = qs.find((x) => x.id === $("qualitySelect").value);
     const gb = (q.ram_mb / 1024).toFixed(1);
     $("qualityHint").textContent = `Butuh RAM ±${gb} GB` + (q.minutes_per_10min ? `, ±${q.minutes_per_10min} menit per 10 menit video (CPU 4 inti)` : "")
-      + (q.id === "cepat" ? ". Lebih banyak salah kata: periksa subtitle." : ". Lebih sedikit salah kata, lebih lama.");
+      + (q.note ? `. ${q.note}` : ".");
   };
   hint();
   $("qualitySelect").onchange = () => { hint(); try { localStorage.setItem("avs-quality", $("qualitySelect").value); } catch { /* abaikan */ } };

@@ -183,21 +183,22 @@ Dua run per mode identik di masing-masing mesin. **base bergeser 14 poin antar-C
 Ukuran: `NH-AI-Clip-Studio-Setup.exe` 689,1 MB (base + small); `NH-AI-Clip-Studio-Model-KualitasTinggi.exe` (opsional)
 1350,9 MB; folder aplikasi terpasang 1160 MB. RAM di atas = proses transkripsi saja (tanpa jendela WebView2 & Windows).
 
-## 5. Rekomendasi konfigurasi (menunggu persetujuan & uji video NH)
+## 5. Konfigurasi final M1.1 (disetujui pengguna)
 
-| Pertanyaan | Rekomendasi dari data | Alasan |
-|---|---|---|
-| Model terbaik untuk **Cepat** | base hanya sebagai mode darurat PC lemah; **disarankan** Cepat diganti/dihapus (lihat opsi) | base 29,7–69,4 % WER di FLEURS dan 32,8–46,7 % di sampel Windows yang sama (tidak stabil antar-CPU); small sudah cukup cepat (RTF 0,15–0,22 ≈ 1,5–2,5 mnt per 10 mnt video, CPU 4 thread) |
-| Model terbaik untuk **Akurat** (bawaan) | **small**, pengaturan M1.1 | Terbaik/konsisten untuk audio panjang (14,0 %), 16,2–16,6 % sampel Windows, RAM ±0,7–1,3 GB, deterministik di mesin yang sama |
-| **Turbo** sebagai "Kualitas tinggi" | **Layak sebagai paket opsional untuk klip pendek & audio bising**; **belum** untuk video panjang | Kalimat 6,2 % / dialog 7,8 % / bising 31,3 % (terbaik), sampel Windows 7,7–8,5 %; tetapi audio panjang kehilangan ucapan (CER 15,5 % vs small 4,4 %), RTF 0,45 Windows, RAM ±1,9–2,0 GB, paket 1351 MB |
-| Bersih vs bising | Perbedaan **sangat signifikan** untuk semua model | Dialog yang sama: small 22,8 → 48,9 %, turbo 7,8 → 31,3 %, base (kalimat→bising) 31,9 → 69,4 % |
-| RAM 8 / 16 GB | Semua mode muat di 16 GB; 8 GB kemungkinan muat (proses ≤ 2 GB + Windows + WebView2 ±3–4 GB) | **Belum diukur di PC 8 GB sungguhan** → jalankan `--eval` di PC tim |
+| Keputusan | Penerapan |
+|---|---|
+| **Whisper small = model standar** | Satu-satunya model di installer utama (`desktop/launcher.py` `DESKTOP_MODELS`, `desktop/nh_clip_studio.spec`); mode tampil sebagai **"Standar"** dan menjadi bawaan. CI gagal bila bundel berisi model lain. |
+| **Whisper base dihapus** dari installer utama; tidak ada mode "Cepat" | Base tidak dibundel. Saat update dari M1, `[InstallDelete]` membersihkan folder program lama (`{app}\_internal`, termasuk base 145 MB). Proyek lama berlabel "cepat" dianalisis ulang dengan small. Base hanya diunduh CI untuk bukti sebelum/sesudah (perilaku M1). |
+| **Turbo = paket tambahan "Kualitas Tinggi"** (opsional) | `NH-AI-Clip-Studio-Model-KualitasTinggi.exe`, terpisah dari installer utama. Halaman info installer & keterangan di aplikasi: paling akurat untuk ucapan pendek/bising, lebih lama, dan **dapat menghilangkan sebagian ucapan pada rekaman panjang (> ±5 menit)**. |
+| Decoding | `condition_on_previous_text=False`, `temperature=0`, hotwords bawaan **mati** (kosakata hanya saran yang dikonfirmasi; petunjuk Whisper opsional, eksperimental). |
+| Editor | Koreksi kata, timing, cari & ganti, saran istilah, dan gerbang tinjau sebelum ekspor tetap aktif. |
+| Klaim | Tidak ada klaim akurat untuk bahasa Arab, ayat, doa, atau istilah dakwah. |
+| Update | Proyek & hasil editing ada di `%LOCALAPPDATA%\NH AI Clip Studio` dan hasil ekspor di `Videos\NH AI Clip Studio`, di luar folder program; tidak disentuh installer/uninstaller. Dibuktikan CI (bagian 6). |
+| Uji akurasi | Menu **🧪 Uji akurasi** di aplikasi (tanpa CMD) + `docs/PANDUAN_UJI_NH.md` (juga dipasang: menu Start → "Panduan Uji Akurasi NH"). |
 
-Opsi untuk keputusan pengguna (belum diterapkan):
-
-1. **Disarankan:** satu mode standar *small* + paket opsional *Kualitas tinggi* (turbo); hapus base dari installer
-   (±140 MB lebih kecil) atau pertahankan sebagai "Hemat RAM (kurang akurat)" untuk PC < 8 GB.
-2. Pertahankan Cepat = base / Akurat = small seperti sekarang, dengan peringatan "Cepat: lebih banyak salah kata".
+Data pendukung (bagian 4): small 14,0 % WER audio panjang, 16,2–16,6 % sampel Windows, RAM puncak ±0,7 GB; base
+29,7–69,4 % dan tidak stabil antar-CPU; turbo terbaik untuk kalimat/dialog/bising tetapi kehilangan ucapan pada
+audio panjang (CER 15,5 %). Semua angka dari FLEURS (bahasa Indonesia umum), **bukan** video NH.
 
 ### Risiko yang masih ada (bahasa Arab & istilah dakwah)
 
@@ -210,20 +211,31 @@ Opsi untuk keputusan pengguna (belum diterapkan):
 - Hasil dapat bergeser antar-CPU (base 14 poin; small/turbo ±1–2 poin).
 - Turbo dapat melewatkan ucapan pada audio panjang.
 
-**Belum siap produksi** sampai `--eval` dengan 3–5 video NH asli + transkrip rujukan manual dijalankan di PC 8 GB &
-16 GB tim dan hasilnya disetujui.
+**Belum siap produksi** sampai uji akurasi dengan 3–5 video NH asli + transkrip rujukan manual dijalankan di PC 8 GB
+& 16 GB tim dan hasilnya disetujui. M2 belum dimulai sebelum hasil uji NH ditinjau.
 
-### Paket "Kualitas tinggi" (opsional) & uji dengan video NH asli
+### Paket "Kualitas Tinggi" (opsional) & uji dengan video NH asli
 
 - **Paket model tambahan** `NH-AI-Clip-Studio-Model-KualitasTinggi.exe` (Whisper large-v3-turbo, MIT) **tidak**
   termasuk installer utama. Dipasang per pengguna ke `%LOCALAPPDATA%\NH AI Clip Studio\models\whisper-large-v3-turbo`;
-  mode "Kualitas tinggi" baru muncul di aplikasi bila paket ini ada. Butuh RAM lebih besar (lihat tabel putaran 2).
-- **Uji video NH di komputer NH sendiri** (offline, video tidak dikirim ke mana pun):
+  mode "Kualitas Tinggi" baru muncul di aplikasi bila paket ini ada. Butuh RAM ±1,9–2 GB per transkripsi.
+- **Uji video NH**: ikuti `docs/PANDUAN_UJI_NH.md` (3–5 video, transkrip rujukan diketik & diperiksa manusia, PC 8 GB
+  dan 16 GB). Di aplikasi: **🧪 Uji akurasi** → pilih folder → Periksa → Mulai uji → tabel hasil → Buka folder laporan.
+  Alternatif admin: `NH-AI-Clip-Studio.exe --eval "D:\Uji NH" --runs 2`. Kirim `laporan-uji.md` saja.
 
-  1. Buat folder, mis. `D:\Uji NH`, berisi 3–5 potongan video asli (1–3 menit, ada istilah Arab) dan untuk tiap
-     video berkas `.txt` bernama sama berisi transkrip yang diketik manual (ejaan pedoman NH).
-  2. Jalankan (Command Prompt): `"%LOCALAPPDATA%\Programs\NH AI Clip Studio\NH-AI-Clip-Studio.exe" --eval "D:\Uji NH" --runs 2`
-  3. Hasil: `laporan-uji.md` (WER, CER, RTF, puncak RAM, apakah 2 run identik, akurasi istilah kosakata per mode,
-     spesifikasi komputer) dan folder `hasil\` (transkrip mentah). Kirim `laporan-uji.md` saja untuk ditinjau.
+## 6. Uji pembaruan M1 → M1.1 (CI Windows)
 
-  Uji di komputer 8 GB dan 16 GB yang dipakai tim. Hasil berlaku untuk video & komputer yang diuji.
+Langkah di `.github/workflows/desktop.yml`, setiap build:
+
+1. Unduh installer M1 asli (artefak run 42754779950, `desktop/m1` @ `6952a43`), pasang diam-diam.
+2. Buat proyek nyata dengan M1 (`--selftest`: upload → analisis → simpan resep editing → render MP4).
+3. Sidik data (`python -m desktop.datacheck snapshot`): SHA-256 semua berkas proyek/render/ekspor + jumlah baris tabel
+   `projects`, `project_recipes`, `renders`, … + hash setiap resep editing.
+4. Pasang installer M1.1 di atas M1 (AppId sama). Periksa: model base lama terhapus, data identik
+   (`datacheck compare`: tidak ada berkas hilang/berubah, tabel tidak berkurang, resep tidak berubah).
+5. Buka data lama dengan M1.1 (`--check-data`): setiap proyek, transkrip, resep, klip, tinjauan, dan berkas render
+   terbaca lewat API versi baru; sidik ulang → tetap identik. Hasil ekspor M1 di folder Videos utuh.
+6. Selftest M1.1, GUI, lalu uninstall: proyek pengguna tetap ada.
+
+Hasil per build ada di ringkasan run dan artefak `desktop-test-reports` (`update.txt`, `update-check.json`,
+`update-compare-*.json`).

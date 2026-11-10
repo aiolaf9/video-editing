@@ -167,3 +167,13 @@ class UserUpdate(BaseModel):
 
 class GuidebookIn(BaseModel):
     guidebook: str = Field("", max_length=4000)
+
+
+class EvalFolder(BaseModel):
+    """Menu "Uji akurasi" desktop (M1.1): folder berisi video NH + transkrip rujukan .txt."""
+    folder: str = Field(..., min_length=1, max_length=1000)
+
+
+class EvalStart(EvalFolder):
+    runs: int = Field(2, ge=1, le=3)
+    qualities: list[str] = Field(default_factory=list, max_length=3)

@@ -1,4 +1,4 @@
-"""CI: unduh model Whisper base (CTranslate2) untuk dibundel installer; revisi dicatat, lisensi harus MIT."""
+"""CI: unduh model Whisper (CTranslate2) untuk dibundel installer atau paket tambahan; revisi dicatat, lisensi harus MIT."""
 import json
 import re
 import sys

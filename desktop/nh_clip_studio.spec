@@ -1,5 +1,5 @@
 # PyInstaller (onedir) untuk NH AI Clip Studio. Jalankan dari akar repo:  pyinstaller desktop/nh_clip_studio.spec
-# Berkas unduhan (FFmpeg, model Whisper base) disiapkan workflow di build/desktop/ (lihat .github/workflows/desktop.yml).
+# Berkas unduhan (FFmpeg, model Whisper small) disiapkan workflow di build/desktop/ (lihat .github/workflows/desktop.yml).
 import os
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
@@ -24,7 +24,7 @@ datas = [
     (os.path.join(ROOT, "desktop", "THIRD_PARTY_NOTICES.md"), "."),
     (need(os.path.join(STAGE, "licenses")), "licenses"),
 ]
-for model in ("base", "small"):              # Cepat & Akurat (desktop/launcher.py DESKTOP_MODELS)
+for model in ("small",):                     # model standar (desktop/launcher.py DESKTOP_MODELS); base dihapus di M1.1
     folder = f"whisper-{model}"
     datas.append((need(os.path.join(STAGE, folder, "model.bin")), folder))
     for name in ("config.json", "tokenizer.json", "vocabulary.txt", "vocabulary.json", "README.md", "SOURCE.json",

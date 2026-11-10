@@ -1,6 +1,6 @@
 """Uji jalur lengkap aplikasi desktop terhadap server lokal yang sedang berjalan (tanpa jendela).
 
-masuk tanpa login (kunci peluncuran) -> upload video ucapan -> analisis (Whisper base bawaan + YuNet) ->
+masuk tanpa login (kunci peluncuran) -> upload video ucapan -> analisis (Whisper bawaan + YuNet) ->
 transkrip berisi kata -> rekomendasi klip AI (skor + alasan) -> subtitle otomatis di resep -> ekspor massal
 2 klip x (9:16, 1:1, 16:9) -> verifikasi MP4 (ffprobe: H.264, ukuran, durasi, ada audio) + salinan di folder ekspor.
 Hanya pustaka standar Python (dipakai juga oleh exe hasil PyInstaller)."""

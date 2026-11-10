@@ -28,6 +28,7 @@ Compression=lzma2/max
 SolidCompression=yes
 LZMANumBlockThreads=4
 WizardStyle=modern
+InfoBeforeFile=addon_info.txt
 SetupIconFile=..\build\desktop\app.ico
 Uninstallable=yes
 UninstallDisplayName={#AppName}

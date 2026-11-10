@@ -68,6 +68,13 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="ba-"))
     key = launcher.configure_env(work / "data", work / "export")
+    # "Sebelum" = perilaku M1 dengan model base. Base tidak lagi dibundel (keputusan M1.1): CI mengunduhnya terpisah
+    # (M1_BASE_MODEL_DIR) dan hanya skrip pembanding ini yang memetakannya ke mode "cepat".
+    base_dir = os.environ.get("M1_BASE_MODEL_DIR")
+    if base_dir:
+        paths = json.loads(os.environ.get("WHISPER_MODEL_PATHS") or "{}")
+        paths["base"] = base_dir
+        os.environ.update(WHISPER_MODEL_PATHS=json.dumps(paths), WHISPER_MODEL_FAST="base")
     launcher.setup_logging(work / "data")
     server = launcher.LocalServer(launcher.free_port())
     server.start()

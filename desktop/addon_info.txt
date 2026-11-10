@@ -1,0 +1,17 @@
+NH AI Clip Studio - Paket "Kualitas Tinggi" (opsional)
+
+Paket ini menambahkan pilihan transkripsi "Kualitas Tinggi" (model Whisper large-v3-turbo, lisensi MIT).
+Aplikasi tetap bekerja tanpa paket ini; model standar (Whisper small) sudah termasuk di installer utama.
+
+Kapan dipakai:
+- Paling akurat untuk ucapan pendek dan audio bising pada uji bahasa Indonesia (FLEURS).
+- Lebih lama (sekitar 2x model standar) dan memakai RAM lebih besar (sekitar 2 GB untuk proses transkripsi).
+
+Penting:
+- Pada rekaman panjang (lebih dari sekitar 5 menit) model ini DAPAT MENGHILANGKAN sebagian ucapan.
+  Untuk ceramah panjang, bandingkan dengan mode Standar dan periksa setiap baris subtitle.
+- Tidak ada jaminan ketepatan untuk bahasa Arab, ayat, doa, atau istilah dakwah. Semua subtitle tetap wajib
+  diperiksa sebelum dipublikasikan.
+
+Ukuran unduhan sekitar 1,35 GB. Model dipasang ke folder data pengguna dan dapat dihapus lewat
+Pengaturan Windows > Aplikasi.

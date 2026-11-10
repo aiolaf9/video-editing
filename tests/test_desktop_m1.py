@@ -3,6 +3,7 @@ ekspor massal (klip x rasio) menjadi MP4 sungguhan, dan salinan ke folder ekspor
 import json
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -173,24 +174,26 @@ def test_oslock_exclusive_between_handles(tmp_path):
 
 
 def test_launcher_maps_bundled_models_to_quality_modes(tmp_path, monkeypatch):
-    """M1.1: installer membundel whisper-base (Cepat) & whisper-small (Akurat); peluncur memetakannya per mode."""
+    """M1.1 final: installer membundel HANYA whisper-small (mode Standar = "akurat"); tidak ada mode Cepat. Model base
+    sisa instalasi lama tidak dipakai walau foldernya masih ada."""
     from desktop import launcher
     for name in ("base", "small"):
         (tmp_path / f"whisper-{name}").mkdir()
         (tmp_path / f"whisper-{name}" / "model.bin").write_bytes(b"x")
     monkeypatch.setattr(launcher, "resource_dir", lambda: tmp_path)
-    for k in ("WHISPER_MODEL", "WHISPER_MODEL_FAST", "WHISPER_MODEL_ACCURATE", "WHISPER_MODEL_PATHS",
+    for k in ("WHISPER_MODEL", "WHISPER_MODEL_ACCURATE", "WHISPER_MODEL_PATHS",
               "WHISPER_QUALITY_DEFAULT", "DESKTOP_MODE", "DESKTOP_LAUNCH_KEY", "VIDEO_APP_DATA", "EXPORT_DIR",
               "EMBEDDED_WORKERS", "MEDIA_LIFECYCLE", "AUTO_MIGRATE", "COOKIE_SECURE", "ALLOW_URL_IMPORT",
               "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY", "MAX_UPLOAD_MB"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("WHISPER_MODEL_FAST", "base")          # sisa lingkungan lama: harus dibuang
     import os
     saved = dict(os.environ)
     try:
         launcher.configure_env(tmp_path / "data", tmp_path / "export")
         paths = json.loads(os.environ["WHISPER_MODEL_PATHS"])
-        assert paths == {"base": str(tmp_path / "whisper-base"), "small": str(tmp_path / "whisper-small")}
-        assert os.environ["WHISPER_MODEL_FAST"] == "base" and os.environ["WHISPER_MODEL_ACCURATE"] == "small"
+        assert paths == {"small": str(tmp_path / "whisper-small")}
+        assert "WHISPER_MODEL_FAST" not in os.environ and os.environ["WHISPER_MODEL_ACCURATE"] == "small"
         assert os.environ["WHISPER_MODEL"] == "small" and os.environ["WHISPER_QUALITY_DEFAULT"] == "akurat"
     finally:
         os.environ.clear()
@@ -207,7 +210,7 @@ def test_launcher_finds_optional_turbo_addon_in_data_dir(tmp_path, monkeypatch):
     """Paket "Kualitas tinggi" dipasang terpisah ke folder data (bukan installer utama)."""
     from desktop import launcher
     res = tmp_path / "res"
-    for name in ("base", "small"):
+    for name in ("small",):
         (res / f"whisper-{name}").mkdir(parents=True)
         (res / f"whisper-{name}" / "model.bin").write_bytes(b"x")
     monkeypatch.setattr(launcher, "resource_dir", lambda: res)
@@ -241,3 +244,151 @@ def test_nh_eval_term_check_and_report(tmp_path):
                         "term_accuracy": 0.5, "terms_in_reference": 4}], "rows": []}
     md = nh_eval.markdown(rep)
     assert "| akurat | small | 20.0% (20.0%–20.0%)" in md and "50% dari 4" in md and "RAM 8.0 GB" in md
+
+
+def test_datacheck_snapshot_compare_detects_lost_or_changed_user_files(tmp_path):
+    """Uji pembaruan M1 -> M1.1: berkas proyek/render & baris DB tidak boleh hilang atau berubah."""
+    import sqlite3
+    from desktop import datacheck
+    d = tmp_path / "data"
+    (d / "projects" / "p1" / "renders").mkdir(parents=True)
+    (d / "projects" / "p1" / "source.mp4").write_bytes(b"v" * 100)
+    (d / "projects" / "p1" / "renders" / "a.mp4").write_bytes(b"r" * 100)
+    (d / "projects" / "p1" / "meta.json").write_text("{}")
+    (d / "logs").mkdir()
+    (d / "logs" / "desktop.log").write_text("x")
+    con = sqlite3.connect(d / "app.db")
+    con.executescript("create table projects(id text); insert into projects values('p1');"
+                      "create table project_recipes(project_id text, version int, data text, updated real, updated_by text);"
+                      "insert into project_recipes values('p1', 3, '{\"a\":1}', 0, null);"
+                      "create table renders(id text); insert into renders values('r1');")
+    con.commit()
+    con.close()
+    before = datacheck.snapshot(d)
+    assert set(before["files"]) == {"projects/p1/source.mp4", "projects/p1/renders/a.mp4", "projects/p1/meta.json"}
+    assert before["tables"] == {"projects": 1, "project_recipes": 1, "renders": 1}
+    (d / "logs" / "desktop.log").write_text("baru")                   # log berubah: bukan data pengguna
+    (d / "projects" / "p1" / "meta.json").write_text('{"x": 1}')       # metadata ditulis ulang: dicatat, tidak gagal
+    res = datacheck.compare(before, datacheck.snapshot(d))
+    assert res["ok"] and res["meta_rewritten"] == ["projects/p1/meta.json"]
+    (d / "projects" / "p1" / "renders" / "a.mp4").unlink()
+    con = sqlite3.connect(d / "app.db")
+    con.execute("update project_recipes set data='{}'")
+    con.commit()
+    con.close()
+    res = datacheck.compare(before, datacheck.snapshot(d))
+    assert not res["ok"] and res["lost_files"] == ["projects/p1/renders/a.mp4"] and res["recipes_changed"] == ["p1"]
+
+
+def test_datacheck_check_reads_every_project_and_render(monkeypatch):
+    from desktop import datacheck, selftest
+
+    class Fake:
+        def __init__(self, base):
+            pass
+
+        def get(self, path):
+            if path.startswith("/api/desktop/enter"):
+                return 200, {}
+            if path == "/api/projects":
+                return 200, [{"id": "p1", "name": "M1"}]
+            if path == "/api/projects/p1":
+                return 200, {"renders": [{"file": "a.mp4", "available": True}, {"file": "b.mp4", "available": False}]}
+            if path.endswith("/renders/a.mp4"):
+                return 200, b"\0" * 5000
+            if path.endswith("/transcript"):
+                return 200, {"segments": [{"text": "x"}]}
+            if path.endswith("/recipe"):
+                return 200, {"version": 2}
+            return 200, []
+
+    monkeypatch.setattr(selftest, "Client", Fake)
+    rep = datacheck.check("http://x", "k")
+    assert rep["ok"] and rep["projects"] == 1
+    assert rep["items"][0]["renders_readable"] == 1 and rep["items"][0]["recipe_version"] == 2
+
+
+def _eval_folder(tmp_path):
+    f = tmp_path / "Uji NH"
+    f.mkdir()
+    for n in ("a", "b"):
+        (f / f"{n}.mp4").write_bytes(b"x")
+        (f / f"{n}.txt").write_text("insya allah kita bayar zakat", encoding="utf-8")
+    (f / "c.mp4").write_bytes(b"x")                       # tanpa rujukan -> dilewati
+    (f / "d.mp4").write_bytes(b"x")
+    (f / "d.txt").write_text("  ", encoding="utf-8")      # rujukan kosong -> dilewati
+    return f
+
+
+def _fake_child(monkeypatch, nh_eval, calls):
+    real = subprocess.run
+
+    def fake_run(cmd, *a, **kw):
+        if "--eval-child" not in cmd:
+            return real(cmd, *a, **kw)
+        media, q, out = cmd[cmd.index("--eval-child") + 1:][:3]
+        calls.append((Path(media).name, q))
+        Path(out).write_text(json.dumps({"file": Path(media).name, "quality": q, "model": "small", "duration": 10,
+                                         "seconds": 2, "rtf": 0.2, "peak_ram_mb": 700, "wer": 0.25, "cer": 0.1,
+                                         "ref_words": 5, "words": 5, "unsure_share": 0.1,
+                                         "terms": {"terms_in_reference": 2, "terms_correct": 1, "term_accuracy": 0.5,
+                                                   "missed": ["zakat"]}, "hypothesis": "sama"}), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(nh_eval.subprocess, "run", fake_run)
+
+
+def test_nh_eval_run_progress_cancel_and_report(tmp_path, monkeypatch):
+    from desktop import nh_eval
+    monkeypatch.setenv("WHISPER_MODEL_ACCURATE", "small")
+    monkeypatch.delenv("WHISPER_MODEL_FAST", raising=False)
+    monkeypatch.delenv("WHISPER_MODEL_HIGH", raising=False)
+    folder = _eval_folder(tmp_path)
+    info = nh_eval.scan(folder)
+    assert info["pairs"] == ["a.mp4", "b.mp4", "d.mp4"] and info["missing_reference"] == ["c.mp4"]
+    assert info["empty_reference"] == ["d.mp4"]
+    calls, prog = [], []
+    _fake_child(monkeypatch, nh_eval, calls)
+    rep = nh_eval.run(folder, 2, ["cepat", "akurat"], progress=prog.append)    # "cepat" tidak tersedia -> diabaikan
+    assert calls == [("a.mp4", "akurat")] * 2 + [("b.mp4", "akurat")] * 2
+    assert prog[0]["total"] == 4 and prog[-1]["done"] == 4
+    s = rep["summary"][0]
+    assert s["quality"] == "akurat" and s["runs_identical"] is True and s["term_accuracy"] == 0.5
+    assert rep["skipped_files"] == ["c.mp4", "d.mp4"] and not rep["cancelled"]
+    assert (folder / "laporan-uji.md").exists() and (folder / "hasil" / "a.akurat.run2.txt").read_text() == "sama"
+    # Dibatalkan setelah run pertama: tidak bisa menilai "2 run sama" -> None, laporan menandai pembatalan.
+    calls.clear()
+    rep = nh_eval.run(folder, 2, ["akurat"], stop=lambda: len(calls) >= 1)
+    assert len(calls) == 1 and rep["cancelled"] and rep["summary"][0]["runs_identical"] is None
+    assert "dibatalkan" in (folder / "laporan-uji.md").read_text(encoding="utf-8")
+    with pytest.raises(ValueError):
+        nh_eval.run(tmp_path, 1, ["akurat"])
+
+
+def test_desktop_eval_api_runs_in_background(desktop, tmp_path, monkeypatch):
+    from desktop import nh_eval
+    from app import desktop_eval
+    monkeypatch.setenv("WHISPER_MODEL_ACCURATE", "small")
+    folder = _eval_folder(tmp_path)
+    calls = []
+    _fake_child(monkeypatch, nh_eval, calls)
+    c = _desktop_client()
+    c.get("/api/desktop/enter", params={"key": KEY})
+    assert c.post("/api/desktop/eval/scan", json={"folder": str(tmp_path / "tidak-ada")}).status_code == 400
+    assert c.post("/api/desktop/eval/scan", json={"folder": str(folder)}).json()["missing_reference"] == ["c.mp4"]
+    assert c.post("/api/desktop/eval", json={"folder": str(tmp_path), "runs": 1}).status_code == 400
+    assert c.post("/api/desktop/eval", json={"folder": str(folder), "runs": 9}).status_code == 422
+    st = c.post("/api/desktop/eval", json={"folder": str(folder), "runs": 1, "qualities": ["akurat"]}).json()
+    assert st["running"] is True
+    deadline = time.time() + 30
+    while desktop_eval.status()["running"] and time.time() < deadline:
+        time.sleep(0.1)
+    st = c.get("/api/desktop/eval").json()
+    assert not st["running"] and st["error"] is None and st["summary"][0]["wer_mean"] == 0.25
+    assert st["report"].endswith("laporan-uji.md") and st["done"] == st["total"] == 2
+    assert c.post("/api/desktop/eval/open").json()["path"] == str(folder.resolve())
+    assert c.post("/api/desktop/pick-folder").status_code == 501       # tanpa jendela pywebview -> kolom teks
+
+
+def test_desktop_eval_api_hidden_outside_desktop(app_client):
+    c = TestClient(main.app)
+    assert c.get("/api/desktop/eval").status_code in (401, 404)
