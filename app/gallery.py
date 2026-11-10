@@ -41,7 +41,8 @@ def options_for(preset: str, overrides: dict | None = None) -> subtitles.Subtitl
 
 
 def _key(preset: str) -> str:
-    raw = json.dumps(subtitles.PRESETS[preset], sort_keys=True) + Path(subtitles.__file__).read_text(encoding="utf-8")
+    # Tanpa membaca berkas .py (tidak ada di build PyInstaller): definisi preset + versi tampilan subtitle.
+    raw = json.dumps(subtitles.PRESETS[preset], sort_keys=True) + subtitles.RENDER_VERSION
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 

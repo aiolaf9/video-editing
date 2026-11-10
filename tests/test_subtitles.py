@@ -98,3 +98,15 @@ def test_every_preset_renders_through_libass(tmp_path, preset, monkeypatch):
     mp4, png = gallery.render(preset)
     assert mp4.stat().st_size > 2000 and png.stat().st_size > 500
     assert config.FONTS_DIR.is_dir()
+
+
+def test_gallery_cache_key_does_not_need_source_files(monkeypatch):
+    """Build PyInstaller tidak berisi berkas .py: kunci cache galeri tidak boleh membacanya."""
+    from pathlib import Path
+
+    from app import gallery
+
+    def no_read(*a, **k):
+        raise FileNotFoundError("tidak ada sumber .py di build beku")
+    monkeypatch.setattr(Path, "read_text", no_read)
+    assert len(gallery._key("neon")) == 12

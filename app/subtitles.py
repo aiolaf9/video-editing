@@ -9,6 +9,7 @@ MIN_WORD = 0.12          # durasi tampil minimum kata yang digeser (detik)
 # Log per kata yang digeser (memuat teks transkrip): hanya untuk uji acceptance, bawaan mati.
 TRACE = os.environ.get("SUBTITLE_TRACE") == "1"
 LEGACY_STYLES = ("karaoke", "pop", "word", "simple")
+RENDER_VERSION = "m2-1"     # naikkan bila tampilan build_ass berubah: klip galeri yang tersimpan dibuat ulang
 # M2.2: preset animasi. Tiap preset memakai teknik libass yang berbeda (lihat _events_m2), bukan sekadar warna.
 PRESETS = {
     "karaoke": {"label": "Karaoke", "desc": "Kata yang diucapkan berganti warna", "anim": "karaoke",
