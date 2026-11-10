@@ -302,7 +302,7 @@ def run_check_data(args) -> int:
         server = LocalServer(free_port())
         server.start()
         from desktop import datacheck
-        report = datacheck.check(server.base, key)
+        report = datacheck.check(server.base, key, render=args.check_render)
     except Exception as exc:
         log.exception("Pemeriksaan data gagal")
         report = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
@@ -350,6 +350,7 @@ def main(argv=None) -> int:
     parser.add_argument("--runs", type=int, default=2, help="run per mode untuk --eval (bawaan 2)")
     parser.add_argument("--qualities", default="akurat,tinggi", help="mode untuk --eval")
     parser.add_argument("--check-data", action="store_true", help="periksa proyek lama terbaca (setelah pembaruan)")
+    parser.add_argument("--check-render", action="store_true", help="--check-data: render ulang proyek lama")
     parser.add_argument("--eval-child", nargs=3, metavar=("MEDIA", "QUALITY", "OUT"), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.eval or args.eval_child:

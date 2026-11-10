@@ -2,6 +2,7 @@
 
   sebelum.mp4             perilaku M1.1: crop 9:16 ikut posisi x wajah + subtitle karaoke bawaan
   sesudah-<preset>.mp4    M2: Smart Framing Otomatis + preset subtitle animasi (+ sorot kata penting)
+  sesudah-lengkap.mp4     M2: + motion graphics dari heuristik lokal (hook, angka, kata kunci, zoom) — tanpa edit manual
   lembar.png              frame per 3 dtk tiap varian
 
     python bench/m2/studio_demo.py video.mp4 transkrip.json keluar/ [--presets karaoke,bounce,...] [--end 24]
@@ -29,6 +30,7 @@ def main():
     ap.add_argument("--start", type=float, default=0)
     ap.add_argument("--end", type=float, default=0)
     ap.add_argument("--presets", default="bounce,highlight,documentary,neon")
+    ap.add_argument("--motion", action="store_true", help="tambahkan varian sesudah-lengkap (motion graphics otomatis)")
     a = ap.parse_args()
     from app.schemas import RenderRequest
     from app.subtitles import PRESETS
@@ -44,8 +46,10 @@ def main():
     data = framing.analyze(preview, info["width"], info["height"], info["duration"])
     w, h = output_size("9:16", info["width"], info["height"])
     variants = {"sebelum": None, **{f"sesudah-{p}": p for p in a.presets.split(",") if p}}
+    if a.motion:
+        variants["sesudah-lengkap"] = "highlight"
     for name, preset in variants.items():
-        req = RenderRequest(start=a.start, end=end, aspect="9:16", animations=False)
+        req = RenderRequest(start=a.start, end=end, aspect="9:16", animations=name == "sesudah-lengkap")
         if preset is None:
             opts = SubtitleOptions()                      # bawaan M1.1
             camera, frame = faces.camera_path(framing.faces_compat(data), a.start, end) or None, None
@@ -62,9 +66,34 @@ def main():
             opts.zones = subtitle_zones(frame, req, h / w)
         ass = out / f"{name}.ass"
         ass.write_text(build_ass(tr, a.start, end, w, h, opts), encoding="utf-8")
-        cmd = build_command(src, out / f"{name}.mp4", req, info, ass, None, out, camera, [], [], frame)
+        punches, graphics = [], None
+        if name == "sesudah-lengkap":
+            from app import motion, plan
+            items = plan.heuristic(tr, [], a.start, end)
+            (out / "motion-otomatis.json").write_text(json.dumps(items, indent=1, ensure_ascii=False), encoding="utf-8")
+            from app.pipeline import drop_split_punches
+            punches = drop_split_punches([(i["start"] - a.start, i["end"] - a.start, i.get("strength", 0.14))
+                                          for i in items if i["type"] == "zoom"], frame, a.start)
+            mitems = [{**i, "start": i["start"] - a.start, "end": i["end"] - a.start} for i in items
+                      if i["type"] in motion.TYPES]
+            graphics = out / "motion.ass"
+            graphics.write_text(motion.build(mitems, w, h), encoding="utf-8")
+            # kata kunci/kartu (PNG) memakai jalur overlay yang sama dengan aplikasi
+            from app import overlays
+            layers = []
+            for i in items:
+                if i["type"] in ("keyword", "card", "chips", "checklist"):
+                    layers += overlays.render_item(i, out, (w, h), i["start"] - a.start, i["end"] - a.start)
+        else:
+            layers = []
+        cmd = build_command(src, out / f"{name}.mp4", req, info, ass, None, out, camera, punches, layers, frame,
+                            graphics_file=graphics)
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], check=True, cwd=out)
         ass.unlink()
+        if graphics:
+            graphics.unlink()
+        for f in out.glob("ov_*.png"):
+            f.unlink()
         print(name, "ok", flush=True)
     contact_sheet(out, list(variants), a.start, end)
 

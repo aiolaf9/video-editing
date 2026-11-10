@@ -19,9 +19,10 @@ VOLATILE = ("logs/", "app.lock", "app.db", "app.db-wal", "app.db-shm", "app.db-j
 TABLES = ("projects", "project_recipes", "renders", "project_media", "edit_templates", "settings")
 
 
-def check(base: str, key: str) -> dict:
-    """Muat setiap proyek lewat API versi ini: proyek, transkrip, resep, klip, tinjauan, dan setiap berkas render."""
-    from desktop.selftest import Client
+def check(base: str, key: str, render: bool = False) -> dict:
+    """Muat setiap proyek lewat API versi ini: proyek, transkrip, resep, klip, tinjauan, dan setiap berkas render.
+    render=True: proyek lama juga dirender ulang dengan versi ini dari resep tersimpannya (resep tidak diubah)."""
+    from desktop.selftest import Client, _wait
     c = Client(base)
     c.get(f"/api/desktop/enter?key={urllib.parse.quote(key)}")
     status, items = c.get("/api/projects")
@@ -51,6 +52,14 @@ def check(base: str, key: str) -> dict:
         bad = [k for k in ("project", "transcript", "recipe", "clips", "review") if row[k] != 200]
         if bad or ok_files != row["renders_available"]:
             problems.append(f"{pid}: gagal {bad or ''} render terbaca {ok_files}/{row['renders_available']}")
+        if render and isinstance(rec, dict) and rec.get("version", 0) >= 1 and isinstance(proj, dict):
+            end = min(float(proj.get("duration") or 0), 8.0)
+            s_j, job = c.json("POST", f"/api/projects/{pid}/render-recipe",
+                              {"version": rec["version"], "start": 0, "end": end, "title": "Uji pembaruan"})
+            done = _wait(c, job["id"], 1800) if s_j == 200 else {"status": f"HTTP {s_j}: {job}"}
+            row["rerender"] = done.get("status")
+            if done.get("status") != "selesai":
+                problems.append(f"{pid}: render ulang dengan versi baru gagal: {done}")
         rows.append(row)
     return {"ok": not problems, "projects": len(rows), "items": rows, "problems": problems}
 

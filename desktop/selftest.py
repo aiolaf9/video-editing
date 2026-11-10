@@ -196,6 +196,58 @@ def run(base: str, key: str, video: Path, export_dir: Path, language: str = "en"
     report["outputs"] = outputs
     report["exported"] = [str(p) for p in exported]
     step(f"{len(outputs)} MP4 terverifikasi + {len(exported)} salinan di {export_dir}")
+    report["m2"] = m2_checks(c, pid, chosen[0], project_dir, render_timeout)
+    step(f"M2: {report['m2']['presets']} preset, bingkai {report['m2']['framing']}, motion "
+         f"{report['m2']['motion_items']} elemen, pratinjau {report['m2']['preview_bytes']} B, render "
+         f"{report['m2']['render_size']}")
     report["total_seconds"] = round(time.time() - t0, 1)
     report["ok"] = True
     return report
+
+
+def m2_checks(c: "Client", pid: str, clip: dict, renders: Path, timeout: float) -> dict:
+    """M2 di aplikasi terpasang (FFmpeg/libass/font bundel): galeri preset, rencana Smart Framing, motion graphics,
+    pratinjau 10 dtk, dan render final dengan semuanya aktif."""
+    out: dict = {}
+    status, presets = c.get("/api/subtitle-presets")
+    _check(status == 200 and len(presets) >= 10, f"preset subtitle: {status} {presets}")
+    out["presets"] = len(presets)
+    status, clip_bytes = c.get("/api/subtitle-presets/neon/preview.mp4")
+    _check(status == 200 and isinstance(clip_bytes, bytes) and len(clip_bytes) > 2000, f"galeri preset: {status}")
+    start, end = clip["start"], min(clip["end"], clip["start"] + 12)
+    status, fr = c.get(f"/api/projects/{pid}/framing?start={start}&end={end}&mode=auto")
+    _check(status == 200 and fr["segments"], f"rencana bingkai: {status} {fr}")
+    out["framing"] = "+".join(s["layout"] for s in fr["segments"])
+    status, state = c.get(f"/api/projects/{pid}/recipe")
+    rec = state["recipe"]
+    rec["subtitles"].update(style="highlight", font="Poppins", emphasis=True)
+    rec["crop"].update(mode="auto")
+    status, saved = c.json("PUT", f"/api/projects/{pid}/recipe", {"version": state["version"], "recipe": rec})
+    _check(status == 200, f"simpan resep M2: {status} {saved}")
+    items = [{"type": "hook", "text": "Selftest M2: hook pembuka", "start": start, "end": start + 2.5},
+             {"type": "lower_third", "text": "Narasumber", "label": "NH AI Clip Studio", "start": start + 2.5,
+              "end": start + 6},
+             {"type": "counter", "text": "2,5 kg", "start": start + 6, "end": start + 8},
+             {"type": "zoom", "start": start + 3, "end": start + 4.5, "strength": 0.2},
+             {"type": "cta", "text": "Ikuti kajian berikutnya", "start": max(start, end - 3), "end": end}]
+    status, plan = c.json("PUT", f"/api/projects/{pid}/plan", items)
+    _check(status == 200 and len(plan) == len(items), f"motion graphics: {status} {plan}")
+    out["motion_items"] = len(plan)
+    status, state = c.get(f"/api/projects/{pid}/recipe")
+    status, prev = c.json("POST", f"/api/projects/{pid}/preview-clip",
+                          {"version": state["version"], "start": start, "end": start + 10})
+    _check(status == 200, f"pratinjau hasil: {status} {prev}")
+    status, mp4 = c.get(prev["url"])
+    _check(status == 200 and isinstance(mp4, bytes) and len(mp4) > 5000, f"unduh pratinjau: {status}")
+    out["preview_bytes"] = len(mp4)
+    status, job = c.json("POST", f"/api/projects/{pid}/render-recipe",
+                         {"version": state["version"], "start": start, "end": end, "title": "Selftest M2"})
+    _check(status == 200, f"render M2: {status} {job}")
+    done = _wait(c, job["id"], timeout)
+    _check(done["status"] == "selesai", f"render M2 gagal: {done}")
+    info = probe(renders / done["result"]["file"])
+    v = next(s for s in info["streams"] if s["codec_type"] == "video")
+    _check((v["width"], v["height"]) == (1080, 1920), f"render M2 ukuran: {v['width']}x{v['height']}")
+    out["render_size"] = f"{v['width']}x{v['height']}"
+    out["render_file"] = done["result"]["file"]
+    return out

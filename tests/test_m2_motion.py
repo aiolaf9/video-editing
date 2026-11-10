@@ -110,3 +110,9 @@ def test_motion_graphics_render_real_mp4_with_logo(client, sample_video, fake_tr
     r, g, b = Image.open(png).convert("RGB").getpixel((1080 - 54 - 108, 54 + 108))
     assert r > 200 and g < 60 and b < 60
     assert not list((storage.project_dir(pid) / "renders").glob("*.motion.ass"))      # berkas sementara dibersihkan
+
+
+def test_punch_in_skipped_on_material_layouts():
+    from app.pipeline import drop_split_punches
+    frame = {"segments": [{"start": 10, "end": 14, "layout": "face"}, {"start": 14, "end": 20, "layout": "split"}]}
+    assert drop_split_punches([(1, 2, 0.2), (5, 6, 0.2)], frame, 10) == [(1, 2, 0.2)]

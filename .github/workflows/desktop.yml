@@ -1,4 +1,6 @@
-# Desktop M1 (Windows): bangun NH-AI-Clip-Studio-Setup.exe dan UJI SUNGGUHAN di runner Windows.
+# Desktop M1/M1.1/M2 (Windows): bangun NH-AI-Clip-Studio-Setup.exe dan UJI SUNGGUHAN di runner Windows.
+# M2: bukti MP4 Smart Framing + subtitle animasi + motion graphics (audio Indonesia asli, Whisper small), selftest M2
+#     di aplikasi beku/terpasang, dan uji pembaruan dari installer M1.1 asli.
 #   1. siapkan bundel: FFmpeg (versi & sha256 dikunci, libass/libx264 diverifikasi), Whisper small (lisensi MIT dicek; base hanya pembanding, tidak dibundel),
 #      sampel video ucapan (suara SAPI Windows, offline)
 #   2. selftest dari kode sumber
@@ -17,7 +19,7 @@ on:
 
 permissions:
   contents: read
-  actions: read          # unduh installer M1 (artefak run sebelumnya) untuk uji pembaruan M1 -> M1.1
+  actions: read          # unduh installer versi sebelumnya (artefak run lama) untuk uji pembaruan
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -30,7 +32,8 @@ env:
   WHISPER_REPOS: "small=Systran/faster-whisper-small"      # installer utama: model standar saja
   WHISPER_COMPARE_REPO: Systran/faster-whisper-base           # hanya untuk bukti sebelum/sesudah (perilaku M1), TIDAK dibundel
   WHISPER_ADDON_REPO: mobiuslabsgmbh/faster-whisper-large-v3-turbo
-  M1_RUN_ID: "42754779950"   # build installer M1 (desktop/m1 @ 6952a43) untuk uji pembaruan
+  PREV_RUN_ID: "42818439989"   # installer M1.1 (desktop/m1.1 @ 34ef605) untuk uji pembaruan M1.1 -> M2
+  PREV_NAME: "M1.1"
   PYTHONUTF8: "1"
 
 jobs:
@@ -131,6 +134,32 @@ jobs:
           python desktop/ci/before_after.py build/test/speech.mp4 build/test/speech.txt build/compare --start 0 --end 40
           if ($LASTEXITCODE -ne 0) { throw "sebelum/sesudah gagal" }
 
+      - name: Bukti M2 (Smart Framing, subtitle animasi, motion) dari ucapan Indonesia asli
+        env:
+          FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
+          FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
+          WHISPER_MODEL_ACCURATE: small
+          WHISPER_MODEL: small
+        run: |
+          $env:PATH = "$PWD\build\desktop\bin;$env:PATH"
+          $env:WHISPER_MODEL_PATHS = (@{ small = "$PWD\build\desktop\whisper-small" } | ConvertTo-Json -Compress)
+          New-Item -ItemType Directory -Force build/m2 | Out-Null
+          # Pemateri = foto astronaut NASA (domain publik, ikut di wheel scikit-image); papan tulis digambar.
+          python -m pip download scikit-image==0.25.2 --no-deps --only-binary :all: -d build/m2/wheel -q
+          python -c "import zipfile,glob; z=zipfile.ZipFile(glob.glob('build/m2/wheel/scikit_image-*.whl')[0]); open('build/m2/astronaut.png','wb').write(z.read('skimage/data/astronaut.png'))"
+          ffmpeg -v error -y -i build/test/speech.mp4 -t 24 -vn -ac 1 -ar 16000 build/m2/ucapan.wav
+          python bench/m2/make_lecture.py build/m2/astronaut.png build/m2/kajian.mp4 --seconds 24 --audio build/m2/ucapan.wav
+          python bench/m2/make_lecture.py build/m2/astronaut.png build/m2/kajian-jauh.mp4 --seconds 24 --audio build/m2/ucapan.wav --person 300
+          if ($LASTEXITCODE -ne 0) { throw "video uji M2 gagal" }
+          python bench/m2/transcribe_json.py build/m2/kajian.mp4 build/m2/kajian.json
+          python bench/m2/studio_demo.py build/m2/kajian.mp4 build/m2/kajian.json build/m2/bukti --presets bounce,highlight,documentary,neon,storytelling --motion
+          if ($LASTEXITCODE -ne 0) { throw "bukti M2 gagal" }
+          python bench/m2/framing_compare.py build/m2/kajian-jauh.mp4 build/m2/bingkai-pemateri-jauh
+          if ($LASTEXITCODE -ne 0) { throw "bukti bingkai gagal" }
+          Remove-Item build/m2/bukti/preview480.mp4, build/m2/bingkai-pemateri-jauh/preview480.mp4 -ErrorAction SilentlyContinue
+          Get-Content build/m2/bingkai-pemateri-jauh/rencana.json
+          Get-ChildItem build/m2/bukti, build/m2/bingkai-pemateri-jauh | Select-Object Name, Length
+
       - name: Build PyInstaller (onedir)
         run: |
           pyinstaller desktop/nh_clip_studio.spec --noconfirm --clean --distpath dist --workpath build/pyi
@@ -174,43 +203,43 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
-          & $iscc "/DAppVersion=0.1.1-m11.${{ github.run_number }}" desktop/installer.iss
+          & $iscc "/DAppVersion=0.2.0-m2.${{ github.run_number }}" desktop/installer.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC gagal" }
           $setup = Get-Item dist/installer/NH-AI-Clip-Studio-Setup.exe
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           "NH-AI-Clip-Studio-Setup.exe: {0:N1} MB, sha256 {1}" -f ($setup.Length / 1MB), $hash | Tee-Object build/test/installer.txt
-          & $iscc "/DAppVersion=0.1.1-m11.${{ github.run_number }}" desktop/model_addon.iss
+          & $iscc "/DAppVersion=0.2.0-m2.${{ github.run_number }}" desktop/model_addon.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC paket model gagal" }
           $addon = Get-Item dist/installer/NH-AI-Clip-Studio-Model-KualitasTinggi.exe
           $ahash = (Get-FileHash $addon -Algorithm SHA256).Hash.ToLower()
           "NH-AI-Clip-Studio-Model-KualitasTinggi.exe (opsional): {0:N1} MB, sha256 {1}" -f ($addon.Length / 1MB), $ahash | Tee-Object -Append build/test/installer.txt
 
-      - name: Pasang versi M1 & buat proyek dengan M1 (untuk uji pembaruan)
+      - name: Pasang versi sebelumnya (M1.1) & buat proyek dengannya (untuk uji pembaruan)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download $env:M1_RUN_ID -R $env:GITHUB_REPOSITORY -n NH-AI-Clip-Studio-Setup -D build/m1
-          if ($LASTEXITCODE -ne 0) { throw "unduh installer M1 gagal" }
-          $m1 = (Resolve-Path build/m1/NH-AI-Clip-Studio-Setup.exe).Path
-          "Installer M1: {0:N1} MB, sha256 {1}" -f ((Get-Item $m1).Length / 1MB), (Get-FileHash $m1 -Algorithm SHA256).Hash.ToLower() | Tee-Object build/test/update.txt
-          $p = Start-Process $m1 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/LOG=`"$PWD\build\test\install-m1.log`"" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "instalasi M1 gagal ($($p.ExitCode))" }
+          gh run download $env:PREV_RUN_ID -R $env:GITHUB_REPOSITORY -n NH-AI-Clip-Studio-Setup -D build/prev
+          if ($LASTEXITCODE -ne 0) { throw "unduh installer $env:PREV_NAME gagal" }
+          $m1 = (Resolve-Path build/prev/NH-AI-Clip-Studio-Setup.exe).Path
+          "Installer $($env:PREV_NAME): {0:N1} MB, sha256 {1}" -f ((Get-Item $m1).Length / 1MB), (Get-FileHash $m1 -Algorithm SHA256).Hash.ToLower() | Tee-Object build/test/update.txt
+          $p = Start-Process $m1 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/LOG=`"$PWD\build\test\install-prev.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "instalasi $env:PREV_NAME gagal ($($p.ExitCode))" }
           $app = "$env:LOCALAPPDATA\Programs\NH AI Clip Studio"
-          if (-not (Test-Path "$app\_internal\whisper-base\model.bin")) { throw "M1 terpasang tanpa model base?" }
-          # Proyek nyata dibuat oleh M1: upload -> analisis -> resep editing disimpan -> render MP4 (selftest M1).
-          $p = Start-Process "$app\NH-AI-Clip-Studio.exe" -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-m1.json`"" -Wait -PassThru
-          Get-Content build/test/report-m1.json -ErrorAction SilentlyContinue
-          if ($p.ExitCode -ne 0) { throw "selftest M1 gagal ($($p.ExitCode))" }
+          if (-not (Test-Path "$app\NH-AI-Clip-Studio.exe")) { throw "$env:PREV_NAME tidak terpasang" }
+          # Proyek nyata dibuat oleh versi lama: upload -> analisis -> koreksi/resep editing disimpan -> render MP4.
+          $p = Start-Process "$app\NH-AI-Clip-Studio.exe" -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-prev.json`"", "--language", "id", "--quality", "akurat" -Wait -PassThru
+          Get-Content build/test/report-prev.json -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "selftest $env:PREV_NAME gagal ($($p.ExitCode))" }
           $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
           python -m desktop.datacheck snapshot "$data" build/test/data-before.json
           python -m desktop.datacheck snapshot "$env:USERPROFILE\Videos\NH AI Clip Studio" build/test/export-before.json
           if ($LASTEXITCODE -ne 0) { throw "snapshot gagal" }
           $snap = Get-Content build/test/data-before.json -Raw | ConvertFrom-Json
-          "Data M1: $($snap.files.PSObject.Properties.Count) berkas; tabel: $($snap.tables | ConvertTo-Json -Compress)" | Tee-Object -Append build/test/update.txt
-          if ($snap.tables.projects -lt 1 -or $snap.tables.renders -lt 1) { throw "M1 tidak membuat proyek/render" }
+          "Data $($env:PREV_NAME): $(@($snap.files.PSObject.Properties).Count) berkas; tabel: $($snap.tables | ConvertTo-Json -Compress)" | Tee-Object -Append build/test/update.txt
+          if ($snap.tables.projects -lt 1 -or $snap.tables.renders -lt 1) { throw "$env:PREV_NAME tidak membuat proyek/render" }
           exit 0
 
-      - name: Pasang M1.1 di atas M1 (update), periksa data lama, selftest, GUI, uninstall
+      - name: Pasang M2 di atas M1.1 (update), periksa & render ulang data lama, selftest, GUI, uninstall
         run: |
           $setup = (Resolve-Path dist/installer/NH-AI-Clip-Studio-Setup.exe).Path
           $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/TASKS=desktopicon", `
@@ -225,21 +254,22 @@ jobs:
           if (Test-Path "$app\_internal\whisper-base") { throw "berkas model base M1 masih tertinggal setelah update" }
           if (-not (Test-Path "$app\Panduan Uji Akurasi NH.txt")) { throw "panduan uji NH tidak terpasang" }
           $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
-          # Uji pembaruan: berkas & tabel proyek M1 utuh setelah installer M1.1 dijalankan, lalu terbaca oleh M1.1.
+          # Uji pembaruan: berkas & tabel proyek versi lama utuh setelah installer baru dijalankan, lalu terbaca
+          # DAN dirender ulang oleh versi baru dari resep lamanya (resep tidak berubah).
           python -m desktop.datacheck snapshot "$data" build/test/data-after-install.json
           python -m desktop.datacheck compare build/test/data-before.json build/test/data-after-install.json | Tee-Object build/test/update-compare-install.json
-          if ($LASTEXITCODE -ne 0) { throw "data M1 berubah/hilang setelah instalasi M1.1" }
-          $p = Start-Process $exe -ArgumentList "--check-data", "--report", "`"$PWD\build\test\update-check.json`"" -Wait -PassThru
+          if ($LASTEXITCODE -ne 0) { throw "data lama berubah/hilang setelah instalasi" }
+          $p = Start-Process $exe -ArgumentList "--check-data", "--check-render", "--report", "`"$PWD\build\test\update-check.json`"" -Wait -PassThru
           Get-Content build/test/update-check.json -ErrorAction SilentlyContinue
-          if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "M1.1 tidak dapat membaca proyek M1" }
+          if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "versi baru tidak dapat membaca/merender proyek lama" }
           python -m desktop.datacheck snapshot "$data" build/test/data-after-open.json
           python -m desktop.datacheck compare build/test/data-before.json build/test/data-after-open.json | Tee-Object build/test/update-compare-open.json
-          if ($LASTEXITCODE -ne 0) { throw "data M1 berubah/hilang setelah M1.1 dibuka" }
+          if ($LASTEXITCODE -ne 0) { throw "data lama berubah/hilang setelah versi baru dibuka" }
           python -m desktop.datacheck snapshot "$env:USERPROFILE\Videos\NH AI Clip Studio" build/test/export-after.json
           python -m desktop.datacheck compare build/test/export-before.json build/test/export-after.json | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "hasil ekspor M1 hilang/berubah setelah update" }
+          if ($LASTEXITCODE -ne 0) { throw "hasil ekspor lama hilang/berubah setelah update" }
           $chk = Get-Content build/test/update-check.json -Raw | ConvertFrom-Json
-          "Update M1 -> M1.1: $($chk.projects) proyek M1 terbaca (transkrip, resep, klip, render); berkas & tabel utuh; model base lama dibersihkan." | Tee-Object -Append build/test/update.txt
+          "Update $($env:PREV_NAME) -> M2: $($chk.projects) proyek lama terbaca (transkrip, resep, klip, render) dan dirender ulang ($(($chk.items | ForEach-Object rerender) -join ',')); berkas & tabel utuh." | Tee-Object -Append build/test/update.txt
 
           $env:PATH = "$env:WINDIR\System32;$env:WINDIR;$env:WINDIR\System32\Wbem"
           Remove-Item Env:PYTHONPATH, Env:PYTHONHOME -ErrorAction SilentlyContinue
@@ -314,12 +344,13 @@ jobs:
           "## NH AI Clip Studio — build Windows" >> $env:GITHUB_STEP_SUMMARY
           if (Test-Path build/test/installer.txt) { Get-Content build/test/installer.txt >> $env:GITHUB_STEP_SUMMARY }
           if (Test-Path build/test/update.txt) { Get-Content build/test/update.txt >> $env:GITHUB_STEP_SUMMARY }
+          if (Test-Path build/m2/bingkai-pemateri-jauh/rencana.json) { "### Rencana bingkai (video uji pemateri jauh)" >> $env:GITHUB_STEP_SUMMARY; Get-Content build/m2/bingkai-pemateri-jauh/rencana.json >> $env:GITHUB_STEP_SUMMARY }
           if (Test-Path build/test/laporan-uji.md) { Get-Content build/test/laporan-uji.md >> $env:GITHUB_STEP_SUMMARY }
           foreach ($r in "source", "frozen", "installed", "installed-tinggi") {
             $f = "build/test/report-$r.json"
             if (Test-Path $f) {
               $j = Get-Content $f -Raw | ConvertFrom-Json
-              "- selftest ${r}: ok=$($j.ok) model=$($j.model) ($($j.quality)) WER=$($j.accuracy.wer) CER=$($j.accuracy.cer) analisis=$($j.analysis_seconds)s/$($j.video_seconds)s render=$($j.render_seconds)s kata=$($j.transcript_words) tidak-yakin=$($j.unsure_share) mp4=$($j.outputs.Count)" >> $env:GITHUB_STEP_SUMMARY
+              "- selftest ${r}: ok=$($j.ok) model=$($j.model) ($($j.quality)) WER=$($j.accuracy.wer) CER=$($j.accuracy.cer) analisis=$($j.analysis_seconds)s/$($j.video_seconds)s render=$($j.render_seconds)s kata=$($j.transcript_words) tidak-yakin=$($j.unsure_share) mp4=$($j.outputs.Count) M2=[$($j.m2.presets) preset; bingkai $($j.m2.framing); motion $($j.m2.motion_items); $($j.m2.render_size)]" >> $env:GITHUB_STEP_SUMMARY
             } else { "- selftest ${r}: tidak ada laporan" >> $env:GITHUB_STEP_SUMMARY }
           }
 
@@ -353,6 +384,17 @@ jobs:
             build/test/*.png
             build/desktop/licenses/
             build-freeze.txt
+          retention-days: 30
+
+      - name: Unggah bukti M2 (MP4 sebelum/sesudah, lembar kontak, rencana bingkai)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: m2-bukti-mp4
+          path: |
+            build/m2/bukti/
+            build/m2/bingkai-pemateri-jauh/
+            build/m2/kajian.json
           retention-days: 30
 
       - name: Unggah bukti sebelum/sesudah (MP4)

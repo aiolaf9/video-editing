@@ -381,11 +381,21 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
             else:
                 layers += overlays.render_item(item, overlay_dir, (width, height), t0, t1,
                                                assets_dir=folder / "assets")
+        punches = drop_split_punches(punches, frame, req.start)
         if motion_items:
             graphics = workdir / f"{tag}.motion.ass"
             graphics.write_text(motion.build(motion_items, width, height), encoding="utf-8")
     return {"subs": subs, "music": music, "frame": frame, "punches": punches, "layers": layers,
             "overlay_dir": overlay_dir, "graphics": graphics}
+
+
+def drop_split_punches(punches: list[tuple], frame: Optional[dict], start: float) -> list[tuple]:
+    """Punch-in zoom tidak dipakai pada bagian Materi + Wajah / Materi saja: memperbesar seluruh kanvas akan
+    memotong papan dan panel wajah."""
+    if not frame:
+        return punches
+    busy = [(s["start"] - start, s["end"] - start) for s in frame["segments"] if s["layout"] in ("split", "material")]
+    return [p for p in punches if not any(p[0] < b and p[1] > a for a, b in busy)]
 
 
 def subtitle_zones(frame: Optional[dict], req: RenderRequest, ratio: float) -> tuple:
