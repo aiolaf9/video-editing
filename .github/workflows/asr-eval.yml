@@ -17,8 +17,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: asr-eval-${{ github.ref }}
-  cancel-in-progress: true
+  # Per commit: evaluasi yang sedang berjalan tidak dibatalkan push berikutnya (run lama tetap jadi data).
+  group: asr-eval-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   eval:

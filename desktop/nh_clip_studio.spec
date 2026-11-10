@@ -27,7 +27,8 @@ datas = [
 for model in ("base", "small"):              # Cepat & Akurat (desktop/launcher.py DESKTOP_MODELS)
     folder = f"whisper-{model}"
     datas.append((need(os.path.join(STAGE, folder, "model.bin")), folder))
-    for name in ("config.json", "tokenizer.json", "vocabulary.txt", "vocabulary.json", "README.md", "SOURCE.json"):
+    for name in ("config.json", "tokenizer.json", "vocabulary.txt", "vocabulary.json", "README.md", "SOURCE.json",
+                 "preprocessor_config.json"):
         path = os.path.join(STAGE, folder, name)
         if os.path.exists(path):
             datas.append((path, folder))

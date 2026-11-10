@@ -24,7 +24,8 @@ from pathlib import Path
 
 APP_NAME = "NH AI Clip Studio"
 PREFERRED_PORT = 47811
-DESKTOP_MODELS = ("base", "small")   # dibundel installer: base = Cepat, small = Akurat (lihat docs/M1_1_TRANSKRIP.md)          # port tetap (bila bebas) agar penyimpanan lokal jendela konsisten antar peluncuran
+DESKTOP_MODELS = ("base", "small")   # dibundel installer: base = Cepat, small = Akurat (lihat docs/M1_1_TRANSKRIP.md)
+ADDON_MODELS = ("large-v3-turbo",)   # paket tambahan opsional -> mode "Kualitas tinggi" (models\whisper-<nama> di data)
 log = logging.getLogger("nh-desktop")
 
 
@@ -68,11 +69,18 @@ def configure_env(data_dir: Path, export_dir: Path) -> str:
         "TRANSFORMERS_OFFLINE": "1",
         "HF_HUB_DISABLE_TELEMETRY": "1",
     }
-    # M1.1: model per mode kualitas, dari folder bundel installer (whisper-<nama>). Akurat = bawaan.
-    models = {name: str(res / f"whisper-{name}") for name in DESKTOP_MODELS
-              if (res / f"whisper-{name}" / "model.bin").exists()}
+    # M1.1: model per mode kualitas. Bundel installer (whisper-<nama>) + paket tambahan opsional yang dipasang ke folder
+    # data (%LOCALAPPDATA%\NH AI Clip Studio\models\whisper-<nama>, tidak dihapus saat aplikasi diperbarui).
+    models = {}
+    for folder in (res, data_dir / "models"):
+        for name in DESKTOP_MODELS + ADDON_MODELS:
+            if name not in models and (folder / f"whisper-{name}" / "model.bin").exists():
+                models[name] = str(folder / f"whisper-{name}")
     fast = next((m for m in ("base",) if m in models), None)
     accurate = next((m for m in ("small", "base") if m in models), None)
+    high = next((m for m in ADDON_MODELS if m in models), None)
+    if high:
+        forced["WHISPER_MODEL_HIGH"] = high
     if models:
         forced["WHISPER_MODEL_PATHS"] = json.dumps(models)
         forced["WHISPER_MODEL"] = accurate or fast
@@ -85,7 +93,8 @@ def configure_env(data_dir: Path, export_dir: Path) -> str:
             forced[env] = found
     os.environ.update(forced)
     os.environ.setdefault("MAX_UPLOAD_MB", "20480")
-    for name in ("DATABASE_URL", "ADMIN_EMAIL", "ADMIN_PASSWORD", "AI_PROVIDER", "WHISPER_MODEL_DIR"):
+    for name in ("DATABASE_URL", "ADMIN_EMAIL", "ADMIN_PASSWORD", "AI_PROVIDER", "WHISPER_MODEL_DIR",
+                 *(() if high else ("WHISPER_MODEL_HIGH",))):
         os.environ.pop(name, None)       # konfigurasi server/web tidak berlaku di desktop
     return key
 
@@ -284,6 +293,22 @@ def run_selftest(args) -> int:
     return 0 if report.get("ok") else 1
 
 
+def run_eval(args) -> int:
+    """Uji akurasi dengan video NH asli di komputer ini (lihat desktop/nh_eval.py). Offline; tanpa jendela."""
+    data_dir = Path(args.data_dir) if args.data_dir else default_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(data_dir)
+    configure_env(data_dir, Path(args.export_dir) if args.export_dir else default_export_dir())
+    from desktop import nh_eval
+    if args.eval_child:
+        media, quality, out = args.eval_child
+        nh_eval.child(Path(media), quality, Path(out))
+        return 0
+    rep = nh_eval.run(Path(args.eval), args.runs, [q for q in args.qualities.split(",") if q])
+    print(nh_eval.markdown(rep))
+    return 0 if rep["summary"] else 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="NH-AI-Clip-Studio")
     parser.add_argument("--selftest", metavar="VIDEO", help="uji jalur lengkap tanpa jendela")
@@ -293,7 +318,13 @@ def main(argv=None) -> int:
     parser.add_argument("--reference", help="transkrip rujukan (teks) untuk WER/CER selftest")
     parser.add_argument("--data-dir", help="folder data (bawaan: %%LOCALAPPDATA%%\\NH AI Clip Studio)")
     parser.add_argument("--export-dir", help="folder ekspor (bawaan: Videos\\NH AI Clip Studio)")
+    parser.add_argument("--eval", metavar="FOLDER", help="uji akurasi: video + .txt rujukan (laporan di folder itu)")
+    parser.add_argument("--runs", type=int, default=2, help="run per mode untuk --eval (bawaan 2)")
+    parser.add_argument("--qualities", default="cepat,akurat,tinggi", help="mode untuk --eval")
+    parser.add_argument("--eval-child", nargs=3, metavar=("MEDIA", "QUALITY", "OUT"), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.eval or args.eval_child:
+        return run_eval(args)
     if args.selftest:
         return run_selftest(args)
     return run_app(args)

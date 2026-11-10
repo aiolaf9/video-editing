@@ -28,7 +28,7 @@ from .config import WHISPER_DEVICE, WHISPER_MODEL, WHISPER_MODEL_DIR, WHISPER_TH
 
 log = logging.getLogger("video-editing.transcribe")
 
-QUALITIES = ("cepat", "akurat")
+QUALITIES = ("cepat", "akurat", "tinggi")    # tinggi = paket model tambahan opsional (mis. large-v3-turbo)
 _model = None
 _model_device = None
 _model_name: Optional[str] = None
@@ -41,7 +41,16 @@ def model_for(quality: Optional[str]) -> str:
         return os.environ.get("WHISPER_MODEL_FAST") or WHISPER_MODEL
     if quality == "akurat":
         return os.environ.get("WHISPER_MODEL_ACCURATE") or WHISPER_MODEL
+    if quality == "tinggi":
+        return os.environ.get("WHISPER_MODEL_HIGH") or os.environ.get("WHISPER_MODEL_ACCURATE") or WHISPER_MODEL
     return WHISPER_MODEL
+
+
+def available_qualities() -> list[str]:
+    """Mode yang tersedia di instalasi ini. "tinggi" hanya bila paket modelnya terpasang (WHISPER_MODEL_HIGH)."""
+    out = [q for q, env in (("cepat", "WHISPER_MODEL_FAST"), ("akurat", "WHISPER_MODEL_ACCURATE"),
+                            ("tinggi", "WHISPER_MODEL_HIGH")) if os.environ.get(env)]
+    return out
 
 
 def _model_source(name: str) -> str:
@@ -112,7 +121,7 @@ PUNCTUATION_PROMPTS = {
 
 # Opsi decoding bawaan, dipilih dari evaluasi M1.1 (FLEURS id, docs/M1_1_TRANSKRIP.md bagian 4): tanpa
 # conditioning teks sebelumnya + temperature 0. Audio ±10 mnt: small WER 28,3 % (M1) -> 16,0 %, base 38,9 % -> 30,7 %;
-# 2x lebih cepat, RAM lebih kecil, dan deterministik (fallback temperature acak membuat hasil berubah antar-run).
+# 2x lebih cepat, RAM lebih kecil, tanpa fallback temperature acak. Determinisme diuji di putaran 2 (dua run per model).
 DEFAULT_DECODE = {
     "beam_size": 5,
     "condition_on_previous_text": False,

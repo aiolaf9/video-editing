@@ -88,6 +88,8 @@ def test_editor_cannot_change_vocab(client, clean_vocab):
 
 
 def test_quality_flows_from_upload_to_whisper(client, sample_video, monkeypatch, fake_transcript, clean_vocab):
+    monkeypatch.setenv("WHISPER_MODEL_FAST", "base")                   # mode tersedia (seperti desktop)
+    monkeypatch.setenv("WHISPER_MODEL_ACCURATE", "small")
     seen = {}
 
     def fake(path, duration, language=None, progress=None, *, quality=None, vocabulary=None):
@@ -118,9 +120,18 @@ def test_quality_flows_from_upload_to_whisper(client, sample_video, monkeypatch,
     client.delete(f"/api/projects/{pid}")
 
 
-def test_unknown_quality_is_ignored(client):
+def test_unknown_quality_is_ignored(client, monkeypatch):
     from app import main
+    assert main._quality("akurat") is None                              # versi web: tidak ada mode
+    monkeypatch.setenv("WHISPER_MODEL_FAST", "base")
+    monkeypatch.setenv("WHISPER_MODEL_ACCURATE", "small")
     assert main._quality("akurat") == "akurat" and main._quality("x") is None and main._quality(None) is None
+    assert main._quality("tinggi") is None                              # paket tambahan tidak terpasang
+    monkeypatch.setenv("WHISPER_MODEL_HIGH", "large-v3-turbo")
+    assert main._quality("tinggi") == "tinggi"
+    info = client.get("/api/auth/me").json()["transcribe"]
+    assert [q["id"] for q in info["qualities"]] == ["cepat", "akurat", "tinggi"]
+    assert transcribe.model_for("tinggi") == "large-v3-turbo"
 
 
 def test_transcribe_info_lists_modes(client, monkeypatch):

@@ -139,7 +139,7 @@ def create(user: dict, unit_id: Optional[str], size: int, metadata: dict, allowe
                 id=uid, user_id=user["id"], unit_id=unit_id, project_id=pid, kind="video", filename=filename,
                 ext=ext, size=size, offset=0, lease_id=lease, state="aktif",
                 meta=json.dumps({"language": metadata.get("language") or None,
-                                 "quality": metadata.get("quality") if metadata.get("quality") in ("cepat", "akurat") else None}), created=now, updated=now,
+                                 "quality": metadata.get("quality") if metadata.get("quality") in ("cepat", "akurat", "tinggi") else None}), created=now, updated=now,
                 expires_at=now + RESUME_SECONDS))
     except BaseException:
         storage.delete_project(pid)  # termasuk lease bila sempat dibuat

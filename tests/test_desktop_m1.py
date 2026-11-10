@@ -201,3 +201,43 @@ def test_selftest_wer_cer():
     from desktop import selftest
     r = selftest.wer_cer("Insya Allah kita bayar zakat.", "insya allah kita bayar jakat")
     assert r["wer"] == 0.2 and r["ref_words"] == 5 and 0 < r["cer"] < 0.1
+
+
+def test_launcher_finds_optional_turbo_addon_in_data_dir(tmp_path, monkeypatch):
+    """Paket "Kualitas tinggi" dipasang terpisah ke folder data (bukan installer utama)."""
+    from desktop import launcher
+    res = tmp_path / "res"
+    for name in ("base", "small"):
+        (res / f"whisper-{name}").mkdir(parents=True)
+        (res / f"whisper-{name}" / "model.bin").write_bytes(b"x")
+    monkeypatch.setattr(launcher, "resource_dir", lambda: res)
+    import os
+    saved = dict(os.environ)
+    try:
+        launcher.configure_env(tmp_path / "data", tmp_path / "export")
+        assert "WHISPER_MODEL_HIGH" not in os.environ                   # tanpa paket: tidak ada mode tinggi
+        addon = tmp_path / "data" / "models" / "whisper-large-v3-turbo"
+        addon.mkdir(parents=True)
+        (addon / "model.bin").write_bytes(b"x")
+        launcher.configure_env(tmp_path / "data", tmp_path / "export")
+        assert os.environ["WHISPER_MODEL_HIGH"] == "large-v3-turbo"
+        assert json.loads(os.environ["WHISPER_MODEL_PATHS"])["large-v3-turbo"] == str(addon)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_nh_eval_term_check_and_report(tmp_path):
+    from desktop import nh_eval
+    t = nh_eval.term_check("Insya Allah kita bayar zakat dan sedekah. Zakat itu wajib.",
+                           "insyaallah kita bayar jakat dan sedekah zakat itu wajib",
+                           ["Allah", "Insya Allah", "zakat", "sedekah"])
+    # "Allah" di dalam "Insya Allah" tidak dihitung lagi sebagai istilah terpisah
+    assert t["terms_in_reference"] == 4 and t["terms_correct"] == 2 and set(t["missed"]) == {"Insya Allah", "zakat"}
+    rep = {"system": {"os": "x", "cpu": "y", "cpu_threads": 8, "ram_total_gb": 8.0, "ram_available_gb": 4.0},
+           "files": ["a.mp4"], "runs": 2,
+           "summary": [{"quality": "akurat", "model": "small", "runs": 2, "wer_mean": 0.2, "wer_min": 0.2, "wer_max": 0.2,
+                        "cer_mean": 0.05, "rtf_mean": 0.3, "peak_ram_mb_max": 1500, "runs_identical": True,
+                        "term_accuracy": 0.5, "terms_in_reference": 4}], "rows": []}
+    md = nh_eval.markdown(rep)
+    assert "| akurat | small | 20.0% (20.0%–20.0%)" in md and "50% dari 4" in md and "RAM 8.0 GB" in md

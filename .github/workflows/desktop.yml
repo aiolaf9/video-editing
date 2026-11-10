@@ -27,6 +27,7 @@ env:
   FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip
   FFMPEG_SHA256: 04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4  # pragma: allowlist secret (sha256 berkas publik)
   WHISPER_REPOS: "base=Systran/faster-whisper-base small=Systran/faster-whisper-small"
+  WHISPER_ADDON_REPO: mobiuslabsgmbh/faster-whisper-large-v3-turbo
   PYTHONUTF8: "1"
 
 jobs:
@@ -88,6 +89,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "unduh model $name gagal" }
             Get-ChildItem "build/desktop/whisper-$name" | Select-Object Name, Length
           }
+          # Paket tambahan OPSIONAL (bukan installer utama): large-v3-turbo -> mode "Kualitas tinggi"
+          python desktop/ci/fetch_whisper.py $env:WHISPER_ADDON_REPO build/addon/whisper-large-v3-turbo
+          if ($LASTEXITCODE -ne 0) { throw "unduh model tambahan gagal" }
+          Get-ChildItem build/addon/whisper-large-v3-turbo | Select-Object Name, Length
           python -c "from PIL import Image; Image.open('web/icons/icon-512.png').save('build/desktop/app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 
       - name: Buat sampel video bahasa Indonesia asli (FLEURS id_id, CC-BY 4.0) + transkrip rujukan
@@ -166,6 +171,11 @@ jobs:
           $setup = Get-Item dist/installer/NH-AI-Clip-Studio-Setup.exe
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
           "NH-AI-Clip-Studio-Setup.exe: {0:N1} MB, sha256 {1}" -f ($setup.Length / 1MB), $hash | Tee-Object build/test/installer.txt
+          & $iscc "/DAppVersion=0.1.0-m1.${{ github.run_number }}" desktop/model_addon.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC paket model gagal" }
+          $addon = Get-Item dist/installer/NH-AI-Clip-Studio-Model-KualitasTinggi.exe
+          $ahash = (Get-FileHash $addon -Algorithm SHA256).Hash.ToLower()
+          "NH-AI-Clip-Studio-Model-KualitasTinggi.exe (opsional): {0:N1} MB, sha256 {1}" -f ($addon.Length / 1MB), $ahash | Tee-Object -Append build/test/installer.txt
 
       - name: Pasang diam-diam, selftest aplikasi terpasang, GUI, uninstall
         run: |
@@ -191,6 +201,26 @@ jobs:
           Get-Content build/test/report-installed.json -ErrorAction SilentlyContinue
           $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
           if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "selftest aplikasi terpasang gagal" }
+          # Paket tambahan opsional: pasang, lalu mode "Kualitas tinggi" (turbo) harus muncul & jalan.
+          $p = Start-Process (Resolve-Path dist/installer/NH-AI-Clip-Studio-Model-KualitasTinggi.exe).Path `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$PWD\build\test\install-addon.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "instalasi paket model gagal ($($p.ExitCode))" }
+          if (-not (Test-Path "$data\models\whisper-large-v3-turbo\model.bin")) { throw "model tambahan tidak terpasang" }
+          New-NetFirewallRule -DisplayName "nh-block-installed-2" -Direction Outbound -Program $exe `
+            -RemoteAddress @("0.0.0.0-126.255.255.255", "128.0.0.0-255.255.255.255", "2000::/3") -Action Block | Out-Null
+          $p = Start-Process $exe -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-installed-tinggi.json`"", `
+            "--language", "id", "--quality", "tinggi", "--reference", "`"$PWD\build\test\speech.txt`"", "--export-dir", "`"$env:RUNNER_TEMP\export-tinggi`"" -Wait -PassThru
+          Get-Content build/test/report-installed-tinggi.json -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "selftest Kualitas tinggi gagal" }
+          # Alat uji NH (--eval) di Windows: 3 mode x 2 run pada sampel Indonesia (laporan tanpa video).
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\uji-nh" | Out-Null
+          Copy-Item build/test/speech.mp4 "$env:RUNNER_TEMP\uji-nh\fleurs-id.mp4"
+          Copy-Item build/test/speech.txt "$env:RUNNER_TEMP\uji-nh\fleurs-id.txt"
+          $p = Start-Process $exe -ArgumentList "--eval", "`"$env:RUNNER_TEMP\uji-nh`"", "--runs", "2" -Wait -PassThru
+          Copy-Item "$env:RUNNER_TEMP\uji-nh\laporan-uji.md", "$env:RUNNER_TEMP\uji-nh\laporan-uji.json" build/test/ -ErrorAction SilentlyContinue
+          Get-Content build/test/laporan-uji.md -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "alat uji --eval gagal ($($p.ExitCode))" }
+
           $export = "$env:USERPROFILE\Videos\NH AI Clip Studio"
           $mp4 = Get-ChildItem $export -Recurse -Filter *.mp4
           "MP4 di folder ekspor bawaan: $($mp4.Count)"
@@ -232,7 +262,8 @@ jobs:
         run: |
           "## NH AI Clip Studio — build Windows" >> $env:GITHUB_STEP_SUMMARY
           if (Test-Path build/test/installer.txt) { Get-Content build/test/installer.txt >> $env:GITHUB_STEP_SUMMARY }
-          foreach ($r in "source", "frozen", "installed") {
+          if (Test-Path build/test/laporan-uji.md) { Get-Content build/test/laporan-uji.md >> $env:GITHUB_STEP_SUMMARY }
+          foreach ($r in "source", "frozen", "installed", "installed-tinggi") {
             $f = "build/test/report-$r.json"
             if (Test-Path $f) {
               $j = Get-Content $f -Raw | ConvertFrom-Json
@@ -246,6 +277,15 @@ jobs:
         with:
           name: NH-AI-Clip-Studio-Setup
           path: dist/installer/NH-AI-Clip-Studio-Setup.exe
+          retention-days: 30
+          compression-level: 0
+
+      - name: Unggah paket model tambahan (opsional)
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: NH-AI-Clip-Studio-Model-KualitasTinggi
+          path: dist/installer/NH-AI-Clip-Studio-Model-KualitasTinggi.exe
           retention-days: 30
           compression-level: 0
 

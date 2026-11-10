@@ -454,20 +454,22 @@ def me(user: dict = CurrentUser):
 
 
 def _transcribe_info() -> dict:
-    """Pilihan kualitas transkripsi untuk antarmuka (M1.1). Angka RAM = perkiraan admission (config); waktu = RTF
-    terukur di runner CI 4 vCPU (bench/RESULTS_M1_1.md), bukan janji di setiap komputer."""
+    """Pilihan kualitas transkripsi untuk antarmuka (M1.1). RAM = perkiraan admission untuk video 10 menit (config);
+    waktu = RTF terukur di runner CI 4 vCPU (docs/M1_1_TRANSKRIP.md bagian 4), bukan janji di setiap komputer."""
     from . import config, transcribe
-    fast, accurate = os.environ.get("WHISPER_MODEL_FAST"), os.environ.get("WHISPER_MODEL_ACCURATE")
-    if not (fast or accurate):
+    qualities = transcribe.available_qualities()
+    if not qualities:
         return {"qualities": [], "default": None}
-    rtf = {"base": 0.18, "small": 0.37, "large-v3-turbo": None}
+    rtf = {"base": 0.09, "small": 0.20}     # putaran 1, temperature 0 tanpa conditioning (bawaan M1.1)
+    labels = {"cepat": "Cepat", "akurat": "Akurat", "tinggi": "Kualitas tinggi (paket tambahan)"}
     out = []
-    for key, label in (("cepat", "Cepat"), ("akurat", "Akurat")):
+    for key in qualities:
         model = transcribe.model_for(key)
-        out.append({"id": key, "label": label, "model": model,
+        out.append({"id": key, "label": labels[key], "model": model,
                     "ram_mb": config.analysis_need_mb(600, model),
                     "minutes_per_10min": round(rtf[model] * 10, 1) if rtf.get(model) else None})
-    return {"qualities": out, "default": os.environ.get("WHISPER_QUALITY_DEFAULT", "akurat")}
+    default = os.environ.get("WHISPER_QUALITY_DEFAULT", "akurat")
+    return {"qualities": out, "default": default if default in qualities else qualities[-1]}
 
 
 # ------------------------------------------------------------------ desktop (NH AI Clip Studio, M1)
@@ -576,7 +578,8 @@ def _target_unit(user: dict) -> Optional[str]:
 
 def _quality(value: Optional[str]) -> Optional[str]:
     """Mode kualitas transkripsi (M1.1). Tidak dikenal = None (model bawaan server)."""
-    return value if value in ("cepat", "akurat") else None
+    from . import transcribe
+    return value if value in transcribe.available_qualities() else None
 
 
 @app.post("/api/projects")

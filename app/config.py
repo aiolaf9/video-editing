@@ -154,12 +154,13 @@ TASK_MEM_MB = {
 # yang diproses sekaligus (decode + VAD + STFT/mel atas seluruh array), SAMA untuk tiny/base/small. Dasar per model =
 # nilai terkecil sehingga dasar + 50 MiB x menit >= SEMUA titik ukur RSS puncak 10/30/60 menit (lalu ditambah
 # WHISPER_MEM_MARGIN). medium/large belum diukur: estimasi lama (_WHISPER_MEM) + 600 MiB, TIDAK TERVERIFIKASI.
-_WHISPER_BASE_MB = {"tiny": 350, "base": 420, "small": 1030}
+_WHISPER_BASE_MB = {"tiny": 350, "base": 420, "small": 1030,
+                    "large-v3-turbo": 1500}   # turbo: puncak terukur 1,69-1,96 GB (10 mnt, M1.1 putaran 1)
 WHISPER_MEM_PER_AUDIO_MIN_MB = float(os.environ.get("WHISPER_MEM_PER_AUDIO_MIN_MB", "50"))
 WHISPER_MEM_MARGIN = float(os.environ.get("WHISPER_MEM_MARGIN", "0.10"))     # cadangan relatif di atas estimasi
 # Bagian model yang tetap tinggal di proses setelah dimuat (rss_after_load - rss_start, CI #25/#28), dikurangkan
 # bila model sudah dimuat di proses ini: RAM itu sudah terhitung di pemakaian aktual.
-_WHISPER_RESIDENT_MB = {"tiny": 120, "base": 150, "small": 330}
+_WHISPER_RESIDENT_MB = {"tiny": 120, "base": 150, "small": 330, "large-v3-turbo": 800}
 
 
 def whisper_base_mb(model: str = WHISPER_MODEL) -> int:

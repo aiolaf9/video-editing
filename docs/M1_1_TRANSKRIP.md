@@ -105,8 +105,8 @@ ubuntu-24.04, 4 vCPU, CPU int8. **Satu run per varian**: selisih kecil bisa nois
 
 Kesimpulan putaran 1 (dipakai sebagai bawaan):
 
-1. **`condition_on_previous_text=False` + temperature 0** menjadi bawaan: small panjang 28,3 % → 16,0 %, base 38,9 % →
-   30,7 %, 2x lebih cepat, RAM lebih kecil, deterministik. Conditioning teks sebelumnya adalah penyebab terbesar salah
+1. **`condition_on_previous_text=False` + temperature 0** menjadi bawaan sementara (disetujui pengguna): small panjang 28,3 % → 16,0 %, base 38,9 % →
+   30,7 %, 2x lebih cepat, RAM lebih kecil (determinisme belum terbukti: diuji di putaran 2). Conditioning teks sebelumnya adalah penyebab terbesar salah
    transkripsi pada video panjang (dan hasilnya acak: small 28–38 % antar-varian yang hanya beda bahasa).
 2. **Kosakata bawaan TIDAK dipakai sebagai hotwords**: memperburuk WER (base +5,6 poin; small +9 poin; small+conditioning
    gagal total 91 %) dan di uji Windows membuat base melewatkan ±separuh ucapan. Kosakata dipakai untuk saran yang
@@ -126,3 +126,18 @@ Kesimpulan putaran 1 (dipakai sebagai bawaan):
 | Aplikasi terpasang, Cepat + hotwords kosakata | base | 66,9 % | 53,4 % | 57 kata: ±separuh ucapan hilang → hotwords dimatikan |
 
 Sampel ini hanya 5 kalimat panjang (bug durasi diperbaiki di `034cba6`); diuji ulang dengan bawaan baru.
+
+### Paket "Kualitas tinggi" (opsional) & uji dengan video NH asli
+
+- **Paket model tambahan** `NH-AI-Clip-Studio-Model-KualitasTinggi.exe` (Whisper large-v3-turbo, MIT) **tidak**
+  termasuk installer utama. Dipasang per pengguna ke `%LOCALAPPDATA%\NH AI Clip Studio\models\whisper-large-v3-turbo`;
+  mode "Kualitas tinggi" baru muncul di aplikasi bila paket ini ada. Butuh RAM lebih besar (lihat tabel putaran 2).
+- **Uji video NH di komputer NH sendiri** (offline, video tidak dikirim ke mana pun):
+
+  1. Buat folder, mis. `D:\Uji NH`, berisi 3–5 potongan video asli (1–3 menit, ada istilah Arab) dan untuk tiap
+     video berkas `.txt` bernama sama berisi transkrip yang diketik manual (ejaan pedoman NH).
+  2. Jalankan (Command Prompt): `"%LOCALAPPDATA%\Programs\NH AI Clip Studio\NH-AI-Clip-Studio.exe" --eval "D:\Uji NH" --runs 2`
+  3. Hasil: `laporan-uji.md` (WER, CER, RTF, puncak RAM, apakah 2 run identik, akurasi istilah kosakata per mode,
+     spesifikasi komputer) dan folder `hasil\` (transkrip mentah). Kirim `laporan-uji.md` saja untuk ditinjau.
+
+  Uji di komputer 8 GB dan 16 GB yang dipakai tim. Hasil berlaku untuk video & komputer yang diuji.
