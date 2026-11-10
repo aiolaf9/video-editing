@@ -110,12 +110,14 @@ PUNCTUATION_PROMPTS = {
     "en": "Hello, everyone! So, today we're talking about something important. Why? Because most people don't know.",
 }
 
-# Opsi decoding bawaan (= perilaku M1). Diubah hanya berdasarkan hasil evaluasi (docs/M1_1_TRANSKRIP.md).
+# Opsi decoding bawaan, dipilih dari evaluasi M1.1 (FLEURS id, docs/M1_1_TRANSKRIP.md bagian 4): tanpa
+# conditioning teks sebelumnya + temperature 0. Audio ±10 mnt: small WER 28,3 % (M1) -> 16,0 %, base 38,9 % -> 30,7 %;
+# 2x lebih cepat, RAM lebih kecil, dan deterministik (fallback temperature acak membuat hasil berubah antar-run).
 DEFAULT_DECODE = {
     "beam_size": 5,
-    "condition_on_previous_text": True,
+    "condition_on_previous_text": False,
     "vad": {},                      # parameter VadOptions; {} = bawaan faster-whisper
-    "temperature": None,            # None = bawaan faster-whisper (0,0..1,0 fallback)
+    "temperature": 0.0,             # tanpa fallback acak (None = bawaan faster-whisper 0,0..1,0)
     "hallucination_silence_threshold": None,
     "use_hotwords": True,
     "detect_windows": 3,            # jumlah jendela deteksi bahasa bila bahasa tidak dipilih

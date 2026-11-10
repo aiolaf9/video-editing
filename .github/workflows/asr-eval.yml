@@ -28,12 +28,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Putaran 2 (M1.1): pengaturan bawaan baru, dua run per model (determinisme), + set bising SNR 10 dB.
           - model: base
-            variants: m1,auto3,lang_id,noprev,noprev_t0,noprev_hst,noprev_vad,noprev_vocab
+            variants: "m11,m11#2"
           - model: small
-            variants: m1,auto3,lang_id,noprev,noprev_t0,noprev_hst,noprev_vad,noprev_vocab,lang_id_vocab
+            variants: "m11,m11#2"
           - model: large-v3-turbo
-            variants: lang_id,noprev,noprev_vocab
+            variants: "m11,m11#2"
     env:
       HF_HUB_DISABLE_TELEMETRY: "1"
     steps:
@@ -53,7 +54,7 @@ jobs:
         run: |
           mkdir -p out
           python bench/m11/asr_eval.py "$RUNNER_TEMP/corpus" "out/asr-${{ matrix.model }}.jsonl" \
-            --models "${{ matrix.model }}" --variants "${{ matrix.variants }}" --sets id_nodup,id_long
+            --models "${{ matrix.model }}" --variants "${{ matrix.variants }}" --sets id_nodup,id_long,id_noisy_snr10
       - name: Ringkasan
         if: always()
         run: |

@@ -37,6 +37,8 @@ VARIANTS = {
                                                 "vad": {"min_silence_duration_ms": 500, "speech_pad_ms": 300}}},
     # kosakata bawaan aplikasi sebagai hotwords: tidak boleh memperburuk ucapan umum (FLEURS bukan ceramah)
     "noprev_vocab": {"language": "id", "decode": {"condition_on_previous_text": False}, "vocab": True},
+    # M1.1 bawaan (DEFAULT_DECODE di app/transcribe.py), bahasa Indonesia. "m11#2" = run ulang (uji determinisme).
+    "m11": {"language": "id", "decode": {}},
     "lang_id_vocab": {"language": "id", "decode": {"condition_on_previous_text": True}, "vocab": True},
 }
 UNSURE_P = 0.5
@@ -90,7 +92,8 @@ def items_for(corpus: Path, samples: Path, sets: list[str]) -> list[dict]:
     return out
 
 
-def child(model: str, variant: str, items_json: Path, out: Path, vocab: list[str]):
+def child(model: str, run_name: str, items_json: Path, out: Path, vocab: list[str]):
+    variant = run_name.split("#")[0]
     os.environ["WHISPER_MODEL"] = model
     os.environ["WHISPER_DECODE"] = json.dumps(VARIANTS[variant]["decode"])
     from app import media, transcribe
@@ -113,7 +116,7 @@ def child(model: str, variant: str, items_json: Path, out: Path, vocab: list[str
                      "language": r.get("language"), **score(it["text"], words),
                      "hyp_sample": " ".join(w["word"] for w in words)[:400]})
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    out.write_text(json.dumps({"model": model, "variant": variant, "load_s": round(load_s, 2),
+    out.write_text(json.dumps({"model": model, "variant": run_name, "load_s": round(load_s, 2),
                                "peak_rss_mb": round(peak, 1), "rows": rows}, ensure_ascii=False))
 
 
@@ -134,6 +137,7 @@ def summarize(res: dict) -> list[dict]:
             "flag_precision": round(tot["flagged_wrong"] / tot["flagged"], 3) if tot["flagged"] else None,
             "flag_recall": round(tot["flagged_wrong"] / tot["wrong_words"], 3) if tot["wrong_words"] else None,
             "flagged_share": round(tot["flagged"] / max(1, tot["hyp_words"]), 3),
+            "hyp_hash": __import__("hashlib").sha256("\n".join(r["hyp_sample"] for r in rows).encode()).hexdigest()[:12],
         })
     return out
 
@@ -166,7 +170,7 @@ def main():
     with out.open("a", encoding="utf-8") as fh:
         for model in a.models.split(","):
             for variant in a.variants.split(","):
-                res_file = work / f"{model}_{variant}.json"
+                res_file = work / f"{model}_{variant.replace('#', '_')}.json"
                 cmd = [sys.executable, __file__, a.corpus, a.out, "--child", model, variant, str(items_json),
                        str(res_file)]
                 if a.vocab:

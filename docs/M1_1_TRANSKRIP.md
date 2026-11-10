@@ -75,4 +75,54 @@ Pengaturan bawaan (`DEFAULT_DECODE`) dan pilihan model per mode diubah **hanya**
 
 ## 4. Hasil evaluasi
 
-_Diisi dari artefak run `ASR eval (Indonesia)`._
+### Putaran 1 — varian pengaturan (run [42778046306](https://github.com/aiolaf9/video-editing/actions/runs/42778046306), commit `f05452c`)
+
+FLEURS id_id; `id_long` = ±10 mnt ucapan berurutan (597 dtk), `id_nodup` = 20 kalimat unik (243 dtk). Runner
+ubuntu-24.04, 4 vCPU, CPU int8. **Satu run per varian**: selisih kecil bisa noise; varian dengan
+`condition_on_previous_text=True` atau fallback temperature tidak deterministik.
+
+| Model | Varian | WER panjang | CER panjang | WER kalimat | RTF panjang | RAM puncak |
+|---|---|---|---|---|---|---|
+| base | m1 (rilis M1) | 38,9 % | 18,1 % | 31,9 % | 0,20 | 965 MB |
+| base | lang_id | 37,1 % | 17,8 % | 31,9 % | 0,23 | 956 MB |
+| base | noprev | 34,7 % | 15,1 % | 31,9 % | 0,13 | 959 MB |
+| base | **noprev_t0** | **30,7 %** | **10,2 %** | 31,9 % | **0,09** | 961 MB |
+| base | noprev_hst | 32,8 % | 11,3 % | 31,9 % | 0,16 | 928 MB |
+| base | noprev_vad | 38,9 % | 19,9 % | 32,7 % | 0,12 | 939 MB |
+| base | noprev_vocab | 40,3 % | 20,9 % | 35,7 % | 0,19 | 1108 MB |
+| small | m1 (rilis M1) | 28,3 % | 17,4 % | 17,0 % | 0,56 | 1785 MB |
+| small | auto3 | 34,1 % | 26,1 % | 17,0 % | 0,47 | 1510 MB |
+| small | lang_id | 38,1 % | 29,9 % | 17,0 % | 0,47 | 1507 MB |
+| small | noprev | **15,6 %** | 4,9 % | 17,0 % | 0,46 | 1468 MB |
+| small | **noprev_t0** | **16,0 %** | **4,8 %** | 17,0 % | **0,20** | 1263 MB |
+| small | noprev_hst | 16,7 % | 4,4 % | 17,0 % | 0,28 | 1469 MB |
+| small | noprev_vad | 19,1 % | 10,4 % | 17,0 % | 0,19 | 1229 MB |
+| small | noprev_vocab | 24,8 % | 14,8 % | 16,5 % | 0,51 | 1519 MB |
+| small | lang_id_vocab | **91,3 %** (gagal) | 89,4 % | 16,5 % | 0,09 | 1387 MB |
+| large-v3-turbo | lang_id | 22,7 % | 18,7 % | 6,0 % | 0,54 | 1956 MB |
+| large-v3-turbo | noprev | 22,0 % | 17,5 % | 6,0 % | 0,47 | 1691 MB |
+| large-v3-turbo | noprev_vocab | 8,6 % | 2,4 % | 6,0 % | 0,56 | 1817 MB |
+
+Kesimpulan putaran 1 (dipakai sebagai bawaan):
+
+1. **`condition_on_previous_text=False` + temperature 0** menjadi bawaan: small panjang 28,3 % → 16,0 %, base 38,9 % →
+   30,7 %, 2x lebih cepat, RAM lebih kecil, deterministik. Conditioning teks sebelumnya adalah penyebab terbesar salah
+   transkripsi pada video panjang (dan hasilnya acak: small 28–38 % antar-varian yang hanya beda bahasa).
+2. **Kosakata bawaan TIDAK dipakai sebagai hotwords**: memperburuk WER (base +5,6 poin; small +9 poin; small+conditioning
+   gagal total 91 %) dan di uji Windows membuat base melewatkan ±separuh ucapan. Kosakata dipakai untuk saran yang
+   dikonfirmasi; hotwords hanya opsi eksperimental untuk istilah buatan pengguna (perlu uji dengan video NH).
+3. **large-v3-turbo** jauh lebih akurat pada kalimat (6,0 % vs small 17,0 %), tetapi hasil panjangnya tidak stabil
+   (8,6–22,7 %) karena fallback acak; putaran 2 mengujinya dengan bawaan baru (temperature 0) dua kali.
+4. **Penanda "perlu ditinjau" (p < 0,5)**: presisi ±0,6–0,8 (sebagian besar kata bertanda memang salah) tetapi recall
+   hanya ±0,13–0,35 (kebanyakan kata salah TIDAK bertanda). Penanda membantu memprioritaskan, bukan jaminan; semua
+   subtitle tetap perlu dibaca sebelum publikasi.
+
+### Uji Windows (installer `f05452c`, sampel FLEURS id 76,6 dtk, tanpa koreksi manual)
+
+| | Model | WER | CER | Catatan |
+|---|---|---|---|---|
+| Sebelum (pengaturan M1) | base | 41,7 % | 22,6 % | 105 kata |
+| Sesudah (M1.1 Akurat, pengaturan putaran-1 lama) | small | 39,4 % | 30,1 % | 93 kata |
+| Aplikasi terpasang, Cepat + hotwords kosakata | base | 66,9 % | 53,4 % | 57 kata: ±separuh ucapan hilang → hotwords dimatikan |
+
+Sampel ini hanya 5 kalimat panjang (bug durasi diperbaiki di `034cba6`); diuji ulang dengan bawaan baru.
