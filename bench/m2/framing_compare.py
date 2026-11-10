@@ -27,7 +27,7 @@ def main():
     ap.add_argument("--start", type=float, default=0)
     ap.add_argument("--end", type=float, default=0)
     a = ap.parse_args()
-    out = Path(a.out)
+    out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     src = Path(a.video).resolve()
     info = media.probe(src)

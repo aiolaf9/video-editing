@@ -34,7 +34,7 @@ def main():
     a = ap.parse_args()
     from app.schemas import RenderRequest
     from app.subtitles import PRESETS
-    out = Path(a.out)
+    out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     src = Path(a.video).resolve()
     info = media.probe(src)
