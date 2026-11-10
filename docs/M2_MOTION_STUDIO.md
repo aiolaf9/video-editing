@@ -124,3 +124,28 @@ oleh NH bila suatu saat dipertimbangkan. Semua animasi M2 dibuat dengan libass/F
 - Gaya per kalimat hanya mengganti animasi; font & warna mengikuti gaya utama.
 - Pratinjau di atas player adalah perkiraan; tampilan persis hanya lewat "▶ Pratinjau hasil" (render 10 dtk).
 - Belum diukur di PC 8 GB sungguhan (runner CI 16 GB).
+
+## 9. Perbaikan ekspor (laporan pengguna: teks ganda di awal, gambar kurang tajam)
+
+**Teks ganda "APA JAWAB MEREKA?"**: keduanya dibuat aplikasi. Hook pembuka otomatis memakai kalimat pertanyaan
+pertama di klip, dan kalimat itu juga sedang diucapkan sehingga subtitle (gaya Pop, sorot hijau) menampilkannya
+bersamaan. Sekarang baris subtitle yang ≥ 60 % katanya sama dengan hook/kinetic text yang sedang tampil dilewati
+(render, pratinjau, dan perkiraan di player). Subtitle dialog lain, termasuk yang tampil pada waktu yang sama,
+tetap ada. Bila animasi dimatikan, subtitle pembuka kembali tampil. Cara memastikan teks tidak menyatu di video
+sumber: matikan subtitle dan animasi, lalu klik "▶ Pratinjau hasil"; teks yang masih terlihat berasal dari sumber.
+
+**Kurang tajam**: penyebab terbukti = pembesaran crop, bukan preview atau encode berulang.
+
+| Pemeriksaan | Hasil |
+|---|---|
+| Sumber render | video sumber asli (`source.*`), bukan `preview.mp4` 480p (diuji) |
+| Jumlah encode | satu perintah FFmpeg dari sumber ke MP4 final (diuji); salinan ke folder ekspor = salin berkas |
+| Tombol Download | `renders/<id>.mp4` = berkas final (byte identik, diuji); pratinjau ada di `previews/` |
+| Crop Fokus Wajah (jarak Otomatis), sumber 1080p | **378×674 → 1080×1920 = 2,85×** (zoom otomatis 1,6× di atas crop 9:16 yang sudah 1,78×) |
+| Sesudah perbaikan | **540×960 → 2,0×** (2× lebih banyak piksel sumber); sumber 4K boleh zoom s.d. 2,25×; 720p tanpa zoom tambahan |
+| Materi + Wajah (bagian tengah) | papan 1000×994 → 1,08×, wajah 688×540 → 1,57×: sudah di bawah batas, tidak berubah |
+| Encoder | veryfast → medium (CRF 20 tetap): SSIM terhadap render lossless 0,9963 → 0,9979; render CPU ±1,5× lebih lama |
+
+Batas pembesaran: otomatis 2,0×, zoom manual 2,5× (`app/framing.py` `MAX_UPSCALE`); slider zoom menampilkan
+pembesaran dari sumber. Video sumber 16:9 1080p yang dijadikan 9:16 selalu diperbesar minimal 1,78× (keterbatasan
+fisik crop vertikal); hasil paling tajam bila sumber 4K atau direkam vertikal.

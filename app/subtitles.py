@@ -1,5 +1,6 @@
 """Pembuat subtitle ASS bergaya kekinian (karaoke, pop, satu kata) untuk dibakar oleh FFmpeg/libass."""
 import logging
+import re
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -79,6 +80,8 @@ class SubtitleOptions:
     emphasis_terms: tuple = ()  # istilah kosakata (dari app/vocab) yang dianggap penting
     sections: tuple = ()        # ((mulai, akhir, gaya), ...) di timeline output: gaya animasi per bagian (M2.4)
     zones: tuple = ()           # ((mulai, akhir, y 0..1), ...) di timeline output: posisi khusus per bagian
+    suppress: tuple = ()        # ((mulai, akhir, kata...), ...): teks besar (hook/kinetic) yang sedang tampil; baris
+    #                             subtitle berisi kata-kata yang SAMA pada waktu itu tidak ditampilkan dua kali
     #                             (mis. garis sambung papan/wajah pada tata letak Materi + Wajah)
 
 
@@ -263,7 +266,11 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
             run.append(w)
             run_style = st
     default_pos, default_cy = pos, cy
+    skipped = 0
     for ci, chunk in enumerate(chunks):
+        if _duplicates_big_text(chunk, opts.suppress):
+            skipped += 1
+            continue
         style = chunk_styles[ci]
         zone = next((z for z in opts.zones if z[0] <= chunk[0]["start"] < z[1]), None)
         if zone:
@@ -368,7 +375,27 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
                 fx += r"\fad(120,0)"
             event(start, end, "{" + fx + "}" + text)
 
+    if skipped:
+        log.info("Subtitle: %d baris tidak ditampilkan karena isinya sudah tampil sebagai teks pembuka/kinetic.", skipped)
     return "\n".join(lines) + "\n"
+
+
+def norm_tokens(text: str) -> list[str]:
+    return [t for t in re.split(r"[^\w]+", (text or "").lower()) if t]
+
+
+def _duplicates_big_text(chunk: list[dict], windows: tuple) -> bool:
+    """Baris subtitle yang tampil BERSAMAAN dengan teks besar (hook/kinetic) dan >= 60 % katanya sama."""
+    if not windows:
+        return False
+    s, e = chunk[0]["start"], chunk[-1]["end"]
+    toks = norm_tokens(" ".join(w["word"] for w in chunk))
+    if not toks:
+        return False
+    for t0, t1, words in windows:
+        if s < t1 and e > t0 and sum(t in words for t in toks) / len(toks) >= 0.6:
+            return True
+    return False
 
 
 def public_presets() -> list[dict]:

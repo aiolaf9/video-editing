@@ -64,12 +64,17 @@ def main():
                      "distance": "auto"}
             from app.pipeline import subtitle_zones
             opts.zones = subtitle_zones(frame, req, h / w)
+        punches, graphics, items = [], None, []
+        if name == "sesudah-lengkap":
+            from app import plan
+            from app.subtitles import norm_tokens
+            items = plan.heuristic(tr, [], a.start, end)
+            opts.suppress = tuple((i["start"] - a.start, i["end"] - a.start, frozenset(norm_tokens(i["text"])))
+                                  for i in items if i["type"] in ("hook", "kinetic"))
         ass = out / f"{name}.ass"
         ass.write_text(build_ass(tr, a.start, end, w, h, opts), encoding="utf-8")
-        punches, graphics = [], None
         if name == "sesudah-lengkap":
-            from app import motion, plan
-            items = plan.heuristic(tr, [], a.start, end)
+            from app import motion
             (out / "motion-otomatis.json").write_text(json.dumps(items, indent=1, ensure_ascii=False), encoding="utf-8")
             from app.pipeline import drop_split_punches
             punches = drop_split_punches([(i["start"] - a.start, i["end"] - a.start, i.get("strength", 0.14))

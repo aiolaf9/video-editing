@@ -349,6 +349,7 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
         opts.zones = subtitle_zones(frame, req, height / max(1, width))
         opts.sections = tuple(((x.start - req.start) / req.speed, (x.end - req.start) / req.speed, x.style)
                               for x in req.subtitles.sections if x.end > req.start and x.start < req.end)
+        opts.suppress = big_text_windows(req, pid)
         ass = build_ass(transcript, req.start, req.end, width, height, opts, speed=req.speed)
         if "Dialogue:" in ass:
             subs = workdir / f"{tag}.ass"
@@ -387,6 +388,21 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
             graphics.write_text(motion.build(motion_items, width, height), encoding="utf-8")
     return {"subs": subs, "music": music, "frame": frame, "punches": punches, "layers": layers,
             "overlay_dir": overlay_dir, "graphics": graphics}
+
+
+def big_text_windows(req: RenderRequest, pid: str) -> tuple:
+    """Hook pembuka & kinetic text di rentang klip (timeline output): subtitle yang isinya sama pada waktu yang sama
+    tidak ditampilkan dua kali. Subtitle dialog lain tetap tampil."""
+    if not req.animations:
+        return ()
+    from .subtitles import norm_tokens
+    items = [i.model_dump() for i in req.overlays] if req.overlays is not None else recipe.effective_overlays(pid)
+    out = []
+    for it in items:
+        if it["type"] in ("hook", "kinetic") and it["end"] > req.start and it["start"] < req.end:
+            out.append(((max(it["start"], req.start) - req.start) / req.speed, (min(it["end"], req.end) - req.start) / req.speed,
+                        frozenset(norm_tokens(it.get("text", "")))))
+    return tuple(out)
 
 
 def drop_split_punches(punches: list[tuple], frame: Optional[dict], start: float) -> list[tuple]:

@@ -19,7 +19,8 @@ OUTPUT_SIZES = {
 COLOR_PRESETS = {name: look["ffmpeg"] for name, look in LOOKS.items()}   # satu tabel dengan pratinjau browser
 
 ENCODERS = {
-    "cpu": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"],
+    # medium (bukan veryfast): detail halus lebih terjaga pada CRF yang sama; render ±1,5x lebih lama di CPU.
+    "cpu": ["-c:v", "libx264", "-preset", "medium", "-crf", "20"],
     "nvidia": ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "21"],
     "intel": ["-c:v", "h264_qsv", "-global_quality", "22"],
     "amd": ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22"],

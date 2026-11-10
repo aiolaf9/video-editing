@@ -13,13 +13,24 @@
 
   const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
+  // Pembesaran piksel sumber -> output (sama dengan app/framing.zoom_limit): di atas 2x gambar mulai kurang tajam.
+  function zoomHint() {
+    const z = +$("frameZoom").value;
+    const p = state.project || {};
+    const [ow, oh] = OUTPUT_SIZES[state.aspect] || [p.width || 1, p.height || 1];
+    const sw = p.width || ow, sh = p.height || oh;
+    const ch = sw / sh > ow / oh ? sh : sw / (ow / oh);
+    const up = Math.min((oh / ch) * z, 2.5);
+    $("frameZoomVal").textContent = `${z.toFixed(2)}× · gambar diperbesar ${up.toFixed(1)}× dari sumber${up >= 2 ? " (kurang tajam; maks 2,5×)" : ""}`;
+  }
+
   function setFrameMode(mode, dirty = true) {
     if (!["auto", "face", "material", "manual"].includes(mode)) mode = "auto";
     $("frameMode").value = mode;
     document.querySelectorAll("#frameModeSeg button").forEach((b) => b.classList.toggle("active", b.dataset.v === mode));
     document.querySelectorAll(".frame-opt").forEach((el) => { el.hidden = !el.dataset.modes.split(" ").includes(mode); });
     $("frameModeHint").textContent = FRAME_HINTS[mode];
-    $("frameZoomVal").textContent = `${(+$("frameZoom").value).toFixed(2)}×`;
+    zoomHint();
     if (dirty) { markDirty(); if (typeof layoutCropFrame === "function") layoutCropFrame(); }
     refreshSections();
   }
@@ -331,7 +342,7 @@
     $("subPosition").addEventListener("change", () => { $("subPosYRow").hidden = $("subPosition").value !== "custom"; });
     loadPresets();
     $("frameModeSeg").addEventListener("click", (e) => { if (e.target.dataset.v) setFrameMode(e.target.dataset.v); });
-    $("frameZoom").addEventListener("input", () => { $("frameZoomVal").textContent = `${(+$("frameZoom").value).toFixed(2)}×`; });
+    $("frameZoom").addEventListener("input", zoomHint);
     $("frameSections").addEventListener("change", (e) => {
       if (e.target.classList.contains("fs-pick")) pickSection(+e.target.closest(".fs-row").dataset.i, e.target.value);
     });

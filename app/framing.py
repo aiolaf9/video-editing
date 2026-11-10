@@ -41,6 +41,22 @@ BOARD_MIN_AREA = 0.04      # papan minimal 4 % frame
 ACT_THRESHOLD = 0.8        # % piksel area materi yang berubah antar sampel (0,5 dtk): ada yang menulis/menunjuk
 MAX_AUTO_ZOOM = 1.6        # bingkai dekat otomatis paling besar 1,6x (lebih dari itu gambar terlalu pecah)
 SPLIT_MAX_ZOOM = 2.0       # panel wajah (bawah) pada tata letak Materi + Wajah
+# Batas pembesaran piksel SUMBER ke output. Zoom/crop tidak boleh membuat 1 piksel sumber menjadi lebih dari
+# MAX_UPSCALE piksel output (otomatis) atau MAX_UPSCALE_MANUAL (zoom yang diatur pengguna). Contoh sumber 1080p ->
+# 9:16 1080x1920: crop penuh sudah 1,78x, jadi zoom otomatis tinggal maks 1,125x. Sumber 4K boleh zoom lebih jauh.
+MAX_UPSCALE = 2.0
+MAX_UPSCALE_MANUAL = 2.5
+
+
+def zoom_limit(src_w: int, src_h: int, ow: int, oh: int, manual: bool = False) -> float:
+    """Zoom terbesar (>= 1) agar jendela crop rasio ow:oh tidak diperbesar lebih dari batas."""
+    cw, ch = crop_window(src_w, src_h, ow / oh, 1.0)
+    base = oh / ch                                     # pembesaran crop penuh (tanpa zoom)
+    return max(1.0, (MAX_UPSCALE_MANUAL if manual else MAX_UPSCALE) / base)
+
+
+def upscale_of(crop_h: int, out_h: int) -> float:
+    return round(out_h / max(1, crop_h), 2)
 
 
 # ---------------------------------------------------------------------------------------------------- analisis
@@ -424,7 +440,8 @@ def segment_filter(seg: dict, data: dict, inp: str, out: str, src_w: int, src_h:
     if lay == "split" and not vertical:
         lay = "material" if not seg.get("face") else "split_h"
     if lay == "face":
-        z = _face_zoom(seg.get("face"), distance, mzoom)
+        z = min(_face_zoom(seg.get("face"), distance, mzoom),
+                zoom_limit(src_w, src_h, ow, oh, manual=bool(mzoom and mzoom > 1.0)))
         cw, ch = crop_window(src_w, src_h, ow / oh, z)
         keys = face_keys(data, seg["start"], seg["end"]) or [(0.0, 0.5, 0.5)]
 
@@ -442,7 +459,7 @@ def segment_filter(seg: dict, data: dict, inp: str, out: str, src_w: int, src_h:
         bw, bh, bx, by = _region_window(seg["board"], src_w, src_h, ow / top_h)
         face = seg["face"]
         # Panel bawah lebih kecil: wajah dibuat ±30 % tinggi panel, perbesaran maksimum 2x dari tinggi sumber.
-        fz = max(1.0, min(SPLIT_MAX_ZOOM, 0.30 / max(face[3], 1e-3)))
+        fz = max(1.0, min(SPLIT_MAX_ZOOM, 0.30 / max(face[3], 1e-3), zoom_limit(src_w, src_h, ow, bot_h)))
         fw, fh = crop_window(src_w, src_h, ow / bot_h, fz)
         fx = int(min(max((face[0] + face[2] / 2) * src_w - fw / 2, 0), src_w - fw))
         fy = int(min(max((face[1] + face[3] / 2) * src_h - fh * 0.42, 0), src_h - fh))
@@ -481,7 +498,7 @@ def segment_filter(seg: dict, data: dict, inp: str, out: str, src_w: int, src_h:
         bw, bh, bx, by = _region_window(seg["board"], src_w, src_h, ow / oh)
         return f"{inp}crop={bw}:{bh}:{bx}:{by},scale={ow}:{oh}:flags=lanczos,setsar=1{out}"
     # center / manual
-    cw, ch = crop_window(src_w, src_h, ow / oh, max(1.0, mzoom or 1.0))
+    cw, ch = crop_window(src_w, src_h, ow / oh, min(max(1.0, mzoom or 1.0), zoom_limit(src_w, src_h, ow, oh, True)))
     x, y = int((src_w - cw) * mx), int((src_h - ch) * my)
     return f"{inp}crop={cw}:{ch}:{x}:{y},scale={ow}:{oh}:flags=lanczos,setsar=1{out}"
 

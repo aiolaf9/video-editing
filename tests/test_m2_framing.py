@@ -188,3 +188,53 @@ def test_corrected_transcript_used_by_every_preset_in_preview_and_render(client,
     job = client.post(f"/api/projects/{pid}/render-recipe", json={"version": v, "start": 0, "end": 3}).json()
     assert _wait(client, job["id"])["status"] == "selesai"
     assert "INSYAALLAH" in seen[-1].upper() and r"\kf" in seen[-1]          # render final, gaya terakhir (typewriter)
+
+
+def test_upscale_limit_keeps_face_crop_sharp():
+    """Laporan pengguna: ekspor 1080x1920 kurang tajam. Penyebab terbukti: Fokus Wajah (jarak Otomatis) mengambil
+    crop 378x674 dari sumber 1080p lalu memperbesarnya 2,85x. Sekarang pembesaran dibatasi 2x (manual 2,5x)."""
+    import re
+    d = _timeline()
+    seg = framing.plan(d, 0, 6, "face")[0]
+    f = framing.segment_filter(seg, d, "[0:v]", "[o]", 1920, 1080, 1080, 1920, (0.5, 0.5, 0.0), "auto")
+    cw, ch = map(int, re.search(r"crop=(\d+):(\d+)", f).groups())
+    assert (cw, ch) == (540, 960) and 1920 / ch <= framing.MAX_UPSCALE + 1e-6
+    f = framing.segment_filter({"layout": "center", "start": 0, "end": 6}, d, "[0:v]", "[o]", 1920, 1080, 1080, 1920,
+                               (0.5, 0.5, 2.0), "auto")                      # zoom manual 2x diminta
+    ch = int(re.search(r"crop=\d+:(\d+)", f).group(1))
+    assert 1920 / ch <= framing.MAX_UPSCALE_MANUAL + 0.01
+    assert framing.zoom_limit(3840, 2160, 1080, 1920) == 2.25                # sumber 4K boleh zoom lebih jauh
+    assert framing.zoom_limit(1280, 720, 1080, 1920) == 1.0                  # sumber 720p: tanpa zoom tambahan
+
+
+def test_export_uses_original_source_single_encode_and_download_is_final(client, sample_video, fake_transcript,
+                                                                         monkeypatch):
+    """Render final: satu perintah FFmpeg yang membaca video SUMBER asli (bukan preview 480p), dan tombol Download
+    menyajikan berkas render final (bukan pratinjau)."""
+    from app import pipeline
+    monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
+    with sample_video.open("rb") as fh:
+        res = client.post("/api/projects", files={"file": ("src.mp4", fh, "video/mp4")}).json()
+    pid = res["project"]["id"]
+    assert _wait(client, res["job"]["id"])["status"] == "selesai"
+    calls = []
+    real = pipeline.media.run_ffmpeg
+    monkeypatch.setattr(pipeline.media, "run_ffmpeg", lambda args, *a, **k: calls.append(list(args)) or real(args, *a, **k))
+    v = client.get(f"/api/projects/{pid}/recipe").json()["version"]
+    job = client.post(f"/api/projects/{pid}/render-recipe", json={"version": v or 1, "start": 0, "end": 5}).json()
+    if "id" not in job:                                                       # resep belum pernah disimpan
+        state = client.get(f"/api/projects/{pid}/recipe").json()
+        v = client.put(f"/api/projects/{pid}/recipe", json={"version": state["version"], "recipe": state["recipe"]}).json()["version"]
+        job = client.post(f"/api/projects/{pid}/render-recipe", json={"version": v, "start": 0, "end": 5}).json()
+    done = _wait(client, job["id"])
+    assert done["status"] == "selesai", done
+    renders = [c for c in calls if any(str(a).endswith(".mp4") and "renders" in str(a) for a in c)]
+    assert len(renders) == 1                                                  # satu kali encode
+    inputs = [renders[0][i + 1] for i, a in enumerate(renders[0]) if a == "-i"]
+    src = str(storage.project_dir(pid) / storage.load_project(pid)["source"])
+    assert inputs and all(i == src for i in inputs if i.endswith(".mp4")) and not any("preview" in i for i in inputs)
+    assert "medium" in renders[0]                                             # preset encoder render final
+    dl = client.get(f"/api/projects/{pid}/renders/{done['result']['file']}", params={"download": "true"})
+    final = storage.project_dir(pid) / "renders" / done["result"]["file"]
+    assert dl.status_code == 200 and dl.content == final.read_bytes()
+    assert media.probe(final)["width"] == 1080

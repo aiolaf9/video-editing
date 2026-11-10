@@ -949,6 +949,15 @@ function clipWords(start, end) {
   });
 }
 
+const normTokens = (t) => String(t || "").toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+function duplicatesBigText(chunk) {
+  const s = chunk[0].start, e = chunk[chunk.length - 1].end;
+  const toks = normTokens(chunk.map((w) => w.word).join(" "));
+  if (!toks.length) return false;
+  return (state.plan || []).some((it) => (it.type === "hook" || it.type === "kinetic") && s < it.end && e > it.start
+    && toks.filter((t) => normTokens(it.text).includes(t)).length / toks.length >= 0.6);
+}
+
 function updateCaptionPreview() {
   const cap = $("captionPreview");
   const t = $("player").currentTime;
@@ -959,6 +968,9 @@ function updateCaptionPreview() {
   const ci = chunks.findIndex((c, i) => t >= c[0].start && t < Math.min(c[c.length - 1].end + 0.25, chunks[i + 1] ? chunks[i + 1][0].start : Infinity));
   if (ci < 0) { cap.innerHTML = ""; return; }
   const chunk = chunks[ci];
+  // Sama dengan render (subtitles._duplicates_big_text): baris yang isinya sedang tampil sebagai hook/kinetic tidak
+  // ditampilkan dua kali.
+  if ($("animEnabled").checked && duplicatesBigText(chunk)) { cap.innerHTML = ""; return; }
   const upper = $("subUpper").checked;
   const hl = $("subHighlight").value;
   const fh = frame.getBoundingClientRect().height;
