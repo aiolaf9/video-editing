@@ -580,6 +580,7 @@ async function openProject(id) {
   const project = await api(`/api/projects/${id}`);
   state.checked.clear();
   state.activeClip = -1;
+  state.selTouched = false;
   state.project = project;
   document.body.classList.add("project-open");
   $("mobileBar").hidden = false;
@@ -632,6 +633,8 @@ async function refreshProjectData() {
       renderClips();
       rs.loading = true;   // memasang rentang dari resep bukan perubahan pengguna
       try {
+        // Pengguna sudah mengubah rentang saat data klip masih dimuat: jangan ditimpa rentang awal.
+        if (state.selTouched) { renderClips(); return; }
         if (!applyRecipeSelection(rs.version > 0 ? rs.recipe : null)) {
           if (clips.length) selectClip(0, false);
           else setSelection(0, Math.min(30, p.duration || 30));
@@ -740,6 +743,7 @@ function setSelection(start, end) {
   start = Math.max(0, Math.min(start, dur));
   end = Math.max(start, Math.min(end, dur));
   state.sel = { start, end };
+  if (!rs.loading && state.project) state.selTouched = true;
   $("startInput").value = start.toFixed(1);
   $("endInput").value = end.toFixed(1);
   $("durLabel").textContent = `Durasi: ${(end - start).toFixed(1)} dtk`;

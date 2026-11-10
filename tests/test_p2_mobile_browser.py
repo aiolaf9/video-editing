@@ -302,6 +302,8 @@ def test_mobile_editor_touch_flow(mstack, tmp_path, engine, device):
         page.tap("#mbRender")
         _wait(lambda: len(st.api.get(f"/api/projects/{st.pid}").json()["renders"]) > renders, 120, "render dari HP",
               st, 1)
+        _wait(lambda: all(j["status"] not in ("antre", "jalan") for j in st.api.get(f"/api/projects/{st.pid}").json()["jobs"]
+                          if j["kind"] == "render"), 120, "semua render selesai", st, 1)
         proj = st.api.get(f"/api/projects/{st.pid}").json()
         job = max((j for j in proj["jobs"] if j["kind"] == "render"), key=lambda j: j["created"])
         assert job["status"] == "selesai", job

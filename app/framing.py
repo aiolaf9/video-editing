@@ -472,8 +472,10 @@ def segment_filter(seg: dict, data: dict, inp: str, out: str, src_w: int, src_h:
             fg_h = _even(min(oh * 0.7, fg_w / board_aspect))
             bw, bh, bx, by = _region_window(seg["board"], src_w, src_h, fg_w / fg_h, pad=0.04)
             tag = out.strip("[]")
-            return (f"{inp}split=2[{tag}a][{tag}b];[{tag}a]scale={ow}:{oh}:force_original_aspect_ratio=increase,"
-                    f"crop={ow}:{oh},boxblur=24:2,eq=brightness=-0.10:saturation=0.8,setsar=1[{tag}bg];"
+            # Latar blur dibuat di 1/4 resolusi lalu diperbesar: tampilan sama (buram), ±2x lebih cepat di CPU.
+            bw4, bh4 = _even(ow / 4), _even(oh / 4)
+            return (f"{inp}split=2[{tag}a][{tag}b];[{tag}a]scale={bw4}:{bh4}:force_original_aspect_ratio=increase,"
+                    f"crop={bw4}:{bh4},boxblur=6:2,eq=brightness=-0.10:saturation=0.8,scale={ow}:{oh},setsar=1[{tag}bg];"
                     f"[{tag}b]crop={bw}:{bh}:{bx}:{by},scale={fg_w}:{fg_h}:flags=lanczos,setsar=1[{tag}fg];"
                     f"[{tag}bg][{tag}fg]overlay=x=(W-w)/2:y=(H-h)*0.40{out}")
         bw, bh, bx, by = _region_window(seg["board"], src_w, src_h, ow / oh)
