@@ -340,12 +340,14 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
     """Bahan render (subtitle ASS, musik, rencana bingkai, punch-in, grafis) untuk ukuran output width x height.
     Dipakai render final dan pratinjau cepat agar keduanya identik (hanya resolusi yang berbeda)."""
     folder = storage.project_dir(pid)
+    frame = framing_for(pid, req, job)
     subs = None
     if req.subtitles.enabled:
         # Transkrip + koreksi teks dari snapshot resep (atau resep proyek bila permintaan tanpa snapshot).
         transcript = recipe.effective_transcript(pid, fixes=req.text_fixes, seg_edits=req.seg_edits) or {}
-        ass = build_ass(transcript, req.start, req.end, width, height, subtitle_options(req.subtitles),
-                        speed=req.speed)
+        opts = subtitle_options(req.subtitles, pid)
+        opts.zones = subtitle_zones(frame, req, height / max(1, width))
+        ass = build_ass(transcript, req.start, req.end, width, height, opts, speed=req.speed)
         if "Dialogue:" in ass:
             subs = workdir / f"{tag}.ass"
             subs.write_text(ass, encoding="utf-8")
@@ -357,7 +359,6 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
             raise FileNotFoundError("File musik tidak ditemukan. Unggah ulang musiknya.")
         music = candidate
 
-    frame = framing_for(pid, req, job)
     punches: list[tuple[float, float]] = []
     layers = []
     overlay_dir = workdir / f"tmp_{tag}"
@@ -377,9 +378,28 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
             "overlay_dir": overlay_dir}
 
 
-def subtitle_options(s) -> SubtitleOptions:
+def subtitle_zones(frame: Optional[dict], req: RenderRequest, ratio: float) -> tuple:
+    """Bagian bertata letak Materi + Wajah (format vertikal): subtitle di garis sambung panel (bukan menutupi
+    wajah). Hanya bila pengguna memakai posisi bawaan (bawah, tanpa posisi bebas)."""
+    if not frame or ratio < 1.2 or req.subtitles.pos_y is not None or req.subtitles.position != "bottom":
+        return ()
+    return tuple(((s["start"] - req.start) / req.speed, (s["end"] - req.start) / req.speed, 0.56)
+                 for s in frame["segments"] if s["layout"] == "split")
+
+
+def subtitle_options(s, pid: Optional[str] = None) -> SubtitleOptions:
+    terms: tuple = ()
+    if s.emphasis and pid:
+        try:   # istilah kosakata unit/bawaan = kandidat kata penting (hanya penanda tampilan, teks tidak diubah)
+            from . import vocab
+            terms = tuple(e["term"] for e in vocab.effective(storage.load_project(pid).get("unit_id")))
+        except Exception as exc:
+            log.warning("Kosakata untuk sorotan tidak terbaca: %s", exc)
     return SubtitleOptions(style=s.style, font=s.font, size=s.size, color=s.color, highlight=s.highlight,
-                           position=s.position, uppercase=s.uppercase, words_per_line=s.words_per_line)
+                           position=s.position, uppercase=s.uppercase, words_per_line=s.words_per_line,
+                           outline_color=s.outline_color, outline=s.outline, shadow=s.shadow, box=s.box,
+                           box_color=s.box_color, box_opacity=s.box_opacity, pos_y=s.pos_y, emphasis=s.emphasis,
+                           emphasis_color=s.emphasis_color, emphasis_terms=terms)
 
 
 def render(job: Job, pid: str, req: RenderRequest) -> dict:

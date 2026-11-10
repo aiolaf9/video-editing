@@ -88,7 +88,74 @@
     } finally { btn.disabled = false; }
   }
 
+  // ---------------------------------------------------------------- M2.2 galeri gaya subtitle
+  let presets = [];
+
+  function markPreset(style) {
+    document.querySelectorAll(".preset-card").forEach((c) => {
+      c.classList.toggle("active", c.dataset.id === style);
+      c.setAttribute("aria-selected", c.dataset.id === style ? "true" : "false");
+    });
+  }
+
+  function applyPreset(id) {
+    const p = presets.find((x) => x.id === id);
+    if (!p) return;
+    const d = p.defaults;
+    const hex = (v) => String(v).toLowerCase();
+    setControl("subStyle", id);
+    if (d.font) setControl("subFont", d.font);
+    if (d.uppercase !== undefined) setControl("subUpper", d.uppercase);
+    if (d.words_per_line) setControl("subWords", Math.min(6, d.words_per_line));
+    if (d.highlight) setControl("subHighlight", hex(d.highlight));
+    setControl("subColor", hex(d.color || "#FFFFFF"));
+    setControl("subSize", d.size || 1);
+    setControl("subOutline", d.outline ?? 1);
+    setControl("subShadow", d.shadow ?? 1);
+    setControl("subBox", !!d.box);
+    setControl("subBoxOpacity", d.box_opacity ?? 0.6);
+    setControl("subPosition", d.pos_y != null ? "custom" : "bottom");
+    setControl("subPosY", d.pos_y != null ? d.pos_y : 0.76);
+    $("subPosYRow").hidden = d.pos_y == null;
+    setControl("subEmphasis", true);
+    markPreset(id);
+    markDirty();
+    applyLivePreview();
+    if (typeof updateCaptionPreview === "function") updateCaptionPreview();
+    toast(`Gaya "${p.label}" dipakai. Klik ▶ Pratinjau hasil untuk melihat animasinya di video Anda.`);
+  }
+
+  async function loadPresets() {
+    try { presets = await api("/api/subtitle-presets"); } catch { return; }
+    $("presetGallery").innerHTML = presets.map((p) => `
+      <button type="button" class="preset-card" role="option" data-id="${esc(p.id)}" title="${esc(p.desc)}">
+        <span class="pc-media"><img loading="lazy" alt="" src="/api/subtitle-presets/${esc(p.id)}/thumb.png">
+          <video muted loop playsinline preload="none" data-src="/api/subtitle-presets/${esc(p.id)}/preview.mp4"></video></span>
+        <span class="pc-name">${esc(p.label)}</span>
+      </button>`).join("");
+    markPreset($("subStyle").value);
+  }
+
+  function playCard(card, on) {
+    const v = card.querySelector("video");
+    if (!v) return;
+    if (on) {
+      if (!v.src) v.src = v.dataset.src;
+      card.classList.add("playing");
+      v.play().catch(() => {});
+    } else { v.pause(); card.classList.remove("playing"); }
+  }
+
   function setup() {
+    const gal = $("presetGallery");
+    gal.addEventListener("click", (e) => { const c = e.target.closest(".preset-card"); if (c) applyPreset(c.dataset.id); });
+    gal.addEventListener("mouseover", (e) => { const c = e.target.closest(".preset-card"); if (c) playCard(c, true); });
+    gal.addEventListener("mouseout", (e) => { const c = e.target.closest(".preset-card"); if (c && !c.contains(e.relatedTarget)) playCard(c, false); });
+    gal.addEventListener("focusin", (e) => { const c = e.target.closest(".preset-card"); if (c) playCard(c, true); });
+    gal.addEventListener("focusout", (e) => { const c = e.target.closest(".preset-card"); if (c) playCard(c, false); });
+    $("subStyle").addEventListener("change", () => markPreset($("subStyle").value));
+    $("subPosition").addEventListener("change", () => { $("subPosYRow").hidden = $("subPosition").value !== "custom"; });
+    loadPresets();
     $("frameModeSeg").addEventListener("click", (e) => { if (e.target.dataset.v) setFrameMode(e.target.dataset.v); });
     $("frameZoom").addEventListener("input", () => { $("frameZoomVal").textContent = `${(+$("frameZoom").value).toFixed(2)}×`; });
     $("frameSections").addEventListener("change", (e) => {
@@ -99,6 +166,6 @@
     setFrameMode($("frameMode").value || "auto", false);
   }
 
-  window.Studio = { setFrameMode, onSelection: refreshSections, refreshSections };
+  window.Studio = { setFrameMode, onSelection: refreshSections, refreshSections, markPreset, applyPreset };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setup); else setup();
 })();

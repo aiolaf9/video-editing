@@ -102,6 +102,8 @@ const postJSON = (path, body) => api(path, { method: "POST", headers: { "Content
 // menyimpan "pengaturan terakhir" sebagai bawaan proyek yang belum pernah diedit (kompatibel dengan versi lama).
 const SETTING_IDS = ["cropX", "colorSelect", "brightness", "contrast", "saturation", "speedSelect", "zoomCheck", "fadeCheck",
   "subEnabled", "subStyle", "subFont", "subColor", "subHighlight", "subSize", "subWords", "subPosition", "subUpper",
+  "subPosY", "subEmphasis", "subEmphasisColor", "subOutlineColor", "subOutline", "subShadow", "subBox", "subBoxColor",
+  "subBoxOpacity",
   "musicVolume", "duckCheck", "normCheck", "encoderSelect", "langSelect", "targetSelect", "frameMode", "frameDistance",
   "cropY", "frameZoom", "animEnabled"];
 const SAVE_DELAY = 800;          // debounce autosave (ms)
@@ -150,7 +152,13 @@ function recipeFromControls() {
     subtitles: {
       enabled: $("subEnabled").checked, style: $("subStyle").value, font: $("subFont").value, size: +$("subSize").value,
       color: $("subColor").value.toUpperCase(), highlight: $("subHighlight").value.toUpperCase(),
-      position: $("subPosition").value, uppercase: $("subUpper").checked, words_per_line: +$("subWords").value,
+      position: $("subPosition").value === "custom" ? "bottom" : $("subPosition").value, uppercase: $("subUpper").checked,
+      words_per_line: +$("subWords").value,
+      pos_y: $("subPosition").value === "custom" ? +$("subPosY").value : null,
+      emphasis: $("subEmphasis").checked, emphasis_color: $("subEmphasisColor").value.toUpperCase(),
+      outline_color: $("subOutlineColor").value.toUpperCase(), outline: +$("subOutline").value,
+      shadow: +$("subShadow").value, box: $("subBox").checked, box_color: $("subBoxColor").value.toUpperCase(),
+      box_opacity: +$("subBoxOpacity").value,
     },
     audio: { music: $("musicSelect").value || null, volume: +$("musicVolume").value, ducking: $("duckCheck").checked,
       normalize: $("normCheck").checked },
@@ -164,6 +172,20 @@ function recipeFromControls() {
     encoder: $("encoderSelect").value,
     language: $("langSelect").value || null,
   };
+}
+
+// M2.2: opsi subtitle tambahan (bawaan = tampilan M1.1).
+function applySubExtras(s) {
+  setControl("subPosition", s.pos_y != null ? "custom" : s.position);
+  setControl("subPosY", s.pos_y != null ? s.pos_y : 0.76);
+  $("subPosYRow").hidden = s.pos_y == null;
+  setControl("subEmphasis", !!s.emphasis);
+  setControl("subEmphasisColor", (s.emphasis_color || "#FFD43B").toLowerCase());
+  setControl("subOutlineColor", (s.outline_color || "#000000").toLowerCase());
+  setControl("subOutline", s.outline ?? 1); setControl("subShadow", s.shadow ?? 1);
+  setControl("subBox", !!s.box); setControl("subBoxColor", (s.box_color || "#000000").toLowerCase());
+  setControl("subBoxOpacity", s.box_opacity ?? 0.6);
+  if (window.Studio) window.Studio.markPreset(s.style);
 }
 
 function setControl(id, value) {
@@ -191,6 +213,7 @@ function applyRecipeToControls(r) {
   setControl("subSize", s.size); setControl("subColor", s.color.toLowerCase());
   setControl("subHighlight", s.highlight.toLowerCase()); setControl("subPosition", s.position);
   setControl("subUpper", s.uppercase); setControl("subWords", s.words_per_line);
+  applySubExtras(s);
   setControl("musicVolume", r.audio.volume); setControl("duckCheck", r.audio.ducking); setControl("normCheck", r.audio.normalize);
   setControl("encoderSelect", r.encoder); setControl("langSelect", r.language || "");
   setControl("targetSelect", r.target); setControl("animEnabled", r.animations);
@@ -487,6 +510,7 @@ function applyTemplate(id) {
   setControl("subColor", s.color.toLowerCase()); setControl("subHighlight", s.highlight.toLowerCase());
   setControl("subPosition", s.position); setControl("subUpper", s.uppercase); setControl("subWords", s.words_per_line);
   setControl("subEnabled", s.enabled);
+  applySubExtras(s);
   if (d.look) {
     setControl("colorSelect", d.look.color); setControl("brightness", d.look.brightness);
     setControl("contrast", d.look.contrast); setControl("saturation", d.look.saturation);
@@ -940,16 +964,23 @@ function updateCaptionPreview() {
   const pos = $("subPosition").value;
   cap.style.top = cap.style.bottom = "";
   cap.style.transform = "";
-  if (pos === "top") cap.style.top = fh * 0.12 + "px";
+  if (pos === "custom") { cap.style.top = fh * +$("subPosY").value + "px"; cap.style.transform = "translateY(-50%)"; }
+  else if (pos === "top") cap.style.top = fh * 0.12 + "px";
   else if (pos === "middle") { cap.style.top = "50%"; cap.style.transform = "translateY(-50%)"; }
   else cap.style.bottom = fh * 0.18 + "px";
+  // M2.2 (perkiraan): outline, latar kotak. Animasi persis hanya di "Pratinjau hasil" (libass).
+  cap.style.webkitTextStroke = `${Math.max(0, px * 0.16 * +$("subOutline").value).toFixed(1)}px ${$("subOutlineColor").value}`;
+  const box = $("subBox").checked;
+  const bc = $("subBoxColor").value, op = +$("subBoxOpacity").value;
+  cap.style.background = box ? `rgba(${parseInt(bc.slice(1, 3), 16)},${parseInt(bc.slice(3, 5), 16)},${parseInt(bc.slice(5, 7), 16)},${op})` : "";
+  cap.style.padding = box ? `${px * 0.15}px ${px * 0.25}px` : "";
   // Sama dengan event ASS: kata ke-k tersorot dari awalnya (kata pertama: dari awal baris) sampai kata berikutnya
   // mulai; gaya "satu kata" & "sederhana" tanpa warna sorotan.
   let k = 0;
   chunk.forEach((w, i) => { if (i > 0 && t >= w.start) k = i; });
   cap.innerHTML = chunk.map((w, i) => {
     const word = esc(upper ? w.word.toUpperCase() : w.word);
-    if (style === "simple" || style === "word" || i !== k) return word;
+    if (["simple", "word", "cinematic", "documentary"].includes(style) || i !== k) return word;
     const scale = style === "pop" ? "display:inline-block;transform:scale(1.18);" : "";
     return `<span style="color:${hl};${scale}">${word}</span>`;
   }).join(" ");

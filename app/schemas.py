@@ -3,9 +3,14 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
+SUB_STYLES = Literal["karaoke", "pop", "word", "simple", "bounce", "slide", "zoom", "fade", "cinematic", "documentary",
+                     "storytelling", "highlight", "neon", "typewriter"]
+HEX = r"^#[0-9A-Fa-f]{6}$"
+
+
 class SubtitleSettings(BaseModel):
     enabled: bool = True
-    style: Literal["karaoke", "pop", "word", "simple"] = "karaoke"
+    style: SUB_STYLES = "karaoke"
     font: str = Field("Arial", max_length=60)
     size: float = Field(1.0, ge=0.4, le=2.5)
     color: str = Field("#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")
@@ -13,6 +18,16 @@ class SubtitleSettings(BaseModel):
     position: Literal["bottom", "middle", "top"] = "bottom"
     uppercase: bool = True
     words_per_line: int = Field(3, ge=1, le=8)
+    # M2.2: bawaan sama dengan tampilan M1.1 (proyek lama tidak berubah)
+    outline_color: str = Field("#000000", pattern=HEX)
+    outline: float = Field(1.0, ge=0, le=3)
+    shadow: float = Field(1.0, ge=0, le=3)
+    box: bool = False
+    box_color: str = Field("#000000", pattern=HEX)
+    box_opacity: float = Field(0.6, ge=0, le=1)
+    pos_y: Optional[float] = Field(None, ge=0.05, le=0.95)
+    emphasis: bool = False
+    emphasis_color: str = Field("#FFD43B", pattern=HEX)
 
 
 class MusicSettings(BaseModel):

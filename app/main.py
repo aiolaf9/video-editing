@@ -1183,6 +1183,24 @@ def put_recipe(pid: str, body: recipe.SaveBody, user: dict = CurrentUser):
     return _recipe_public(pid, state)
 
 
+@app.get("/api/subtitle-presets")
+def subtitle_presets(user: dict = CurrentUser):
+    """M2.2: daftar preset subtitle animasi untuk galeri."""
+    from . import subtitles
+    return subtitles.public_presets()
+
+
+@app.get("/api/subtitle-presets/{preset}/{kind}")
+def subtitle_preset_media(preset: str, kind: str, user: dict = CurrentUser):
+    """Klip gerak (preview.mp4) / thumbnail (thumb.png) preset, dirender libass yang sama dengan hasil akhir."""
+    from . import gallery, subtitles
+    if preset not in subtitles.PRESETS or kind not in ("preview.mp4", "thumb.png"):
+        raise HTTPException(404)
+    mp4, png = gallery.render(preset)
+    path, mt = (mp4, "video/mp4") if kind == "preview.mp4" else (png, "image/png")
+    return FileResponse(path, media_type=mt, headers={"Cache-Control": "private, max-age=86400"})
+
+
 @app.get("/api/projects/{pid}/framing")
 def get_framing(pid: str, start: float, end: float, mode: Optional[str] = None, user: dict = CurrentUser):
     """M2.1: rencana bingkai klip dari resep tersimpan (mode/pilihan per bagian) beserta alasannya."""

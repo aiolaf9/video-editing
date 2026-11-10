@@ -53,26 +53,30 @@ def main():
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], check=True, cwd=out)
         print(name, "ok", flush=True)
     (out / "rencana.json").write_text(json.dumps(plans, indent=1, ensure_ascii=False))
-    # lembar kontak: baris = varian, kolom = detik 1,3,5,...
+    contact_sheet(out, list(variants), a.start, end)
+
+
+def contact_sheet(out: Path, variants: list[str], start: float, end: float) -> None:
+    """lembar.png: baris = varian, kolom = detik 1, 4, 7, ..."""
+    from PIL import Image, ImageDraw
     rows = []
-    times = [t + 1 for t in range(int(a.start), int(end) - 1, 3)]
+    times = [t + 1 for t in range(int(start), int(end) - 1, 3)]
     for name in variants:
         tiles = []
         for t in times:
             png = out / f"_{name}_{t}.png"
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(t - a.start), "-i", str(out / f"{name}.mp4"),
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(t - start), "-i", str(out / f"{name}.mp4"),
                             "-frames:v", "1", "-vf", "scale=180:320", str(png)], check=True)
             tiles.append(png)
         rows.append(tiles)
-    from PIL import Image, ImageDraw
-    sheet = Image.new("RGB", (len(times) * 184 + 90, len(rows) * 324), (30, 30, 30))
+    sheet = Image.new("RGB", (len(times) * 184 + 110, len(rows) * 324), (30, 30, 30))
     d = ImageDraw.Draw(sheet)
     for r, (name, tiles) in enumerate(zip(variants, rows)):
         d.text((6, r * 324 + 150), name, fill=(255, 255, 255))
         for c, png in enumerate(tiles):
-            sheet.paste(Image.open(png), (90 + c * 184, r * 324))
+            sheet.paste(Image.open(png), (110 + c * 184, r * 324))
             if r == 0:
-                d.text((90 + c * 184 + 4, 4), f"{times[c]}s", fill=(255, 255, 0))
+                d.text((110 + c * 184 + 4, 4), f"{times[c]}s", fill=(255, 255, 0))
             png.unlink()
     sheet.save(out / "lembar.png")
 

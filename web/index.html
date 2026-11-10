@@ -415,12 +415,24 @@
               <button type="button" class="ghost danger" id="tplDeleteBtn" hidden>Hapus</button>
             </div>
             <label class="check"><input type="checkbox" id="subEnabled" checked> Tampilkan subtitle</label>
+            <div class="field">Galeri gaya animasi <span class="hint">(klik untuk memakai; arahkan kursor untuk melihat gerakannya)</span></div>
+            <div class="preset-gallery" id="presetGallery" role="listbox" aria-label="Galeri gaya subtitle"></div>
             <label class="field">Gaya
               <select id="subStyle">
                 <option value="karaoke">Karaoke (kata aktif berwarna)</option>
                 <option value="pop">Pop (kata aktif membesar)</option>
                 <option value="word">Satu kata (animasi muncul)</option>
                 <option value="simple">Sederhana</option>
+                <option value="bounce">Bounce</option>
+                <option value="slide">Slide</option>
+                <option value="zoom">Zoom</option>
+                <option value="fade">Fade</option>
+                <option value="cinematic">Cinematic</option>
+                <option value="documentary">Dokumenter</option>
+                <option value="storytelling">Bercerita</option>
+                <option value="highlight">Sorot Kotak</option>
+                <option value="neon">Neon</option>
+                <option value="typewriter">Isi Warna</option>
               </select>
             </label>
             <label class="field">Font
@@ -443,9 +455,27 @@
                 <option value="bottom">Bawah</option>
                 <option value="middle">Tengah</option>
                 <option value="top">Atas</option>
+                <option value="custom">Atur sendiri…</option>
               </select>
             </label>
+            <label class="field" id="subPosYRow" hidden>Tinggi posisi (atas → bawah) <input type="range" id="subPosY" min="0.05" max="0.95" step="0.01" value="0.76"></label>
             <label class="check"><input type="checkbox" id="subUpper" checked> HURUF BESAR</label>
+            <label class="check"><input type="checkbox" id="subEmphasis"> Sorot kata penting (istilah kosakata, angka, kata kunci)</label>
+            <label class="field" id="subEmphasisRow">Warna kata penting <input type="color" id="subEmphasisColor" value="#ffd43b"></label>
+            <details class="sub-more">
+              <summary>Outline, bayangan &amp; latar</summary>
+              <div class="row">
+                <label class="field">Outline <input type="color" id="subOutlineColor" value="#000000"></label>
+                <label class="field">Tebal <input type="range" id="subOutline" min="0" max="3" step="0.1" value="1"></label>
+              </div>
+              <label class="field">Bayangan <input type="range" id="subShadow" min="0" max="3" step="0.1" value="1"></label>
+              <label class="check"><input type="checkbox" id="subBox"> Latar kotak di belakang teks</label>
+              <div class="row">
+                <label class="field">Warna latar <input type="color" id="subBoxColor" value="#000000"></label>
+                <label class="field">Pekat <input type="range" id="subBoxOpacity" min="0" max="1" step="0.05" value="0.6"></label>
+              </div>
+            </details>
+            <p class="hint">Tampilan di atas video adalah perkiraan cepat. Untuk tampilan persis (animasi, font, latar), klik <b>▶ Pratinjau hasil</b>. Teks selalu memakai koreksi transkrip Anda.</p>
           </section>
 
           <section class="card" id="secMusic">

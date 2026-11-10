@@ -87,6 +87,24 @@ def test_smart_framing_controls_and_preview_clip(studio_server, sample_video):
         while not _recipe(page, pid)["crop"]["sections"] and time.time() < deadline:
             time.sleep(0.3)
         assert _recipe(page, pid)["crop"]["sections"][0]["layout"] == "split"
+        # Galeri gaya subtitle: thumbnail dari libass, satu klik memakai preset (tersimpan di resep).
+        page.wait_for_selector(".preset-card[data-id=neon] img")
+        page.wait_for_function("[...document.querySelectorAll('.preset-card img')].filter(i => i.naturalWidth > 0).length >= 10",
+                               timeout=60000)
+        assert page.locator(".preset-card").count() >= 10
+        page.hover(".preset-card[data-id=bounce]")
+        page.wait_for_function("document.querySelector('.preset-card[data-id=bounce] video').readyState >= 2", timeout=30000)
+        if shots:
+            Path(shots).mkdir(parents=True, exist_ok=True)
+            page.locator("#presetGallery").scroll_into_view_if_needed()
+            page.screenshot(path=str(Path(shots) / "m2-galeri.png"))
+        page.click(".preset-card[data-id=documentary]")
+        assert page.input_value("#subStyle") == "documentary" and page.is_checked("#subBox")
+        deadline = time.time() + 10
+        while _recipe(page, pid)["subtitles"]["style"] != "documentary" and time.time() < deadline:
+            time.sleep(0.3)
+        sub = _recipe(page, pid)["subtitles"]
+        assert sub["style"] == "documentary" and sub["box"] and sub["emphasis"] and sub["pos_y"] == 0.83
         page.click("#previewClipBtn")
         page.wait_for_selector("#previewClipBox:not([hidden])", timeout=60000)
         page.wait_for_function("document.getElementById('previewClip').readyState >= 1", timeout=30000)

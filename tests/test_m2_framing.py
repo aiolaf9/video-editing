@@ -162,3 +162,29 @@ def test_user_choice_that_cannot_be_honoured_is_explained():
     no_board = _data([{"f": FACE_R, "nf": 1, "b": None, "bk": "", "ink": 0, "act": 0}] * 20)
     seg = framing.plan(no_board, 0, 10, "auto", [{"start": 0, "end": 10, "layout": "split"}])[0]
     assert seg["layout"] == "face" and "tidak tersedia" in seg["reason"] and "area materi" in seg["reason"]
+
+
+def test_corrected_transcript_used_by_every_preset_in_preview_and_render(client, sample_video, fake_transcript,
+                                                                         monkeypatch):
+    """Koreksi transkrip M1.1 (seg_edits) dipakai di SEMUA gaya M2, sama di pratinjau dan render final."""
+    from app import pipeline, subtitles
+    monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
+    with sample_video.open("rb") as fh:
+        res = client.post("/api/projects", files={"file": ("k.mp4", fh, "video/mp4")}).json()
+    pid = res["project"]["id"]
+    assert _wait(client, res["job"]["id"])["status"] == "selesai"
+    r = client.put(f"/api/projects/{pid}/transcript", json={"segments": [{"index": 0, "text": "Insyaallah zakat ini viral?"}]})
+    assert r.status_code == 200, r.text
+    seen = []
+    real = pipeline.build_ass
+    monkeypatch.setattr(pipeline, "build_ass", lambda tr, *a, **k: seen.append(real(tr, *a, **k)) or seen[-1])
+    for preset in subtitles.PRESETS:
+        state = client.get(f"/api/projects/{pid}/recipe").json()
+        rec = state["recipe"]
+        rec["subtitles"].update(style=preset, emphasis=True)
+        v = client.put(f"/api/projects/{pid}/recipe", json={"version": state["version"], "recipe": rec}).json()["version"]
+        assert client.post(f"/api/projects/{pid}/preview-clip", json={"version": v, "start": 0, "end": 3}).status_code == 200
+        assert "INSYAALLAH" in seen[-1].upper() and "KENAPA" not in seen[-1].upper(), preset
+    job = client.post(f"/api/projects/{pid}/render-recipe", json={"version": v, "start": 0, "end": 3}).json()
+    assert _wait(client, job["id"])["status"] == "selesai"
+    assert "INSYAALLAH" in seen[-1].upper() and r"\kf" in seen[-1]          # render final, gaya terakhir (typewriter)

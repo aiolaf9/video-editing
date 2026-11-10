@@ -39,3 +39,62 @@ def test_word_style_one_word_per_event(fake_transcript):
     ass = build_ass(fake_transcript, 0, 8, 1080, 1920, SubtitleOptions(style="word"))
     events = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
     assert len(events) == 10 and r"\t(0,90" in events[0]
+
+
+# ------------------------------------------------------------------ M2.2 preset animasi
+
+import pytest  # noqa: E402
+
+from app import subtitles  # noqa: E402
+
+
+def _events(ass):
+    return [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+
+
+def test_at_least_ten_presets_with_distinct_techniques(fake_transcript):
+    assert len(subtitles.PRESETS) >= 10
+    seen = {}
+    for name in subtitles.PRESETS:
+        o = SubtitleOptions(style=name)
+        seen[name] = build_ass(fake_transcript, 0, 8, 1080, 1920, o)
+    assert len({"\n".join(_events(a)) for a in seen.values()}) == len(seen)       # semua keluaran berbeda
+    marks = {"bounce": r"\t(110,210", "slide": r"\move(", "zoom": r"\blur8", "fade": r"\alpha&HFF&\t(0,180",
+             "cinematic": r"\fsp", "documentary": r"\fad(160,120)", "storytelling": r"\alpha&H99&",
+             "highlight": r"\3c&H00ED3A7C", "neon": r"\blur", "typewriter": r"\kf"}
+    for name, mark in marks.items():
+        o = SubtitleOptions(style=name, highlight=subtitles.PRESETS[name]["highlight"])
+        assert mark in build_ass(fake_transcript, 0, 8, 1080, 1920, o), name
+
+
+def test_legacy_styles_unchanged_by_new_defaults(fake_transcript):
+    # bawaan opsi M2.2 = M1.1: tidak ada \pos, kotak, atau sorotan pada proyek lama
+    ass = build_ass(fake_transcript, 0, 8, 1080, 1920, SubtitleOptions(style="karaoke"))
+    assert r"\pos" not in ass and ",1,6,3,2," in ass                     # BorderStyle 1, outline 6, shadow 3
+
+
+def test_emphasis_box_shadow_and_custom_position(fake_transcript):
+    o = SubtitleOptions(style="karaoke", emphasis=True, emphasis_terms=("rapi",), emphasis_color="#00FF00",
+                        box=True, box_color="#112233", box_opacity=0.5, shadow=0, pos_y=0.3)
+    ass = build_ass(fake_transcript, 0, 8, 1080, 1920, o)
+    ev = _events(ass)
+    assert r"\an5\pos(540,576)" in ev[0]                                  # 0.3 x 1920
+    assert any(r"{\c&H0000FF00}RAPI" in e for e in ev)                   # istilah kosakata disorot (saat tidak aktif)
+    style = next(line for line in ass.splitlines() if line.startswith("Style:"))
+    assert ",3," in style and "&H80332211" in style                       # kotak buram warna pilihan
+
+
+def test_important_words_rules():
+    w = lambda *xs: [{"word": x, "start": 0, "end": 1} for x in xs]   # noqa: E731
+    assert subtitles.important_words(w("kita", "bayar", "zakat"), {"zakat"}) == {2}
+    assert subtitles.important_words(w("sebanyak", "2,5", "kg"), set()) == {1}
+    assert subtitles.important_words(w("dan", "yang", "itu"), set()) == set()
+
+
+@pytest.mark.parametrize("preset", list(subtitles.PRESETS))
+def test_every_preset_renders_through_libass(tmp_path, preset, monkeypatch):
+    from app import config, gallery
+    monkeypatch.setattr(gallery, "CACHE", tmp_path / "g")
+    mp4, png = gallery.render(preset)
+    assert mp4.stat().st_size > 2000 and png.stat().st_size > 500
+    assert config.FONTS_DIR.is_dir()
