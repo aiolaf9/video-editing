@@ -154,6 +154,65 @@ Temuan putaran 2:
 4. Penanda "perlu ditinjau" tetap hanya bantuan: recall turbo pada audio panjang 4 % (hampir semua kesalahan tidak
    bertanda).
 
+### Putaran 3 — mode potongan ucapan & pasangan bersih/bising (run [42790026222](https://github.com/aiolaf9/video-editing/actions/runs/42790026222), commit `96497b8`)
+
+`id_dialog` = 24 kalimat berurutan (269 dtk, bersih); `id_noisy_snr10` = audio yang sama + noise pink SNR 10 dB.
+Mode potongan = `WHISPER_CHUNKED=1` (VAD, potongan ≤ 20 dtk), dua run.
+
+| Model / mode | Dialog bersih | Dialog bising | Panjang 10 mnt | Kalimat | RTF panjang | RAM puncak |
+|---|---|---|---|---|---|---|
+| small, bawaan | 22,8 % (CER 10,6) | 48,9 % (CER 37,0) | 14,0 % (CER 4,4) | 17,2 % | 0,20 | 1341 MB |
+| small, potongan (2 run identik) | 19,6 % | **96,0 %** | 18,4 % | 17,2 % | 0,46 | 769–869 MB |
+| turbo, bawaan | **7,8 %** (CER 4,9) | **31,3 %** (CER 26,3) | 20,1 % (CER 15,5) | **6,2 %** | 0,24 | 1973 MB |
+| turbo, potongan (2 run identik) | 11,8 % | 47,6 % | 13,7 % (CER 7,8) | 8,0 % | ~1,0 | 1681 MB |
+
+- Mode potongan **tidak** dijadikan bawaan: small runtuh pada audio bising (96 %), turbo membaik hanya pada audio panjang
+  tetapi memburuk di set lain dan 4x lebih lambat.
+- Antar-runner (CPU berbeda), audio panjang identik di semua run; audio bising bergeser ±1–2 poin (small 48,9/50,9 %,
+  turbo 30,3/31,3 %). Determinisme hanya terjamin di mesin yang sama.
+
+### Uji Windows — installer & alat `--eval` (sampel FLEURS id 156 dtk, 12 kalimat, 2 run per mode)
+
+| Mode | Model | WER (CPU AMD, run `96497b8`) | WER (CPU Intel, run `64aa9b3`) | CER (Intel) | RTF (Intel) | Puncak RAM proses (Intel) |
+|---|---|---|---|---|---|---|
+| Cepat | base | 46,7 % | 32,8 % | 10,4 % | 0,09 | 358 MB |
+| Akurat | small | 16,2 % | 16,6 % | 5,2 % | 0,22 | 726 MB |
+| Kualitas tinggi | large-v3-turbo | 8,5 % | 7,7 % | 3,7 % | 0,45 | 1911 MB |
+
+Dua run per mode identik di masing-masing mesin. **base bergeser 14 poin antar-CPU**; small & turbo ±1 poin.
+Ukuran: `NH-AI-Clip-Studio-Setup.exe` 689,1 MB (base + small); `NH-AI-Clip-Studio-Model-KualitasTinggi.exe` (opsional)
+1350,9 MB; folder aplikasi terpasang 1160 MB. RAM di atas = proses transkripsi saja (tanpa jendela WebView2 & Windows).
+
+## 5. Rekomendasi konfigurasi (menunggu persetujuan & uji video NH)
+
+| Pertanyaan | Rekomendasi dari data | Alasan |
+|---|---|---|
+| Model terbaik untuk **Cepat** | base hanya sebagai mode darurat PC lemah; **disarankan** Cepat diganti/dihapus (lihat opsi) | base 29,7–69,4 % WER di FLEURS dan 32,8–46,7 % di sampel Windows yang sama (tidak stabil antar-CPU); small sudah cukup cepat (RTF 0,15–0,22 ≈ 1,5–2,5 mnt per 10 mnt video, CPU 4 thread) |
+| Model terbaik untuk **Akurat** (bawaan) | **small**, pengaturan M1.1 | Terbaik/konsisten untuk audio panjang (14,0 %), 16,2–16,6 % sampel Windows, RAM ±0,7–1,3 GB, deterministik di mesin yang sama |
+| **Turbo** sebagai "Kualitas tinggi" | **Layak sebagai paket opsional untuk klip pendek & audio bising**; **belum** untuk video panjang | Kalimat 6,2 % / dialog 7,8 % / bising 31,3 % (terbaik), sampel Windows 7,7–8,5 %; tetapi audio panjang kehilangan ucapan (CER 15,5 % vs small 4,4 %), RTF 0,45 Windows, RAM ±1,9–2,0 GB, paket 1351 MB |
+| Bersih vs bising | Perbedaan **sangat signifikan** untuk semua model | Dialog yang sama: small 22,8 → 48,9 %, turbo 7,8 → 31,3 %, base (kalimat→bising) 31,9 → 69,4 % |
+| RAM 8 / 16 GB | Semua mode muat di 16 GB; 8 GB kemungkinan muat (proses ≤ 2 GB + Windows + WebView2 ±3–4 GB) | **Belum diukur di PC 8 GB sungguhan** → jalankan `--eval` di PC tim |
+
+Opsi untuk keputusan pengguna (belum diterapkan):
+
+1. **Disarankan:** satu mode standar *small* + paket opsional *Kualitas tinggi* (turbo); hapus base dari installer
+   (±140 MB lebih kecil) atau pertahankan sebagai "Hemat RAM (kurang akurat)" untuk PC < 8 GB.
+2. Pertahankan Cepat = base / Akurat = small seperti sekarang, dengan peringatan "Cepat: lebih banyak salah kata".
+
+### Risiko yang masih ada (bahasa Arab & istilah dakwah)
+
+- **Belum ada data**: FLEURS adalah berita yang dibacakan, tanpa istilah Arab. Tidak ada angka di dokumen ini yang
+  membuktikan akurasi ceramah, ayat, doa, atau istilah dakwah.
+- Hotwords kosakata dimatikan karena memperburuk WER; istilah Arab bergantung pada model + saran kosakata yang harus
+  dikonfirmasi + gerbang tinjau sebelum ekspor.
+- Penanda "perlu ditinjau" recall 4–40 %: sebagian besar kata salah tidak bertanda. Semua subtitle wajib dibaca.
+- Audio bising (musik latar, gema masjid, mikrofon jauh) menaikkan kesalahan 2–4x.
+- Hasil dapat bergeser antar-CPU (base 14 poin; small/turbo ±1–2 poin).
+- Turbo dapat melewatkan ucapan pada audio panjang.
+
+**Belum siap produksi** sampai `--eval` dengan 3–5 video NH asli + transkrip rujukan manual dijalankan di PC 8 GB &
+16 GB tim dan hasilnya disetujui.
+
 ### Paket "Kualitas tinggi" (opsional) & uji dengan video NH asli
 
 - **Paket model tambahan** `NH-AI-Clip-Studio-Model-KualitasTinggi.exe` (Whisper large-v3-turbo, MIT) **tidak**
