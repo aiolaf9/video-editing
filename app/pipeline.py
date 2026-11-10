@@ -239,9 +239,9 @@ def analyze(job: Job, pid: str, language: Optional[str] = None, quality: Optiona
         energy = media.audio_energy(src)
         progress = job.stage(28, 92, "Membuat transkrip dengan Whisper (bisa beberapa menit)...")
         from . import vocab
-        terms = vocab.hotwords(vocab.effective(storage.load_project(pid).get("unit_id")))
+        terms = vocab.whisper_terms(storage.load_project(pid).get("unit_id"))   # bawaan kosong (M1.1 eval)
         transcript = transcribe.transcribe(src, info["duration"], language, progress, quality=quality,
-                                           vocabulary=terms)
+                                           vocabulary=terms or None)
     storage.write_data(pid, "energy", energy)
     storage.write_data(pid, "transcript", transcript)
 

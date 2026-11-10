@@ -910,6 +910,7 @@ def get_vocab(user: dict = CurrentUser):
     own = vocab.stored(scope)
     return {"scope": "unit" if scope else "global", "entries": own["entries"],
             "use_defaults": own.get("use_defaults", True), "defaults": vocab.defaults(),
+            "whisper_hints": own.get("whisper_hints", False),
             "can_edit": DESKTOP_MODE or user["role"] in ("admin", "unit_admin"),
             "effective_count": len(vocab.effective(user.get("unit_id")))}
 

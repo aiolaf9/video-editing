@@ -43,10 +43,11 @@
 
 <dialog id="vocabDialog" class="vocab-dialog">
   <h3>📚 Kosakata transkrip</h3>
-  <p class="hint">Istilah dakwah, Arab, nama lembaga, program, dan nama orang. Dipakai sebagai petunjuk ejaan untuk
-    Whisper saat analisis berikutnya, dan sebagai <b>saran</b> koreksi yang harus Anda setujui. Tidak ada istilah yang
-    diganti otomatis.</p>
-  <label class="inline"><input type="checkbox" id="vocabDefaults" checked> Pakai kosakata bawaan (<span id="vocabDefaultCount"></span> istilah, ejaan KBBI)</label>
+  <p class="hint">Istilah dakwah, Arab, nama lembaga, program, dan nama orang. Dipakai sebagai <b>saran</b> koreksi di
+    editor yang harus Anda setujui. Tidak ada istilah yang diganti otomatis.</p>
+  <label class="inline"><input type="checkbox" id="vocabDefaults" checked> Pakai kosakata bawaan untuk saran (<span id="vocabDefaultCount"></span> istilah, ejaan KBBI)</label>
+  <label class="inline"><input type="checkbox" id="vocabHints"> Juga jadikan petunjuk ejaan untuk Whisper saat analisis
+    (eksperimental: pada uji bahasa Indonesia umum justru menambah salah kata; aktifkan hanya setelah diuji dengan video NH)</label>
   <table class="vocab-table">
     <thead><tr><th>Istilah (ejaan benar)</th><th>Varian yang sering salah (pisahkan koma)</th><th>Jenis</th><th></th></tr></thead>
     <tbody id="vocabRows"></tbody>

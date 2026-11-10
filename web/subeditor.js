@@ -299,6 +299,7 @@ async function openVocab() {
   let v;
   try { v = await api("/api/vocab"); } catch (err) { toast(err.message, true); return; }
   $("vocabDefaults").checked = v.use_defaults;
+  $("vocabHints").checked = !!v.whisper_hints;
   $("vocabDefaultCount").textContent = v.defaults.length;
   $("vocabRows").innerHTML = "";
   v.entries.forEach(addVocabRow);
@@ -326,9 +327,10 @@ async function saveVocab() {
   })).filter((e) => e.term);
   try {
     await api("/api/vocab", { method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entries, use_defaults: $("vocabDefaults").checked }) });
+      body: JSON.stringify({ entries, use_defaults: $("vocabDefaults").checked, whisper_hints: $("vocabHints").checked }) });
     $("vocabDialog").close();
-    toast("Kosakata disimpan. Saran istilah diperbarui; petunjuk ejaan Whisper berlaku untuk analisis berikutnya.");
+    toast($("vocabHints").checked ? "Kosakata disimpan. Petunjuk ejaan Whisper berlaku untuk analisis berikutnya."
+      : "Kosakata disimpan. Saran istilah diperbarui.");
     loadSuggestions();
   } catch (err) { toast(err.message, true); }
 }

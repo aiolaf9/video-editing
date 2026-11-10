@@ -10,11 +10,29 @@ import argparse
 import re
 import subprocess
 import sys
+import struct
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "bench" / "p552"))
 from fleurs_corpus import fetch  # noqa: E402
+
+
+def wav_seconds(path: Path) -> float:
+    """Durasi WAV dari header RIFF (PCM maupun float; modul wave hanya mendukung PCM)."""
+    data = path.read_bytes()
+    pos, rate, block, size = 12, None, None, None
+    while pos + 8 <= len(data):
+        cid, n = data[pos:pos + 4], struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        if cid == b"fmt ":
+            _fmt, channels, rate, _bps, block = struct.unpack("<HHIIH", data[pos + 8:pos + 22])
+        elif cid == b"data":
+            size = n
+            break
+        pos += 8 + n + (n & 1)
+    if not (rate and block and size):
+        raise ValueError(f"header WAV tidak terbaca: {path}")
+    return size / float(block * rate)
 
 
 def main():
@@ -32,7 +50,7 @@ def main():
         if key in seen:
             continue
         seen.add(key)
-        dur = int(Path(u["file"]).stat().st_size - 44) / (16000 * 2)    # wav PCM16 mono 16 kHz (FLEURS)
+        dur = wav_seconds(Path(u["file"]))
         picked.append(u)
         total += dur + 0.4
         if total >= a.seconds:

@@ -106,7 +106,7 @@ def test_quality_flows_from_upload_to_whisper(client, sample_video, monkeypatch,
         time.sleep(0.3)
     assert job["status"] == "selesai", job
     assert seen["quality"] == "akurat" and seen["language"] == "id"
-    assert "Nurul Hayat" in seen["vocabulary"]                           # kosakata dipakai sebagai hotwords
+    assert seen["vocabulary"] is None            # bawaan: kosakata TIDAK jadi hotwords (eval M1.1: WER naik)
     pid = res["project"]["id"]
     seen.clear()
     r = client.post(f"/api/projects/{pid}/reanalyze", params={"language": "id", "quality": "cepat"})
@@ -144,3 +144,12 @@ def test_job_memory_uses_quality_model(monkeypatch):
     assert acc > fast
     r = recipe.default()
     assert r.seg_edits == {} and r.reviewed == [] and r.vocab_ignored == []
+
+
+def test_whisper_hints_opt_in_and_only_user_terms(client, clean_vocab):
+    assert vocab.whisper_terms(None) == []                               # bawaan mati
+    client.put("/api/vocab", json={"entries": [{"term": "Sedekah Subuh", "kind": "program"}], "whisper_hints": False})
+    assert vocab.whisper_terms(None) == []
+    client.put("/api/vocab", json={"entries": [{"term": "Sedekah Subuh", "kind": "program"}], "whisper_hints": True})
+    assert vocab.whisper_terms(None) == ["Sedekah Subuh"]                # tanpa daftar bawaan
+    assert client.get("/api/vocab").json()["whisper_hints"] is True

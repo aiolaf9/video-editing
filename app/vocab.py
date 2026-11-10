@@ -57,6 +57,10 @@ class Entry(BaseModel):
 class VocabIn(BaseModel):
     entries: list[Entry] = Field(default_factory=list, max_length=MAX_ENTRIES)
     use_defaults: bool = True
+    # Petunjuk ejaan untuk Whisper (hotwords). Bawaan MATI: evaluasi M1.1 (FLEURS id & sampel Windows) menunjukkan
+    # hotwords dari daftar kosakata menaikkan WER dan dapat membuat Whisper melewatkan ucapan. Hanya istilah buatan
+    # pengguna yang dipakai (tidak termasuk daftar bawaan); uji dengan sampel NH sebelum mengaktifkannya.
+    whisper_hints: bool = False
 
 
 def defaults() -> list[dict]:
@@ -68,11 +72,12 @@ def _key(unit_id: Optional[str]) -> str:
 
 
 def stored(unit_id: Optional[str]) -> dict:
-    return db.get_setting(_key(unit_id), {"entries": [], "use_defaults": True})
+    return db.get_setting(_key(unit_id), {"entries": [], "use_defaults": True, "whisper_hints": False})
 
 
 def save(unit_id: Optional[str], body: VocabIn) -> dict:
-    data = {"entries": [e.model_dump() for e in body.entries], "use_defaults": body.use_defaults}
+    data = {"entries": [e.model_dump() for e in body.entries], "use_defaults": body.use_defaults,
+            "whisper_hints": body.whisper_hints}
     db.set_setting(_key(unit_id), data)
     return data
 
@@ -87,6 +92,17 @@ def effective(unit_id: Optional[str]) -> list[dict]:
     for e in (defaults() if use_defaults else []) + glob["entries"] + unit["entries"]:
         merged[e["term"].lower()] = {"variants": [], "kind": "istilah", **e}
     return list(merged.values())
+
+
+def whisper_terms(unit_id: Optional[str]) -> list[str]:
+    """Istilah untuk hotwords Whisper saat analisis: hanya bila diaktifkan (global atau unit), hanya istilah buatan
+    pengguna. Bawaan: kosong (lihat VocabIn.whisper_hints)."""
+    out: list[dict] = []
+    for scope in ([None, unit_id] if unit_id else [None]):
+        data = stored(scope)
+        if data.get("whisper_hints"):
+            out += data["entries"]
+    return hotwords(out)
 
 
 def hotwords(entries: list[dict]) -> list[str]:
