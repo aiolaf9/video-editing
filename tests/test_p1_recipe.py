@@ -246,7 +246,7 @@ def test_render_from_recipe_uses_saved_recipe_snapshot(client, sample_video, fak
     pop = next(t for t in client.get("/api/templates").json() if t["id"] == "builtin:pop")
     rec = client.get(f"/api/projects/{pid}/recipe").json()["recipe"]
     rec.update(aspect="1:1", template_id=pop["id"], subtitles=pop["data"]["subtitles"], animations=False)
-    rec["crop"].update(x=0.0, reframe="manual")
+    rec["crop"].update(x=0.0, reframe="manual", mode="manual")
     rec["look"]["color"] = "bw"
     v = client.put(f"/api/projects/{pid}/recipe", json={"version": 0, "recipe": rec}).json()["version"]
     v = int(client.put(f"/api/projects/{pid}/transcript", json={"segments": [

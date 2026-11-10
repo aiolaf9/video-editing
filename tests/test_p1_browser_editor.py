@@ -111,7 +111,7 @@ def test_autosave_reload_two_devices_conflict(editor_stack, tmp_path):
         ctx_a, a = _open(browser, st)
         a.click('#aspectSeg button[data-v="1:1"]')
         _set(a, "#templateSelect", "builtin:news")
-        _set(a, "#reframeCheck", False)
+        a.click("#frameModeSeg button[data-v=manual]")
         _set(a, "#cropX", "0.15")
         _set(a, "#colorSelect", "warm")
         _set(a, "#brightness", "0.1")
@@ -124,7 +124,7 @@ def test_autosave_reload_two_devices_conflict(editor_stack, tmp_path):
         rec = r["recipe"]
         assert rec["aspect"] == "1:1" and rec["template_id"] == "builtin:news"
         assert rec["subtitles"]["font"] == "Bebas Neue" and rec["subtitles"]["position"] == "top"
-        assert rec["subtitles"]["style"] == "simple" and rec["crop"] == {"x": 0.15, "y": 0.5, "reframe": "manual"}
+        assert rec["subtitles"]["style"] == "simple" and {k: rec["crop"][k] for k in ("x", "y", "reframe", "mode")} == {"x": 0.15, "y": 0.5, "reframe": "manual", "mode": "manual"}
         assert rec["look"]["color"] == "warm" and rec["look"]["brightness"] == 0.1
         assert rec["selection"] == {"start": 1.5, "end": 6.0}
         assert not [j for j in st.api.get(f"/api/projects/{st.pid}").json()["jobs"] if j["kind"] == "render"]
@@ -189,7 +189,7 @@ def test_render_matches_preview(editor_stack, tmp_path):
         browser = pw.chromium.launch()
         ctx, page = _open(browser, st, viewport=(1280, 1000))
         page.click('#aspectSeg button[data-v="9:16"]')
-        _set(page, "#reframeCheck", False)
+        page.click("#frameModeSeg button[data-v=manual]")
         _set(page, "#cropX", "0.3")
         _set(page, "#colorSelect", "none")
         _set(page, "#brightness", "0.05")

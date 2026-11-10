@@ -432,3 +432,21 @@ button.small { padding: 4px 8px; }
 .eval-dialog progress { width: 260px; vertical-align: middle; }
 .eval-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; }
 .eval-table th, .eval-table td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+
+/* M2.1 Smart Framing & pratinjau hasil */
+.frame-seg { flex-wrap: wrap; }
+.frame-seg button { flex: 1 1 auto; color: var(--text); }
+.frame-seg button.active { color: #fff; }
+.field .val { float: right; opacity: .75; font-size: 12px; }
+.frame-sections { margin: 6px 0; }
+.frame-sections .fs-head { font-size: 12px; font-weight: 600; margin: 6px 0 4px; opacity: .8; }
+.fs-row { display: grid; grid-template-columns: 76px 1fr auto; gap: 4px 8px; align-items: center; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 8px; margin-bottom: 4px; font-size: 12px; }
+.fs-row.manual { border-color: var(--accent, #ff3b6b); }
+.fs-row .fs-why { grid-column: 1 / -1; opacity: .7; }
+.fs-row .fs-label { font-weight: 600; }
+.fs-row select { font-size: 12px; padding: 2px 4px; }
+.lay-split { color: #7dd3fc; } .lay-material { color: #fcd34d; } .lay-face { color: #86efac; } .lay-center { color: #cbd5e1; }
+.preview-clip-row { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }
+.preview-clip { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
+.preview-clip video { width: 240px; max-height: 430px; background: #000; border-radius: 8px; }

@@ -254,8 +254,7 @@ def test_mobile_editor_touch_flow(mstack, tmp_path, engine, device):
         assert abs(sel["end"] - target) < 0.4 and abs(sel["start"] - before["start"]) < 0.05, (before, sel, target)
 
         # Geser bingkai crop dengan jari (mode manual).
-        if page.is_checked("#reframeCheck"):
-            page.tap("#reframeCheck")
+        page.tap("#frameModeSeg button[data-v=manual]")
         if plays_h264:
             x0 = float(page.input_value("#cropX"))
             touch.drag("#cropHandle", -60 if x0 > 0.5 else 60)

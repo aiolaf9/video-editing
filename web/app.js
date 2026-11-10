@@ -102,7 +102,8 @@ const postJSON = (path, body) => api(path, { method: "POST", headers: { "Content
 // menyimpan "pengaturan terakhir" sebagai bawaan proyek yang belum pernah diedit (kompatibel dengan versi lama).
 const SETTING_IDS = ["cropX", "colorSelect", "brightness", "contrast", "saturation", "speedSelect", "zoomCheck", "fadeCheck",
   "subEnabled", "subStyle", "subFont", "subColor", "subHighlight", "subSize", "subWords", "subPosition", "subUpper",
-  "musicVolume", "duckCheck", "normCheck", "encoderSelect", "langSelect", "targetSelect", "reframeCheck", "animEnabled"];
+  "musicVolume", "duckCheck", "normCheck", "encoderSelect", "langSelect", "targetSelect", "frameMode", "frameDistance",
+  "cropY", "frameZoom", "animEnabled"];
 const SAVE_DELAY = 800;          // debounce autosave (ms)
 const REMOTE_CHECK = 15000;      // cek perubahan dari perangkat lain (ms), hanya saat tab terlihat & tidak ada edit
 const editorCfg = { looks: {} };
@@ -140,7 +141,9 @@ function recipeFromControls() {
     target: +$("targetSelect").value || 30,
     checked: checked.map((c) => ({ start: round3(c.start), end: round3(c.end) })),
     aspect: state.aspect,
-    crop: { x: +$("cropX").value, y: 0.5, reframe: $("reframeCheck").checked ? "auto" : "manual" },
+    crop: { x: +$("cropX").value, y: +$("cropY").value, reframe: $("frameMode").value === "manual" ? "manual" : "auto",
+      mode: $("frameMode").value || "auto", zoom: +$("frameZoom").value > 1.001 ? +$("frameZoom").value : 0,
+      distance: $("frameDistance").value || "auto", sections: (state.frameSections || []).slice(0, 60) },
     look: { color: $("colorSelect").value, brightness: +$("brightness").value, contrast: +$("contrast").value,
       saturation: +$("saturation").value },
     motion: { speed: +$("speedSelect").value, zoom: $("zoomCheck").checked ? "slow" : "none", fade: $("fadeCheck").checked },
@@ -171,7 +174,11 @@ function setControl(id, value) {
 
 function applyRecipeToControls(r) {
   setControl("cropX", r.crop.x);
-  setControl("reframeCheck", r.crop.reframe === "auto");
+  setControl("cropY", r.crop.y);
+  setControl("frameDistance", r.crop.distance || "auto");
+  setControl("frameZoom", r.crop.zoom > 1 ? r.crop.zoom : 1);
+  state.frameSections = r.crop.sections || [];
+  if (window.Studio) window.Studio.setFrameMode(r.crop.mode || (r.crop.reframe === "auto" ? "face" : "manual"), false);
   setControl("colorSelect", r.look.color);
   setControl("brightness", r.look.brightness);
   setControl("contrast", r.look.contrast);
@@ -711,6 +718,7 @@ function setSelection(start, end) {
   highlightTranscriptRange();
   renderPlan();
   markDirty();
+  if (window.Studio) window.Studio.onSelection();
 }
 
 function playSelection() {
@@ -852,7 +860,7 @@ function layoutCropFrame() {
     if (r.w / r.h > target) { fh = r.h; fw = r.h * target; } else { fw = r.w; fh = r.w / target; }
   }
   let cx = +$("cropX").value;
-  const fx = $("reframeCheck").checked ? faceCenterAt($("player").currentTime) : null;
+  const fx = $("frameMode").value !== "manual" ? faceCenterAt($("player").currentTime) : null;
   if (fx !== null && r.w > fw + 1) cx = Math.max(0, Math.min(1, (fx * r.w - fw / 2) / (r.w - fw)));
   // Di mode otomatis (dan wajah terdeteksi) geser manual tidak berlaku.
   $("cropHandle").hidden = fx !== null;
@@ -1453,7 +1461,7 @@ function bind() {
     if (state.playingClip && t >= state.sel.end) { player.pause(); state.playingClip = false; }
     updatePlayhead();
     highlightNowWord(t);
-    if ($("reframeCheck").checked && state.faces.length) layoutCropFrame();
+    if ($("frameMode").value !== "manual" && state.faces.length) layoutCropFrame();
     else { updateCaptionPreview(); updateOverlayPreview(); }
   });
   player.addEventListener("pause", () => (state.playingClip = false));

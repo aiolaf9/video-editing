@@ -190,6 +190,15 @@
             </div>
           </div>
 
+          <div class="preview-clip-row">
+            <button type="button" class="ghost" id="previewClipBtn" title="Render cepat 10 detik dengan pengaturan sama persis seperti hasil akhir">▶ Pratinjau hasil (10 dtk)</button>
+            <span class="hint" id="previewClipState"></span>
+          </div>
+          <div class="preview-clip" id="previewClipBox" hidden>
+            <video id="previewClip" controls playsinline></video>
+            <button type="button" class="ghost small" id="previewClipClose">Tutup pratinjau</button>
+          </div>
+
           <div class="timeline" id="timeline">
             <div class="tl-clips" id="tlClips"></div>
             <div class="tl-sel" id="tlSel">
@@ -333,9 +342,31 @@
               <button data-v="16:9">16:9</button>
               <button data-v="original">Asli</button>
             </div>
-            <label class="check"><input type="checkbox" id="reframeCheck" checked> Bingkai otomatis ikuti wajah</label>
-            <label class="field">Posisi bingkai (manual) <input type="range" id="cropX" min="0" max="1" step="0.01" value="0.5"></label>
-            <p class="hint">Seret tombol "⇔ geser" di video atau pakai slider agar wajah tetap di tengah.</p>
+            <div class="field">Bingkai cerdas
+              <div class="seg frame-seg" id="frameModeSeg" role="group" aria-label="Mode bingkai">
+                <button type="button" data-v="auto" class="active" title="Berganti otomatis antara wajah dan materi per bagian">Otomatis</button>
+                <button type="button" data-v="face" title="Bingkai mengikuti wajah pemateri">Fokus Wajah</button>
+                <button type="button" data-v="material" title="Papan/layar di atas, wajah di bawah">Fokus Materi</button>
+                <button type="button" data-v="manual" title="Bingkai tetap yang Anda atur sendiri">Manual</button>
+              </div>
+              <input type="hidden" id="frameMode" value="auto">
+            </div>
+            <p class="hint" id="frameModeHint">Otomatis: Fokus Wajah, lalu papan + wajah saat pemateri ke papan atau menulis.</p>
+            <label class="field frame-opt" data-modes="auto face material">Jarak wajah
+              <select id="frameDistance">
+                <option value="auto">Otomatis</option>
+                <option value="close">Dekat</option>
+                <option value="medium">Sedang</option>
+                <option value="wide">Lebar (tanpa zoom)</option>
+              </select>
+            </label>
+            <label class="field frame-opt" data-modes="manual face">Zoom <span class="val" id="frameZoomVal">1.0×</span>
+              <input type="range" id="frameZoom" min="1" max="2" step="0.05" value="1"></label>
+            <label class="field frame-opt" data-modes="manual">Posisi kiri–kanan <input type="range" id="cropX" min="0" max="1" step="0.01" value="0.5"></label>
+            <label class="field frame-opt" data-modes="manual">Posisi atas–bawah <input type="range" id="cropY" min="0" max="1" step="0.01" value="0.5"></label>
+            <p class="hint frame-opt" data-modes="manual">Seret tombol "⇔ geser" di video atau pakai slider.</p>
+            <div class="frame-sections" id="frameSections"></div>
+            <p class="hint">Area materi dideteksi dari kecerahan & kepadatan tulisan (heuristik), bukan pemahaman isi papan. Periksa dengan Pratinjau.</p>
           </section>
 
           <section class="card" id="secColor">
@@ -458,6 +489,7 @@
 <div id="toast" class="toast" hidden></div>
 <script src="subeditor.js"></script>
 <script src="evaltool.js"></script>
+<script src="studio.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

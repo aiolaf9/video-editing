@@ -9,10 +9,10 @@
  * - Navigasi: jaringan dulu; bila offline, tampilkan offline.html.
  * - Berkas statis: jaringan dulu (versi aplikasi selalu cocok dengan server), cache hanya cadangan saat offline.
  */
-const CACHE = "avs-static-v4";
+const CACHE = "avs-static-v5";
 const SHELL = [
   "/", "/index.html", "/login.html", "/admin.html", "/offline.html",
-  "/style.css", "/app.js", "/subeditor.js",
+  "/style.css", "/app.js", "/subeditor.js", "/studio.js",
   "/evaltool.js", "/admin.js", "/pwa.js", "/manifest.webmanifest",
   "/icons/icon-192.png", "/icons/icon-512.png", "/icons/maskable-512.png", "/icons/apple-touch-icon.png",
   "/icons/favicon-32.png",

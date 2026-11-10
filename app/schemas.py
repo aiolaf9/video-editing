@@ -31,6 +31,13 @@ class PlanItem(BaseModel):
     items: list[str] = Field(default_factory=list, max_length=10)
 
 
+class FrameSection(BaseModel):
+    """M2.1: tata letak pilihan pengguna untuk satu bagian (detik sumber), menimpa pilihan otomatis."""
+    start: float = Field(ge=0, le=86400)
+    end: float = Field(gt=0, le=86400)
+    layout: Literal["face", "split", "material", "center"]
+
+
 MAX_OVERLAYS = 300
 MAX_TEXT_FIXES = 500
 MAX_SEG_EDITS = 5000
@@ -45,6 +52,11 @@ class RenderRequest(BaseModel):
     animations: bool = True                       # pakai rencana animasi di rentang klip
     crop_x: float = Field(0.5, ge=0, le=1)   # posisi horizontal bingkai (0 = kiri, 1 = kanan)
     crop_y: float = Field(0.5, ge=0, le=1)
+    # M2.1 Smart Framing. None = perilaku lama dari `reframe` (auto -> ikuti wajah, manual -> bingkai tetap).
+    frame_mode: Optional[Literal["auto", "face", "material", "manual"]] = None
+    frame_zoom: float = Field(0.0, ge=0, le=2)          # 0 = otomatis; >1 = dekatkan (manual & Fokus Wajah)
+    frame_distance: Literal["auto", "close", "medium", "wide"] = "auto"
+    frame_sections: list[FrameSection] = Field(default_factory=list, max_length=60)
     color: Literal["none", "vivid", "cinematic", "warm", "cool", "bw", "vintage"] = "none"
     brightness: float = Field(0.0, ge=-0.3, le=0.3)
     contrast: float = Field(1.0, ge=0.5, le=1.8)

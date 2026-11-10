@@ -26,6 +26,8 @@ ENCODERS = {
     "mac": ["-c:v", "h264_videotoolbox", "-b:v", "8M"],
 }
 
+PREVIEW_ENCODER = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
+
 FADE = 0.35
 
 
@@ -90,17 +92,21 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
                   subs_file: Optional[Path], music_file: Optional[Path], workdir: Path,
                   camera: Optional[list[tuple[float, float]]] = None,
                   punches: Optional[list[tuple[float, float]]] = None,
-                  layers: Optional[list] = None) -> list[str]:
+                  layers: Optional[list] = None, framing: Optional[dict] = None,
+                  out_scale: float = 1.0) -> list[str]:
     """Mengembalikan argumen FFmpeg (tanpa 'ffmpeg -y' di depannya).
 
     camera  : titik kunci (detik klip, pusat x 0..1) agar bingkai mengikuti wajah
     punches : rentang (detik klip) untuk punch-in zoom
     layers  : PNG animasi (overlays.Layer) dengan waktu di timeline output
+    framing : M2.1 {"segments": framing.plan(...), "data": framing.json, "zoom", "distance"} (None = perilaku M1)
     """
     src_w, src_h = info["width"], info["height"]
     in_dur = req.end - req.start
     out_dur = in_dur / req.speed
     ow, oh = output_size(req.aspect, src_w, src_h)
+    if out_scale != 1.0:            # pratinjau cepat: pipeline sama, resolusi lebih kecil
+        ow, oh = _even(ow * out_scale), _even(oh * out_scale)
     cw, ch, cx, cy = crop_box(req.aspect, src_w, src_h, req.crop_x, req.crop_y)
 
     args = ["-ss", f"{req.start:.3f}", "-t", f"{in_dur:.3f}", "-i", str(src)]
@@ -113,7 +119,29 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
 
     # ---- video ----
     v = []
-    if (cw, ch) != (src_w, src_h):
+    graph = []
+    base_label = "[0:v]"
+    segments = (framing or {}).get("segments") if req.aspect != "original" else None
+    if segments:
+        # M2.1 Smart Framing: tiap bagian klip punya tata letak sendiri (wajah / materi+wajah / materi / tetap).
+        # Bagian ke-k dibaca dari masukan terpisah (-ss) agar hanya potongannya yang didekode, lalu digabung.
+        from .framing import segment_filter
+        manual = (req.crop_x, req.crop_y, framing.get("zoom", 0.0))
+        if len(segments) == 1:
+            graph.append(segment_filter(segments[0], framing["data"], "[0:v]", "[framed]", src_w, src_h, ow, oh,
+                                        manual, framing.get("distance", "auto")))
+        else:
+            first_seg = first_layer + len(layers)
+            labels = []
+            for k, seg in enumerate(segments):
+                args += ["-ss", f"{seg['start']:.3f}", "-t", f"{seg['end'] - seg['start']:.3f}", "-i", str(src)]
+                graph.append(segment_filter(seg, framing["data"], f"[{first_seg + k}:v]", f"[fs{k}]", src_w, src_h,
+                                            ow, oh, manual, framing.get("distance", "auto")))
+                labels.append(f"[fs{k}]")
+            graph.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[framed]")
+        base_label = "[framed]"
+        cw, ch = src_w, src_h          # crop sudah dikerjakan per bagian
+    if not segments and (cw, ch) != (src_w, src_h):
         if camera and cw < src_w:
             # Bingkai bergerak mengikuti wajah (x dievaluasi per frame).
             v.append(f"crop={cw}:{ch}:x='{crop_x_expression(camera, src_w, cw)}':y={cy}")
@@ -124,7 +152,7 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
         v.append(f"scale=w='trunc({ow}*{z}/2)*2':h='trunc({oh}*{z}/2)*2':eval=frame:flags=bicubic")
         # Pusat zoom sedikit di atas tengah: biasanya posisi wajah.
         v.append(f"crop={ow}:{oh}:(iw-{ow})/2:(ih-{oh})*0.4")
-    else:
+    elif not segments:
         v.append(f"scale={ow}:{oh}:flags=lanczos")
     if abs(req.speed - 1.0) >= 1e-3:
         v.append(f"setpts=PTS/{req.speed:.4f}")
@@ -132,10 +160,11 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
     if req.brightness or req.contrast != 1.0 or req.saturation != 1.0:
         v.append(f"eq=brightness={req.brightness:.3f}:contrast={req.contrast:.3f}:saturation={req.saturation:.3f}")
 
-    graph = []
+    if not v:
+        v = ["null"]
     if layers:
         # Grafis ditumpuk setelah color grading agar warnanya tidak ikut berubah.
-        graph.append(f"[0:v]{','.join(v)}[base0]")
+        graph.append(f"{base_label}{','.join(v)}[base0]")
         cur = "[base0]"
         for i, layer in enumerate(layers):
             idx = first_layer + i
@@ -149,7 +178,7 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
         v = []
         src_label = cur
     else:
-        src_label = "[0:v]"
+        src_label = base_label
     if req.fade and out_dur > FADE * 3:
         v.append(f"fade=t=in:st=0:d={FADE}")
         v.append(f"fade=t=out:st={out_dur - FADE:.3f}:d={FADE}")
@@ -196,6 +225,6 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
         args += ["-map", final, "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
     else:
         args += ["-an"]
-    args += ENCODERS[req.encoder]
+    args += PREVIEW_ENCODER if out_scale != 1.0 else ENCODERS[req.encoder]
     args += ["-t", f"{out_dur:.3f}", "-movflags", "+faststart", str(out)]
     return args

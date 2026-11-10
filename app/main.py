@@ -1183,6 +1183,52 @@ def put_recipe(pid: str, body: recipe.SaveBody, user: dict = CurrentUser):
     return _recipe_public(pid, state)
 
 
+@app.get("/api/projects/{pid}/framing")
+def get_framing(pid: str, start: float, end: float, mode: Optional[str] = None, user: dict = CurrentUser):
+    """M2.1: rencana bingkai klip dari resep tersimpan (mode/pilihan per bagian) beserta alasannya."""
+    _project_for(pid, user)
+    from . import framing, pipeline
+    rec = recipe.load(pid)["recipe"]
+    if end <= start:
+        raise HTTPException(400, "Rentang tidak sah.")
+    data = pipeline.framing_data(pid)
+    m = mode if mode in framing.MODES else rec.crop.mode
+    segs = framing.plan(data, start, end, m, [s.model_dump() for s in rec.crop.sections])
+    return {"mode": m, "segments": framing.public_plan(segs), "summary": framing.summarize(data, start, end),
+            "analyzed": bool(data.get("samples")), "detector": "heuristik: wajah (YuNet) + area terang/bertulisan"}
+
+
+@app.post("/api/projects/{pid}/preview-clip")
+def preview_clip(pid: str, body: recipe.PreviewBody, user: dict = CurrentUser):
+    """M2: pratinjau MP4 kecil (maks 10 dtk) dari resep TERSIMPAN lewat pipeline render yang sama."""
+    from . import pipeline
+    meta = _project_for(pid, user)
+    if meta.get("status") != "siap":
+        raise HTTPException(409, "Video belum selesai dianalisis.")
+    state = recipe.load(pid)
+    if state["version"] != body.version:
+        return JSONResponse(status_code=409, content={"detail": "Resep berubah; tunggu tersimpan lalu ulangi.",
+                                                      "conflict": True, "current": _recipe_public(pid, state)})
+    start = max(0.0, body.start)
+    end = min(body.end, start + pipeline.PREVIEW_MAX_SECONDS)
+    try:
+        req = recipe.to_render_request(pid, state["recipe"], start, max(end, start + 1.0))
+        out = pipeline.render_preview(pid, req)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _touch(pid)
+    return {"url": f"/api/projects/{pid}/previews/{out.name}", "start": start, "end": end}
+
+
+@app.get("/api/projects/{pid}/previews/{name}")
+def get_preview_clip(pid: str, name: str, user: dict = CurrentUser):
+    _project_for(pid, user)
+    path = storage.project_dir(pid) / "previews" / storage.safe_filename(name)
+    if not path.is_file() or path.suffix != ".mp4":
+        raise HTTPException(404)
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "private, max-age=3600"})
+
+
 @app.post("/api/projects/{pid}/render-recipe")
 def render_recipe(pid: str, body: recipe.RenderBody, user: dict = CurrentUser):
     """Render klip dari resep TERSIMPAN (sumber yang sama dengan pratinjau). Versi harus sama dengan yang dilihat

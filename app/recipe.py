@@ -24,7 +24,8 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from . import db
-from .schemas import MAX_OVERLAYS, MAX_SEG_EDITS, MAX_TEXT_FIXES, MusicSettings, PlanItem, RenderRequest, SubtitleSettings
+from .schemas import (MAX_OVERLAYS, MAX_SEG_EDITS, MAX_TEXT_FIXES, FrameSection, MusicSettings, PlanItem,
+                      RenderRequest, SubtitleSettings)
 
 SCHEMA_VERSION = 1
 MAX_RECIPE_BYTES = 1536 * 1024         # batas ukuran JSON resep tersimpan (M1.1: koreksi + timing per kata)
@@ -58,6 +59,19 @@ class Crop(_Strict):
     x: float = Field(0.5, ge=0, le=1)
     y: float = Field(0.5, ge=0, le=1)
     reframe: Literal["manual", "auto"] = "auto"
+    # M2.1 Smart Framing: Otomatis / Fokus Wajah / Fokus Materi / Manual, jarak, zoom, pilihan per bagian.
+    mode: Literal["auto", "face", "material", "manual"] = "auto"
+    zoom: float = Field(0.0, ge=0, le=2)
+    distance: Literal["auto", "close", "medium", "wide"] = "auto"
+    sections: list[FrameSection] = Field(default_factory=list, max_length=60)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy(cls, data):
+        # Resep M1/M1.1 tanpa `mode`: pertahankan hasil render lama (auto = ikuti wajah, manual = bingkai tetap).
+        if isinstance(data, dict) and "mode" not in data and "reframe" in data:
+            data = {**data, "mode": "face" if data["reframe"] == "auto" else "manual"}
+        return data
 
 
 class Look(_Strict):
@@ -278,6 +292,8 @@ def to_render_request(pid: str, recipe: Recipe, start: float, end: float, title:
     return RenderRequest(
         start=start, end=end, title=title, aspect=recipe.aspect, reframe=recipe.crop.reframe,
         animations=recipe.animations, crop_x=recipe.crop.x, crop_y=recipe.crop.y,
+        frame_mode=recipe.crop.mode, frame_zoom=recipe.crop.zoom, frame_distance=recipe.crop.distance,
+        frame_sections=list(recipe.crop.sections),
         color=recipe.look.color, brightness=recipe.look.brightness, contrast=recipe.look.contrast,
         saturation=recipe.look.saturation, speed=recipe.motion.speed, zoom=recipe.motion.zoom,
         fade=recipe.motion.fade, normalize_audio=recipe.audio.normalize, encoder=recipe.encoder,
@@ -300,6 +316,13 @@ def public(state: dict, users: Optional[dict] = None) -> dict:
 class SaveBody(_Strict):
     version: int = Field(ge=0)          # versi yang sedang diubah klien (0 = belum pernah disimpan)
     recipe: Recipe
+
+
+class PreviewBody(_Strict):
+    """M2: pratinjau cepat dari resep tersimpan (maks 10 dtk)."""
+    version: int = Field(ge=1)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
 
 
 class RenderBody(_Strict):
