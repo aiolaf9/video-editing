@@ -259,3 +259,23 @@ class RenderBody(_Strict):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     title: str = Field("", max_length=120)
+
+
+class BatchClip(_Strict):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    title: str = Field("", max_length=100)
+
+
+class BatchBody(_Strict):
+    """Ekspor massal (desktop M1): beberapa klip x beberapa rasio dari resep tersimpan dalam satu aksi."""
+    version: int = Field(ge=1)
+    clips: list[BatchClip] = Field(min_length=1, max_length=30)
+    aspects: list[Literal["9:16", "1:1", "4:5", "16:9", "original"]] = Field(min_length=1, max_length=5)
+
+    @field_validator("aspects")
+    @classmethod
+    def _unique(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("Rasio tidak boleh ganda.")
+        return value

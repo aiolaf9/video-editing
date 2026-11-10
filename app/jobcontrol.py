@@ -163,6 +163,8 @@ def popen(cmd: list[str], **kwargs) -> subprocess.Popen:
     """
     if os.name == "posix":
         kwargs.setdefault("start_new_session", True)  # grup proses sendiri: aman di-kill bersama anaknya
+    elif os.name == "nt":
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)  # aplikasi desktop: tanpa jendela konsol FFmpeg
     proc = subprocess.Popen(cmd, **kwargs)
     control = current()
     if control is not None:

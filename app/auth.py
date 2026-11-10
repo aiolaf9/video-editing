@@ -146,6 +146,25 @@ def login(request: Request, response: Response, email: str, password: str) -> di
     return public_user(user)
 
 
+def desktop_session(response: Response) -> dict:
+    """Desktop (satu pengguna): sesi untuk pengguna lokal tanpa formulir login. Dipanggil hanya setelah launcher
+    membuktikan kunci peluncuran (lihat main.desktop_enter)."""
+    from .config import DESKTOP_USER_EMAIL
+    user = find_by_email(DESKTOP_USER_EMAIL)
+    if user is None:
+        raise HTTPException(500, "Pengguna lokal belum siap. Tutup lalu buka ulang aplikasi.")
+    token = secrets.token_urlsafe(32)
+    now, days = time.time(), 3650
+    with db.engine().begin() as c:
+        c.execute(delete(db.sessions).where(db.sessions.c.user_id == user["id"]))   # satu sesi per peluncuran
+        c.execute(insert(db.sessions).values(token_hash=_token_hash(token), user_id=user["id"], created=now,
+                                             expires=now + days * 86400))
+        c.execute(update(db.users).where(db.users.c.id == user["id"]).values(last_login=now))
+        c.execute(delete(db.sessions).where(db.sessions.c.expires < now))
+    response.set_cookie(COOKIE, token, max_age=days * 86400, httponly=True, samesite="strict", secure=False, path="/")
+    return public_user(user)
+
+
 def logout(request: Request, response: Response) -> None:
     token = request.cookies.get(COOKIE)
     if token:

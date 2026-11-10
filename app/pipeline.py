@@ -402,6 +402,42 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
         "size": out.stat().st_size,
     }
     storage.add_render(pid, {**item, "user_id": getattr(job, "user_id", None)})
+    exported = export_copy(meta, out, item["title"])
+    if exported:
+        item["export_path"] = str(exported)
     job.update(100, "Render selesai!")
     return item
+
+
+def export_copy(meta: dict, out, title: str):
+    """Desktop: salin MP4 ke folder ekspor (Videos\\NH AI Clip Studio\\<proyek>\\<judul>.mp4) tanpa menimpa berkas lain.
+    Gagal menyalin tidak menggagalkan render (hasil tetap ada di proyek)."""
+    from .config import EXPORT_DIR
+    if not EXPORT_DIR:
+        return None
+    try:
+        folder = EXPORT_DIR / (_safe_name(meta.get("name") or "Proyek") or "Proyek")
+        folder.mkdir(parents=True, exist_ok=True)
+        base = _safe_name(title) or "Klip"
+        dest, n = folder / f"{base}.mp4", 2
+        while dest.exists():
+            dest, n = folder / f"{base} ({n}).mp4", n + 1
+        shutil.copy2(out, dest)
+        return dest
+    except OSError as exc:
+        log.warning("Salin ke folder ekspor gagal: %s", exc)
+        return None
+
+
+def _safe_name(text: str) -> str:
+    """Nama berkas aman di Windows: tanpa \\ / : * ? " < > |, tanpa titik/spasi di ujung, maks 80 karakter."""
+    import re
+    clean = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", str(text)).strip().strip(".")
+    clean = re.sub(r"\s+", " ", clean)[:80].strip()
+    if clean.split(".")[0].upper() in _WIN_RESERVED:
+        clean = "_" + clean
+    return clean
+
+
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 

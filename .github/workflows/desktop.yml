@@ -1,0 +1,236 @@
+# Desktop M1 (Windows): bangun NH-AI-Clip-Studio-Setup.exe dan UJI SUNGGUHAN di runner Windows.
+#   1. siapkan bundel: FFmpeg (versi & sha256 dikunci, libass/libx264 diverifikasi), Whisper base (lisensi MIT dicek),
+#      sampel video ucapan (suara SAPI Windows, offline)
+#   2. selftest dari kode sumber
+#   3. PyInstaller (onedir) -> selftest exe beku dengan koneksi keluar DIBLOKIR firewall dan PATH tanpa Python/FFmpeg
+#   4. Inno Setup -> pasang diam-diam (per pengguna) -> selftest aplikasi terpasang (folder bawaan) -> jendela GUI
+#      (tangkapan layar) -> uninstall (proyek pengguna tetap ada)
+#   5. artefak: installer + laporan + log
+# Catatan jujur: runner GitHub BUKAN Windows bersih (ada Python, VC++ runtime, dll.). Tanpa tanda tangan kode.
+# Tidak menyentuh VPS/DNS/cPanel/website; tidak memakai secret.
+name: Desktop Windows
+
+on:
+  push:
+    branches: ["desktop/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip
+  FFMPEG_SHA256: 04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4  # pragma: allowlist secret (sha256 berkas publik)
+  WHISPER_REPO: Systran/faster-whisper-base
+  PYTHONUTF8: "1"
+
+jobs:
+  windows-installer:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Pasang dependensi desktop
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r desktop/requirements-desktop.txt
+          python -m pip freeze | Tee-Object build-freeze.txt
+
+      - name: Periksa lisensi paket Python yang dibundel
+        run: |
+          New-Item -ItemType Directory -Force build/desktop/licenses | Out-Null
+          pip-licenses --format=markdown --with-urls --output-file build/desktop/licenses/python-packages.md
+          # Gagal bila ada paket GPL/AGPL di aplikasi (PyInstaller hanya alat build; bootloader-nya GPL + pengecualian).
+          pip-licenses --partial-match --fail-on="GPL;AGPL;Commercial;Proprietary" `
+            --ignore-packages pyinstaller pyinstaller-hooks-contrib pip-licenses
+
+      - name: Unduh FFmpeg (dikunci sha256) dan verifikasi libass/libx264
+        run: |
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          Invoke-WebRequest $env:FFMPEG_URL -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:FFMPEG_SHA256) { throw "sha256 FFmpeg tidak cocok: $hash" }
+          Expand-Archive $zip "$env:RUNNER_TEMP\ffmpeg" -Force
+          $src = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force build/desktop/bin | Out-Null
+          Copy-Item "$($src.FullName)\bin\ffmpeg.exe", "$($src.FullName)\bin\ffprobe.exe" build/desktop/bin/
+          Copy-Item "$($src.FullName)\LICENSE" build/desktop/licenses/FFmpeg-LICENSE-GPLv3.txt
+          Copy-Item "$($src.FullName)\README.txt" build/desktop/licenses/FFmpeg-README-build-and-source.txt
+          $conf = & build/desktop/bin/ffmpeg.exe -hide_banner -buildconf | Out-String
+          foreach ($need in "--enable-libass", "--enable-libx264", "--enable-libfreetype", "--enable-libfribidi") {
+            if ($conf -notmatch [regex]::Escape($need)) { throw "FFmpeg tanpa $need" }
+          }
+          & build/desktop/bin/ffmpeg.exe -hide_banner -version | Select-Object -First 1
+
+      - name: Unduh model Whisper base (lisensi MIT) dan ikon
+        run: |
+          python desktop/ci/fetch_whisper.py $env:WHISPER_REPO build/desktop/whisper-base
+          if ($LASTEXITCODE -ne 0) { throw "unduh model gagal" }
+          Get-ChildItem build/desktop/whisper-base | Select-Object Name, Length
+          python -c "from PIL import Image; Image.open('web/icons/icon-512.png').save('build/desktop/app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
+      - name: Buat sampel video ucapan (SAPI, offline)
+        run: |
+          New-Item -ItemType Directory -Force build/test | Out-Null
+          ./desktop/ci/make_speech.ps1 -Text desktop/ci/speech.txt -Ffmpeg build/desktop/bin/ffmpeg.exe -Out build/test/speech.mp4
+
+      - name: Selftest dari kode sumber
+        env:
+          FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
+          FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
+          WHISPER_MODEL_DIR: ${{ github.workspace }}\build\desktop\whisper-base
+        run: |
+          python -m desktop.launcher --selftest build/test/speech.mp4 --report build/test/report-source.json `
+            --data-dir "$env:RUNNER_TEMP\src-data" --export-dir "$env:RUNNER_TEMP\src-export"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP\src-data\logs\desktop.log" -Tail 80; throw "selftest sumber gagal" }
+
+      - name: Build PyInstaller (onedir)
+        run: |
+          pyinstaller desktop/nh_clip_studio.spec --noconfirm --clean --distpath dist --workpath build/pyi
+          $internal = "dist/NH-AI-Clip-Studio/_internal"
+          foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") {
+            if (-not (Get-ChildItem $internal -Recurse -Filter $dll -ErrorAction SilentlyContinue)) {
+              Write-Host "Menyalin $dll (VC++ runtime) agar jalan di Windows tanpa VC++ Redistributable"
+              Copy-Item "$env:WINDIR\System32\$dll" $internal
+            }
+          }
+          $size = (Get-ChildItem dist/NH-AI-Clip-Studio -Recurse | Measure-Object Length -Sum).Sum
+          "Ukuran folder aplikasi: {0:N1} MB" -f ($size / 1MB)
+
+      - name: Selftest exe beku (koneksi keluar diblokir, PATH tanpa Python/FFmpeg)
+        run: |
+          Set-NetFirewallProfile -All -Enabled True
+          $exe = (Resolve-Path dist/NH-AI-Clip-Studio/NH-AI-Clip-Studio.exe).Path
+          $remote = @("0.0.0.0-126.255.255.255", "128.0.0.0-255.255.255.255", "2000::/3")
+          New-NetFirewallRule -DisplayName "nh-block-exe" -Direction Outbound -Program $exe -RemoteAddress $remote -Action Block | Out-Null
+          # Bukti aturan memblokir: program yang sama-sama diblokir (python) tidak bisa menjangkau internet.
+          $py = (Get-Command python).Source
+          New-NetFirewallRule -DisplayName "nh-block-probe" -Direction Outbound -Program $py -RemoteAddress $remote -Action Block | Out-Null
+          python -c "import urllib.request as u; u.urlopen('https://huggingface.co', timeout=10)"
+          if ($LASTEXITCODE -eq 0) { throw "aturan firewall tidak memblokir; uji offline tidak sah" }
+          Write-Host "Aturan firewall terbukti memblokir koneksi keluar."
+          Remove-NetFirewallRule -DisplayName "nh-block-probe"
+          $env:PATH = "$env:WINDIR\System32;$env:WINDIR;$env:WINDIR\System32\Wbem"
+          Remove-Item Env:PYTHONPATH, Env:PYTHONHOME -ErrorAction SilentlyContinue
+          $p = Start-Process $exe -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-frozen.json`"", `
+            "--data-dir", "`"$env:RUNNER_TEMP\frozen-data`"", "--export-dir", "`"$env:RUNNER_TEMP\frozen-export`"" -Wait -PassThru
+          Get-Content build/test/report-frozen.json -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\frozen-data\logs\desktop.log" -Tail 120; throw "selftest exe gagal ($($p.ExitCode))" }
+
+      - name: Build installer (Inno Setup)
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=0.1.0-m1.${{ github.run_number }}" desktop/installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC gagal" }
+          $setup = Get-Item dist/installer/NH-AI-Clip-Studio-Setup.exe
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          "NH-AI-Clip-Studio-Setup.exe: {0:N1} MB, sha256 {1}" -f ($setup.Length / 1MB), $hash | Tee-Object build/test/installer.txt
+
+      - name: Pasang diam-diam, selftest aplikasi terpasang, GUI, uninstall
+        run: |
+          $setup = (Resolve-Path dist/installer/NH-AI-Clip-Studio-Setup.exe).Path
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/TASKS=desktopicon", `
+            "/LOG=`"$PWD\build\test\install.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "instalasi gagal ($($p.ExitCode))" }
+          $app = "$env:LOCALAPPDATA\Programs\NH AI Clip Studio"
+          $exe = "$app\NH-AI-Clip-Studio.exe"
+          if (-not (Test-Path $exe)) { throw "exe tidak terpasang di $app" }
+          $lnk = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "NH AI Clip Studio.lnk"
+          if (-not $lnk) { throw "shortcut Start Menu tidak ada" }
+          "Terpasang di $app; shortcut: $($lnk.FullName)"
+
+          $env:PATH = "$env:WINDIR\System32;$env:WINDIR;$env:WINDIR\System32\Wbem"
+          Remove-Item Env:PYTHONPATH, Env:PYTHONHOME -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName "nh-block-installed" -Direction Outbound -Program $exe `
+            -RemoteAddress @("0.0.0.0-126.255.255.255", "128.0.0.0-255.255.255.255", "2000::/3") -Action Block | Out-Null
+          # Folder bawaan pengguna: %LOCALAPPDATA%\NH AI Clip Studio dan Videos\NH AI Clip Studio
+          $p = Start-Process $exe -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-installed.json`"" -Wait -PassThru
+          Get-Content build/test/report-installed.json -ErrorAction SilentlyContinue
+          $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
+          if ($p.ExitCode -ne 0) { Get-Content "$data\logs\desktop.log" -Tail 120; throw "selftest aplikasi terpasang gagal" }
+          $export = "$env:USERPROFILE\Videos\NH AI Clip Studio"
+          $mp4 = Get-ChildItem $export -Recurse -Filter *.mp4
+          "MP4 di folder ekspor bawaan: $($mp4.Count)"
+          if ($mp4.Count -lt 6) { throw "folder ekspor bawaan kurang dari 6 MP4" }
+
+          # GUI: buka seperti pengguna (tanpa argumen), tunggu server, ambil tangkapan layar jendela.
+          $env:NH_SILENT = "1"
+          $gui = Start-Process $exe -PassThru
+          $ok = $false
+          foreach ($i in 1..90) {
+            Start-Sleep 2
+            try { if ((Invoke-WebRequest http://127.0.0.1:47811/api/health -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200) { $ok = $true; break } } catch {}
+          }
+          if (-not $ok) { Get-Content "$data\logs\desktop.log" -Tail 80; throw "server GUI tidak siap" }
+          Start-Sleep 15
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\build\test\gui-window.png")
+          $second = Start-Process $exe -PassThru
+          if (-not $second.WaitForExit(30000)) { throw "salinan kedua tidak keluar (kunci satu instans gagal)" }
+          Select-String -Path "$data\logs\desktop.log" -Pattern "Membuka jendela|browser bawaan|sudah terbuka" | Select-Object -Last 5
+          if ($gui.HasExited) { throw "aplikasi GUI tertutup sendiri" }
+          Stop-Process -Id $gui.Id -Force
+          Start-Sleep 3
+
+          $projects = (Get-ChildItem "$data\projects" -Directory).Count
+          $p = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          Start-Sleep 5
+          if (Test-Path $exe) { throw "uninstall tidak menghapus aplikasi" }
+          if ((Get-ChildItem "$data\projects" -Directory).Count -ne $projects) { throw "uninstall menghapus proyek pengguna" }
+          "Uninstall OK; $projects proyek pengguna & hasil ekspor tetap ada." | Tee-Object build/test/uninstall.txt
+          Copy-Item "$data\logs\desktop.log" build/test/desktop-installed.log
+
+      - name: Ringkasan
+        if: always()
+        run: |
+          "## NH AI Clip Studio — build Windows" >> $env:GITHUB_STEP_SUMMARY
+          if (Test-Path build/test/installer.txt) { Get-Content build/test/installer.txt >> $env:GITHUB_STEP_SUMMARY }
+          foreach ($r in "source", "frozen", "installed") {
+            $f = "build/test/report-$r.json"
+            if (Test-Path $f) {
+              $j = Get-Content $f -Raw | ConvertFrom-Json
+              "- selftest ${r}: ok=$($j.ok) analisis=$($j.analysis_seconds)s render=$($j.render_seconds)s kata=$($j.transcript_words) mp4=$($j.outputs.Count)" >> $env:GITHUB_STEP_SUMMARY
+            } else { "- selftest ${r}: tidak ada laporan" >> $env:GITHUB_STEP_SUMMARY }
+          }
+
+      - name: Unggah installer
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: NH-AI-Clip-Studio-Setup
+          path: dist/installer/NH-AI-Clip-Studio-Setup.exe
+          retention-days: 30
+          compression-level: 0
+
+      - name: Unggah laporan uji
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: desktop-test-reports
+          path: |
+            build/test/*.json
+            build/test/*.txt
+            build/test/*.log
+            build/test/*.png
+            build/desktop/licenses/
+            build-freeze.txt
+          retention-days: 30

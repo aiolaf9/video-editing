@@ -1,0 +1,16 @@
+# Aplikasi desktop Windows (M1). Hanya pustaka yang dibundel; tanpa yt-dlp, klien API AI berbayar, atau driver
+# PostgreSQL (lihat excludes di nh_clip_studio.spec). Lisensi diperiksa di workflow desktop.yml (pip-licenses).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.6
+numpy>=1.26
+faster-whisper>=1.1
+pillow>=10.1
+opencv-python-headless>=4.8
+sqlalchemy>=2.0
+alembic>=1.13
+pywebview==6.2.1
+# Build saja (tidak masuk aplikasi kecuali bootloader PyInstaller: GPL dengan pengecualian distribusi)
+pyinstaller==6.22.3
+pip-licenses==5.5.5

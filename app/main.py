@@ -23,6 +23,7 @@ from sqlalchemy import delete, func, insert, select, true, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from . import ai, auth, clipper, db, edit_templates, jobs, lifecycle, looks, monitor, netpolicy, plan, recipe, storage, uploads
+from .config import (DESKTOP_LAUNCH_KEY, DESKTOP_MODE, DESKTOP_USER_EMAIL, EXPORT_DIR)
 from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPROBE, FONTS_DIR, JOB_WORKERS,
                      MAX_PENDING_PER_USER, MAX_UPLOAD_MB, MEDIA_LIFECYCLE, MEDIA_MAX_HOURS, MEDIA_RETENTION_HOURS,
                      METRICS_TOKEN, UPLOAD_CHUNK_MB, UPLOAD_RESUME_HOURS, UPLOAD_TMP_DIR,
@@ -52,6 +53,8 @@ CurrentUser = Depends(auth.current_user)
 def bootstrap() -> None:
     """Siapkan database, admin pertama (dari env), dan data dari versi lama."""
     db.engine()
+    if DESKTOP_MODE:
+        ensure_desktop_user()
     email, password = os.environ.get("ADMIN_EMAIL"), os.environ.get("ADMIN_PASSWORD")
     if email and password and auth.count_users() == 0:
         try:
@@ -64,6 +67,19 @@ def bootstrap() -> None:
         jobs.migrate_legacy_queues()  # job aktif dari antrean lama (berat/unduh) -> analisis/render/io
     except Exception:
         log.exception("Migrasi data lama gagal (aplikasi tetap berjalan)")
+
+
+def ensure_desktop_user() -> None:
+    """Desktop: satu pengguna lokal (peran admin, unit "Lokal") dengan password acak yang tidak pernah dipakai."""
+    import secrets as _secrets
+    if auth.find_by_email(DESKTOP_USER_EMAIL):
+        return
+    try:
+        auth.create_user(DESKTOP_USER_EMAIL, "Pengguna lokal", _secrets.token_urlsafe(24) + "aA1!", "admin",
+                         ensure_unit("Lokal"))
+        log.info("Pengguna lokal desktop dibuat.")
+    except (HTTPException, IntegrityError):
+        pass
 
 
 def migrate_legacy() -> None:
@@ -135,7 +151,10 @@ async def lifespan(_app: FastAPI):
         from .worker import start_embedded
         stop = start_embedded(JOB_WORKERS)
     sweeper = _start_web_cleanup() if not EMBEDDED_WORKERS else None
+    desktop_cleaner = _start_desktop_cleanup() if DESKTOP_MODE else None
     yield
+    if desktop_cleaner:
+        desktop_cleaner.set()
     if sweeper:
         sweeper.set()
     if stop:
@@ -146,7 +165,25 @@ async def lifespan(_app: FastAPI):
         jobcontrol.cancel_all("shutdown")
 
 
-app = FastAPI(title="Video Editing AI", version="0.2.0", lifespan=lifespan)
+def _start_desktop_cleanup() -> threading.Event:
+    """Desktop: proyek TIDAK pernah dihapus otomatis; hanya cache & berkas sementara (upload terputus, sisa render,
+    berkas temp proses) yang dibersihkan saat aplikasi dibuka lalu tiap jam."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        while True:
+            try:
+                lifecycle.desktop_cleanup()
+            except Exception:
+                log.warning("Pembersihan cache desktop gagal:\n%s", traceback.format_exc())
+            if stop.wait(3600):
+                return
+
+    threading.Thread(target=loop, name="desktop-cleanup", daemon=True).start()
+    return stop
+
+
+app = FastAPI(title="NH AI Clip Studio" if DESKTOP_MODE else "Video Editing AI", version="0.2.0", lifespan=lifespan)
 
 
 @app.exception_handler(lifecycle.MediaGone)
@@ -213,6 +250,19 @@ async def db_unavailable(_request: Request, exc: OperationalError):
     log.warning("Database tidak tersedia: %s", str(exc).splitlines()[0][:200])
     return JSONResponse({"detail": "Server sedang sibuk. Coba lagi beberapa detik lagi."}, status_code=503,
                         headers={"Retry-After": "5"})
+
+
+@app.middleware("http")
+async def desktop_host_guard(request: Request, call_next):
+    """Desktop: server hanya untuk jendela aplikasi di komputer ini. Tolak Host selain 127.0.0.1/localhost
+    (mencegah situs lain menjangkau port lokal lewat DNS rebinding)."""
+    if DESKTOP_MODE:
+        host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            return JSONResponse({"detail": "Host tidak diizinkan."}, status_code=403)
+        if request.url.path == "/sw.js":   # jendela desktop tidak memakai cache offline PWA
+            return JSONResponse({"detail": "Tidak tersedia di aplikasi desktop."}, status_code=404)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -371,6 +421,8 @@ def _queue_job(task: str, kind: str, meta: dict, user: dict, payload: dict, labe
 
 @app.post("/api/auth/login")
 def login(body: LoginRequest, request: Request, response: Response):
+    if DESKTOP_MODE:   # satu pengguna lokal: sesi hanya lewat /api/desktop/enter dari launcher
+        raise HTTPException(404, "Aplikasi desktop tidak memakai login.")
     return auth.login(request, response, body.email, body.password)
 
 
@@ -394,7 +446,40 @@ def me(user: dict = CurrentUser):
                             "max_hours": MEDIA_MAX_HOURS}
     from . import config
     data["max_video_seconds"] = config.MAX_VIDEO_SECONDS or None
+    data["desktop"] = DESKTOP_MODE
+    if DESKTOP_MODE:
+        data["export_dir"] = str(EXPORT_DIR) if EXPORT_DIR else None
     return data
+
+
+# ------------------------------------------------------------------ desktop (NH AI Clip Studio, M1)
+
+@app.get("/api/desktop/enter", include_in_schema=False)
+def desktop_enter(key: str = ""):
+    """Jendela aplikasi membuka alamat ini sekali dengan kunci peluncuran -> sesi pengguna lokal, lalu ke editor.
+    Tanpa kunci yang benar (atau bukan mode desktop) tidak ada sesi."""
+    if not DESKTOP_MODE or not DESKTOP_LAUNCH_KEY or not hmac.compare_digest(key, DESKTOP_LAUNCH_KEY):
+        raise HTTPException(404)
+    from fastapi.responses import RedirectResponse
+    response = RedirectResponse("/", status_code=303)
+    auth.desktop_session(response)
+    return response
+
+
+@app.get("/api/desktop/info", include_in_schema=False)
+def desktop_info():
+    return {"desktop": DESKTOP_MODE}
+
+
+@app.post("/api/desktop/open-folder")
+def desktop_open_folder(user: dict = CurrentUser):
+    """Buka folder ekspor di Windows Explorer (hanya desktop)."""
+    if not DESKTOP_MODE or not EXPORT_DIR:
+        raise HTTPException(404)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        os.startfile(str(EXPORT_DIR))  # nosec B606 - folder milik aplikasi, bukan masukan pengguna
+    return {"path": str(EXPORT_DIR)}
 
 
 @app.post("/api/auth/password")
@@ -905,6 +990,33 @@ def update_template(template_id: str, body: edit_templates.TemplateUpdate, user:
 def delete_template(template_id: str, user: dict = CurrentUser):
     edit_templates.remove(template_id, user)
     return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/render-batch")
+def render_batch(pid: str, body: recipe.BatchBody, user: dict = CurrentUser):
+    """Ekspor massal: setiap klip x setiap rasio menjadi satu render dari resep TERSIMPAN (sama dengan pratinjau).
+    Rasio menggantikan rasio resep; crop, warna, subtitle, animasi, dan audio mengikuti resep."""
+    meta = _project_for(pid, user)
+    state = recipe.load(pid)
+    if state["version"] != body.version:
+        return JSONResponse(status_code=409, content={
+            "detail": "Resep editing berubah sejak pratinjau terakhir. Tunggu tersimpan, lalu ekspor lagi.",
+            "conflict": True, "current": _recipe_public(pid, state)})
+    count = len(body.clips) * len(body.aspects)
+    if jobs.pending_for_user(user["id"]) + count > MAX_PENDING_PER_USER:
+        raise HTTPException(429, f"Ekspor {count} video melebihi batas antrean ({MAX_PENDING_PER_USER}). "
+                                 "Kurangi jumlah klip/rasio atau tunggu sebagian selesai.")
+    out = []
+    for i, clip in enumerate(body.clips):
+        for aspect in body.aspects:
+            title = f"{clip.title or f'Klip {i + 1}'} ({aspect.replace(':', 'x')})"
+            try:
+                req = recipe.to_render_request(pid, state["recipe"], clip.start, clip.end, title)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
+            req = req.model_copy(update={"aspect": aspect})
+            out.append(_queue_render(meta, req, user, {"recipe_version": state["version"], "batch": True}))
+    return {"jobs": out, "count": len(out)}
 
 
 @app.get("/api/editor/config")

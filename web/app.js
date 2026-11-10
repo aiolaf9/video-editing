@@ -1575,6 +1575,29 @@ function bind() {
     } catch (err) { toast(err.message, true); }
   });
 
+  $("batchExportBtn").addEventListener("click", async () => {
+    if (!state.checked.size) { toast("Centang dulu klip yang ingin diekspor.", true); return; }
+    const aspects = [...document.querySelectorAll(".batch-aspect:checked")].map((el) => el.value);
+    if (!aspects.length) { toast("Pilih minimal satu rasio.", true); return; }
+    try {
+      await flushRecipe();
+      const idx = [...state.checked].sort((a, b) => a - b);
+      const clips = idx.map((i) => ({ start: state.clips[i].start, end: state.clips[i].end, title: `Klip #${i + 1}` }));
+      let res;
+      try {
+        res = await postJSON(`/api/projects/${state.project.id}/render-batch`, { version: rs.version, clips, aspects });
+      } catch (e) {
+        if (e.status === 409 && e.data && e.data.current) showConflict(e.data.current, recipeFromControls());
+        throw e;
+      }
+      await afterRenderSubmit(res.count);
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $("openExportBtn").addEventListener("click", async () => {
+    try { await postJSON("/api/desktop/open-folder", {}); } catch (err) { toast(err.message, true); }
+  });
+
   $("aspectSeg").addEventListener("click", (e) => { if (e.target.dataset.v) setAspect(e.target.dataset.v); });
 
   $("musicInput").addEventListener("change", async (e) => {
@@ -1730,11 +1753,32 @@ async function loadMe() {
   if (pol.retention_hours) {
     $("retentionText").textContent = `${pol.retention_hours} jam setelah aktivitas terakhir, paling lama ${pol.max_hours} jam sejak upload`;
   }
+  if (me.desktop) applyDesktopMode(me);
   $("aiName").textContent = me.ai.name;
   $("planAiBtn").hidden = !me.ai.enabled;   // bawaan: tanpa AI eksternal, hanya ⚡ Otomatis (lokal)
   $("planAiBtn").disabled = !me.ai.ready;
   $("planAiBtn").title = me.ai.ready ? "Otomatis lewat API AI yang diatur admin"
     : "API AI belum diatur admin. Pakai 'Salin prompt' dulu.";
+}
+
+// Aplikasi desktop: satu pengguna lokal tanpa login; proyek tersimpan di komputer ini (tidak dihapus otomatis).
+function applyDesktopMode(me) {
+  document.body.classList.add("desktop");
+  document.title = "NH AI Clip Studio";
+  $("brand").textContent = "🎬 NH AI Clip Studio";
+  $("logoutBtn").hidden = $("adminLink").hidden = $("accountLink").hidden = true;
+  $("installBtn").remove();
+  const note = document.querySelector(".storage-note");
+  note.hidden = false;
+  note.innerHTML = "💾 Proyek tersimpan di komputer ini dan <b>tidak dihapus otomatis</b>. "
+    + "Hanya cache & file sementara yang dibersihkan.";
+  $("batchExport").hidden = false;
+  $("emptyStart").textContent = "Pilih video dari komputer ini untuk mulai. Semua proses berjalan di komputer ini, tanpa internet.";
+  document.querySelector(".upload-hint").textContent = "Video disalin ke folder aplikasi; file asli Anda tidak diubah.";
+  if (me.export_dir) {
+    $("exportFolderRow").hidden = false;
+    $("exportFolderText").textContent = `Hasil render juga disalin ke: ${me.export_dir}`;
+  }
 }
 
 async function loadUnitGuidebook() {

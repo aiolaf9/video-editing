@@ -4,7 +4,7 @@ name: CI
 
 on:
   push:
-    branches: ["v2/**", "main", "master"]
+    branches: ["v2/**", "desktop/**", "main", "master"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -59,11 +59,13 @@ jobs:
       - name: Pasang alat lint (versi terkunci di requirements-dev.txt)
         run: grep -E '^(ruff|bandit|check-jsonschema)==' requirements-dev.txt | pip install -r /dev/stdin
       - name: Ruff (pyflakes + kesalahan sintaks)
-        run: ruff check app tests bench scripts
+        run: ruff check app tests bench scripts desktop
       - name: Bandit (analisis keamanan statis; gagal hanya untuk temuan BARU di luar baseline)
-        run: bandit -r app -ll -q -b .bandit-baseline.json
+        run: |
+          bandit -r app -ll -q -b .bandit-baseline.json
+          bandit -r desktop -ll -q
       - name: Kompilasi semua modul Python
-        run: python -m compileall -q app scripts bench tests
+        run: python -m compileall -q app scripts bench tests desktop
       - name: Sintaks JavaScript
         run: for f in web/*.js; do node --check "$f"; done
       - name: Validasi workflow GitHub Actions

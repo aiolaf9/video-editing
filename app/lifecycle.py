@@ -736,3 +736,16 @@ def migrate_legacy(apply: bool = False, grace_hours: float = MEDIA_MAX_HOURS,
 def drop_project(pid: str, conn) -> None:
     conn.execute(delete(db.media_leases).where(db.media_leases.c.project_id == pid))
     conn.execute(delete(db.project_media).where(db.project_media.c.project_id == pid))
+
+
+# ------------------------------------------------------------------ desktop
+
+def desktop_cleanup(now: Optional[float] = None) -> dict:
+    """Desktop (M1): proyek & hasil render TIDAK pernah dihapus otomatis. Yang dibersihkan hanya cache & berkas
+    sementara: sesi upload terputus yang kedaluwarsa, lease mati, sisa render yang gagal/terputus, dan berkas temp
+    proses yang tertinggal karena crash (clean_orphans tidak menyentuh sumber, pratinjau, maupun render tercatat)."""
+    from . import uploads
+    now = now or time.time()
+    result = {"uploads_expired": uploads.expire(now), "leases_expired": _expire_leases(now)}
+    result["orphans"] = clean_orphans(now)
+    return result

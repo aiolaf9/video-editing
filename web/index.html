@@ -18,14 +18,14 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">🎬 AI Video Studio</div>
+  <div class="brand" id="brand">🎬 AI Video Studio</div>
   <div class="topbar-right">
     <div id="health" class="health"></div>
     <button type="button" class="ghost install-btn" id="installBtn" hidden title="Pasang aplikasi" aria-label="Pasang aplikasi">📲<span class="lbl"> Pasang aplikasi</span></button>
     <div class="user-menu">
       <div class="who" id="whoami"></div>
       <a href="/admin.html" id="adminLink" hidden>⚙ Admin</a>
-      <a href="/admin.html#akun">👤 Akun</a>
+      <a href="/admin.html#akun" id="accountLink">👤 Akun</a>
       <button class="linklike" id="logoutBtn">Keluar</button>
     </div>
   </div>
@@ -75,7 +75,7 @@
   <!-- ============ Area kerja ============ -->
   <main class="workspace" id="workspace">
     <div class="empty" id="emptyState">
-      <p>Unggah video atau tempel link untuk mulai.</p>
+      <p id="emptyStart">Unggah video atau tempel link untuk mulai.</p>
       <p class="muted">Aplikasi akan membuat transkrip, mencari momen terbaik, lalu Anda pilih dan render jadi klip vertikal.</p>
     </div>
 
@@ -176,6 +176,13 @@
               <span class="spacer"></span>
               <button id="renderSelectedBtn">Render yang dicentang</button>
             </div>
+            <div class="row wrap batch-export" id="batchExport" hidden>
+              <span class="muted">Ekspor MP4:</span>
+              <label class="inline"><input type="checkbox" class="batch-aspect" value="9:16" checked> 9:16</label>
+              <label class="inline"><input type="checkbox" class="batch-aspect" value="1:1"> 1:1</label>
+              <label class="inline"><input type="checkbox" class="batch-aspect" value="16:9"> 16:9</label>
+              <button id="batchExportBtn">⬇ Ekspor klip dicentang</button>
+            </div>
             <ul id="clipList" class="clip-list"></ul>
           </section>
 
@@ -225,6 +232,10 @@
           </section>
 
           <section class="tab-panel" id="rendersTab" hidden>
+            <div class="row wrap" id="exportFolderRow" hidden>
+              <span class="muted" id="exportFolderText"></span>
+              <button class="ghost" id="openExportBtn">📂 Buka folder ekspor</button>
+            </div>
             <ul id="renderList" class="render-list"></ul>
           </section>
         </div>

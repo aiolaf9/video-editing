@@ -10,3 +10,7 @@ data-demo/
 .env.*
 !.env.example
 backups/
+
+# Desktop (PyInstaller / Inno Setup): unduhan & hasil build, tidak di-commit
+/build/
+/dist/

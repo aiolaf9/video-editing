@@ -37,6 +37,16 @@
 (async () => {
   // Sudah login? Langsung ke aplikasi.
   try { if ((await fetch("/api/auth/me")).ok) location.replace("/"); } catch { /* abaikan */ }
+  // Aplikasi desktop tidak memakai login: buka lewat ikon NH AI Clip Studio.
+  try {
+    if ((await (await fetch("/api/desktop/info")).json()).desktop) {
+      document.querySelector(".brand").textContent = "🎬 NH AI Clip Studio";
+      document.getElementById("loginForm").hidden = true;
+      document.querySelector(".login-card .muted").textContent =
+        "Aplikasi desktop tidak memerlukan login. Tutup halaman ini lalu buka NH AI Clip Studio dari ikon di Start Menu atau desktop.";
+      document.querySelector(".login-card .hint").hidden = true;
+    }
+  } catch { /* abaikan */ }
 })();
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();

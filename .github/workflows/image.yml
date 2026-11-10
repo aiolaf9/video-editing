@@ -6,7 +6,7 @@ name: Production image
 
 on:
   push:
-    branches: ["v2/**", "main", "master"]
+    branches: ["v2/**", "desktop/**", "main", "master"]
   workflow_dispatch:
 
 permissions:

@@ -9,6 +9,16 @@ PROJECTS_DIR = DATA_DIR / "projects"
 FONTS_DIR = BASE_DIR / "fonts"
 WEB_DIR = BASE_DIR / "web"
 
+# ---- NH AI Clip Studio Desktop (M1): satu pengguna, tanpa login cloud, semua lokal. Diatur oleh desktop/launcher.py.
+DESKTOP_MODE = os.environ.get("DESKTOP_MODE", "0") == "1"
+# Kunci acak per peluncuran: hanya jendela aplikasi (launcher) yang tahu, dipakai sekali untuk membuat sesi lokal.
+DESKTOP_LAUNCH_KEY = os.environ.get("DESKTOP_LAUNCH_KEY", "")
+DESKTOP_USER_EMAIL = "pengguna@lokal.nh-clip-studio"
+# Folder salinan MP4 hasil ekspor (desktop: Videos\NH AI Clip Studio). Kosong = tidak disalin.
+EXPORT_DIR = Path(os.environ["EXPORT_DIR"]).resolve() if os.environ.get("EXPORT_DIR") else None
+# Folder model Whisper (format CTranslate2) yang dibundel installer; kosong = unduh/ambil dari cache Hugging Face.
+WHISPER_MODEL_DIR = os.environ.get("WHISPER_MODEL_DIR", "")
+
 FFMPEG = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg") or "ffmpeg"
 FFPROBE = os.environ.get("FFPROBE_BIN") or shutil.which("ffprobe") or "ffprobe"
 
@@ -63,7 +73,7 @@ CANCEL_GRACE = float(os.environ.get("CANCEL_GRACE", "90"))
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"      # 1 bila diakses lewat HTTPS
 SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "14"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "4096"))
-MAX_PENDING_PER_USER = int(os.environ.get("MAX_PENDING_PER_USER", "5"))
+MAX_PENDING_PER_USER = int(os.environ.get("MAX_PENDING_PER_USER", "150" if DESKTOP_MODE else "5"))  # desktop: ekspor massal
 # Ambil video dari link (YouTube, dll.): all | admins | none
 ALLOW_URL_IMPORT = os.environ.get("ALLOW_URL_IMPORT", "all")
 # Impor dari link hanya ke alamat IP publik (P5.4, anti-SSRF). Jaringan internal tepercaya (CIDR, dipisah koma)
@@ -206,7 +216,7 @@ GPU_MIN_FREE_MB = int(os.environ.get("GPU_MIN_FREE_MB", "2048"))
 # Penjadwalan antrean
 AGING_SECONDS = float(os.environ.get("AGING_SECONDS", "60"))        # prioritas naik 1 tingkat per N detik menunggu
 MAX_RUNNING_PER_UNIT = int(os.environ.get("MAX_RUNNING_PER_UNIT", "3"))   # per antrean; 0 = tanpa batas
-MAX_QUEUED_PER_UNIT = int(os.environ.get("MAX_QUEUED_PER_UNIT", "30"))    # job menunggu per unit; 0 = tanpa batas
+MAX_QUEUED_PER_UNIT = int(os.environ.get("MAX_QUEUED_PER_UNIT", "0" if DESKTOP_MODE else "30"))    # job menunggu per unit; 0 = tanpa batas
 MAX_QUEUE_DEPTH = int(os.environ.get("MAX_QUEUE_DEPTH", "300"))           # job menunggu per antrean (seluruh server)
 # Batas job berjalan bersamaan per antrean di seluruh server (0 = sebanyak worker yang ada).
 MAX_CONCURRENT = {

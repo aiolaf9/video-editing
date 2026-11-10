@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import jobcontrol, media
-from .config import WHISPER_DEVICE, WHISPER_MODEL, WHISPER_THREADS
+from .config import WHISPER_DEVICE, WHISPER_MODEL, WHISPER_MODEL_DIR, WHISPER_THREADS
 
 log = logging.getLogger("video-editing.transcribe")
 
@@ -23,8 +23,10 @@ def _load(device: str):
     # Model dimuat sekali per proses, jadi jumlah thread tidak bisa elastis per job: pakai core yang tersedia
     # untuk proses ini (termasuk batas `cpus` container). Prioritas rendah (nice) membuat render tetap didahulukan.
     threads = WHISPER_THREADS or resources.effective_cpus()
-    log.info("Memuat model Whisper '%s' di %s (%d thread)", WHISPER_MODEL, device, threads)
-    return WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type, cpu_threads=threads)
+    # Desktop: model dibundel installer (folder lokal), tidak pernah diunduh saat jalan.
+    source = WHISPER_MODEL_DIR if WHISPER_MODEL_DIR else WHISPER_MODEL
+    log.info("Memuat model Whisper '%s' di %s (%d thread)", source, device, threads)
+    return WhisperModel(source, device=device, compute_type=compute_type, cpu_threads=threads)
 
 
 def pick_device() -> str:

@@ -288,7 +288,8 @@ def gpus(max_age: float = 30.0) -> list[dict]:
     if shutil.which("nvidia-smi"):
         try:
             out = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,utilization.gpu",
-                                  "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+                                  "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
             found = parse_nvidia_smi(out)
         except (OSError, subprocess.SubprocessError):
             found = []
