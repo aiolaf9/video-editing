@@ -134,6 +134,7 @@ jobs:
             "--data-dir", "`"$env:RUNNER_TEMP\frozen-data`"", "--export-dir", "`"$env:RUNNER_TEMP\frozen-export`"" -Wait -PassThru
           Get-Content build/test/report-frozen.json -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\frozen-data\logs\desktop.log" -Tail 120; throw "selftest exe gagal ($($p.ExitCode))" }
+          exit 0   # Start-Process tidak mengubah $LASTEXITCODE (masih 1 dari uji blokir python di atas)
 
       - name: Build installer (Inno Setup)
         run: |
@@ -201,6 +202,7 @@ jobs:
           if ((Get-ChildItem "$data\projects" -Directory).Count -ne $projects) { throw "uninstall menghapus proyek pengguna" }
           "Uninstall OK; $projects proyek pengguna & hasil ekspor tetap ada." | Tee-Object build/test/uninstall.txt
           Copy-Item "$data\logs\desktop.log" build/test/desktop-installed.log
+          exit 0
 
       - name: Ringkasan
         if: always()
