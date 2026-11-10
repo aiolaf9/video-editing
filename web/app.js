@@ -625,7 +625,7 @@ async function refreshProjectData() {
       const [planItems, faces] = await Promise.all([api(`/api/projects/${p.id}/plan`), api(`/api/projects/${p.id}/faces`)]);
       state.plan = planItems;
       state.faces = faces;
-      state.assets = await api(`/api/projects/${p.id}/assets`).catch(() => []);
+      api(`/api/projects/${p.id}/assets`).then((a) => { state.assets = a; }).catch(() => {});   // tidak menahan pembukaan
       layoutCropFrame();  // data wajah baru tersedia: posisikan ulang bingkai
       renderTranscript();
       scheduleSuggestions();
