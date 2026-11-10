@@ -27,5 +27,10 @@ assert mem and mem["total"] > 2**30 and 0 < mem["available"] <= mem["total"], me
 print("RAM", round(mem["total"] / 2**30, 1), "GB; tersedia", round(mem["available"] / 2**30, 1), "GB")
 
 from app import main  # noqa: E402,F401  (impor penuh, termasuk uploads & migrate)
+from desktop import nh_eval  # noqa: E402
+
+peak = nh_eval.peak_ram_mb()
+assert peak > 50, f"puncak RAM proses tidak terbaca: {peak} MB"     # alat --eval melaporkan RAM sungguhan
+print("puncak RAM proses ini:", peak, "MB")
 
 print("windows smoke OK")

@@ -30,6 +30,8 @@ def _norm(text: str) -> list[str]:
 
 
 def peak_ram_mb() -> float:
+    """Puncak memori proses ini (MB). Windows: PeakWorkingSetSize lewat K32GetProcessMemoryInfo dengan tipe argumen
+    eksplisit (tanpa argtypes, handle semu proses terpotong & panggilan gagal diam-diam -> 0)."""
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes
@@ -40,10 +42,14 @@ def peak_ram_mb() -> float:
                         ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
                         ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
                         ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+        k32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
         pmc = PMC()
         pmc.cb = ctypes.sizeof(PMC)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb)
+        if not k32.K32GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+            raise OSError(ctypes.get_last_error(), "K32GetProcessMemoryInfo gagal")
         return round(pmc.PeakWorkingSetSize / 2**20, 1)
     import resource
     return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
