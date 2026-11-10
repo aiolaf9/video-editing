@@ -38,12 +38,19 @@ class MusicSettings(BaseModel):
 
 class PlanItem(BaseModel):
     id: Optional[str] = Field(None, max_length=40)
-    type: Literal["zoom", "keyword", "card", "chips", "checklist"]
+    # M2.3: hook pembuka, kinetic typography, lower-third, animasi angka, CTA, gambar/logo
+    type: Literal["zoom", "keyword", "card", "chips", "checklist", "hook", "kinetic", "lower_third", "counter", "cta",
+                  "image"]
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     text: str = Field("", max_length=200)
     label: str = Field("", max_length=80)
     items: list[str] = Field(default_factory=list, max_length=10)
+    strength: float = Field(0.14, ge=0.03, le=0.5)          # zoom: besar punch-in
+    asset: str = Field("", max_length=150, pattern=r"^[\w.\- ]*$")   # image: berkas di folder assets proyek
+    pos: Literal["tl", "tr", "bl", "br", "top", "center", "bottom"] = "tr"
+    scale: float = Field(0.22, ge=0.05, le=1.0)             # image: lebar relatif bingkai
+    opacity: float = Field(1.0, ge=0.1, le=1.0)
 
 
 class FrameSection(BaseModel):

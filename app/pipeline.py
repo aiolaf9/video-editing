@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clipper, faces, framing, jobcontrol, media, netpolicy, overlays, recipe, resources, storage, transcribe
+from . import clipper, faces, framing, jobcontrol, media, motion, netpolicy, overlays, recipe, resources, storage, transcribe
 from .config import (ANALYZE_TIMEOUT_BASE, ANALYZE_TIMEOUT_PER_MIN, DOWNLOAD_PROXY, JOB_TIMEOUT_MAX,
                      URL_IMPORT_MAX_MB, URL_IMPORT_MAX_REDIRECTS)
 from .jobs import Job
@@ -359,23 +359,31 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
             raise FileNotFoundError("File musik tidak ditemukan. Unggah ulang musiknya.")
         music = candidate
 
-    punches: list[tuple[float, float]] = []
+    punches: list[tuple] = []
     layers = []
+    graphics = None
     overlay_dir = workdir / f"tmp_{tag}"
     if req.animations:
         overlay_dir.mkdir(exist_ok=True)
         items = [i.model_dump() for i in req.overlays] if req.overlays is not None else recipe.effective_overlays(pid)
+        motion_items = []
         for item in items:
             s, e = max(item["start"], req.start), min(item["end"], req.end)
             if e - s < 0.3:
                 continue
+            t0, t1 = (s - req.start) / req.speed, (e - req.start) / req.speed
             if item["type"] == "zoom":
-                punches.append((s - req.start, e - req.start))
+                punches.append((s - req.start, e - req.start, float(item.get("strength") or 0.14)))
+            elif item["type"] in motion.TYPES:
+                motion_items.append({**item, "start": t0, "end": t1})
             else:
-                layers += overlays.render_item(item, overlay_dir, (width, height),
-                                               (s - req.start) / req.speed, (e - req.start) / req.speed)
+                layers += overlays.render_item(item, overlay_dir, (width, height), t0, t1,
+                                               assets_dir=folder / "assets")
+        if motion_items:
+            graphics = workdir / f"{tag}.motion.ass"
+            graphics.write_text(motion.build(motion_items, width, height), encoding="utf-8")
     return {"subs": subs, "music": music, "frame": frame, "punches": punches, "layers": layers,
-            "overlay_dir": overlay_dir}
+            "overlay_dir": overlay_dir, "graphics": graphics}
 
 
 def subtitle_zones(frame: Optional[dict], req: RenderRequest, ratio: float) -> tuple:
@@ -424,7 +432,8 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
     punches, layers, overlay_dir = assets["punches"], assets["layers"], assets["overlay_dir"]
 
     def run(r: RenderRequest) -> None:
-        cmd = build_command(src, out, r, meta, subs, music, renders, camera, punches, layers, frame)
+        cmd = build_command(src, out, r, meta, subs, music, renders, camera, punches, layers, frame,
+                            graphics_file=assets["graphics"])
         media.run_ffmpeg(cmd, duration, progress, cwd=renders)
 
     progress = job.stage(2, 98, "Merender video...")
@@ -445,6 +454,8 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
         raise
     finally:
         shutil.rmtree(overlay_dir, ignore_errors=True)
+        if assets["graphics"] is not None:
+            assets["graphics"].unlink(missing_ok=True)
     if subs is not None:
         subs.unlink(missing_ok=True)  # subtitle sudah dibakar ke video; file .ass tidak diperlukan lagi
 
@@ -530,13 +541,15 @@ def render_preview(pid: str, req: RenderRequest) -> Path:
         tmp = folder / f"{key}.part.mp4"
         try:
             cmd = build_command(source_path(pid), tmp, req, meta, assets["subs"], assets["music"], folder, None,
-                                assets["punches"], assets["layers"], assets["frame"], out_scale=PREVIEW_SCALE)
+                                assets["punches"], assets["layers"], assets["frame"], out_scale=PREVIEW_SCALE,
+                                graphics_file=assets["graphics"])
             media.run_ffmpeg(cmd, (req.end - req.start) / req.speed, None, cwd=folder, stall_timeout=60)
             tmp.replace(out)
         finally:
             tmp.unlink(missing_ok=True)
-            if assets["subs"] is not None:
-                assets["subs"].unlink(missing_ok=True)
+            for f in (assets["subs"], assets["graphics"]):
+                if f is not None:
+                    f.unlink(missing_ok=True)
             shutil.rmtree(assets["overlay_dir"], ignore_errors=True)
     old = sorted(folder.glob("*.mp4"), key=lambda p: p.stat().st_mtime)
     for p in old[:-PREVIEW_KEEP]:

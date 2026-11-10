@@ -91,13 +91,37 @@ def _pill(text: str, fnt, pad_x: int, pad_y: int, fill, color, icon: str = "") -
 
 
 def render_item(item: dict, out_dir: Path, canvas: tuple[int, int], t0: float, t1: float,
-                accent: str = "#FF3B6B") -> list[Layer]:
+                accent: str = "#FF3B6B", assets_dir: Path | None = None) -> list[Layer]:
     """Buat PNG untuk satu elemen. t0/t1 sudah dalam timeline output."""
     W, H = canvas
     unit = min(W, H)
     typ = item["type"]
     layers: list[Layer] = []
     base = out_dir / f"ov_{item['id']}"
+
+    if typ == "image":
+        # M2.3: logo/gambar milik proyek (assets/), diperkecil, transparansi diatur; masuk/keluar memudar.
+        src = (assets_dir / Path(item.get("asset", "")).name) if assets_dir else None
+        if not src or not src.is_file():
+            return []
+        img = Image.open(src).convert("RGBA")
+        w = max(8, int(W * float(item.get("scale", 0.22))))
+        h = max(8, int(img.height * w / max(1, img.width)))
+        if h > H * 0.8:
+            h = int(H * 0.8)
+            w = max(8, int(img.width * h / max(1, img.height)))
+        img = img.resize((w, h), Image.LANCZOS)
+        op = float(item.get("opacity", 1.0))
+        if op < 1.0:
+            img.putalpha(img.split()[3].point(lambda a: int(a * op)))
+        m = int(unit * 0.05)
+        pos = item.get("pos", "tr")
+        x = {"tl": m, "bl": m, "tr": W - w - m, "br": W - w - m}.get(pos, (W - w) // 2)
+        y = {"tl": m, "tr": m, "top": int(H * 0.08), "bl": H - h - m, "br": H - h - m,
+             "bottom": int(H * 0.86) - h}.get(pos, (H - h) // 2)
+        path = base.with_suffix(".png")
+        img.save(path)
+        return [Layer(path, x, y, t0, t1, slide=0)]
 
     if typ == "keyword":
         fnt = font("Anton-Regular.ttf", int(unit * 0.13))

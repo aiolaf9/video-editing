@@ -76,14 +76,15 @@ PUNCH = 0.14      # besar punch-in zoom (14%)
 PUNCH_EASE = 0.15  # durasi transisi masuk/keluar punch-in
 
 
-def zoom_expression(slow: bool, in_dur: float, punches: list[tuple[float, float]]) -> Optional[str]:
+def zoom_expression(slow: bool, in_dur: float, punches: list[tuple]) -> Optional[str]:
     """Faktor skala z(t) >= 1: zoom perlahan sepanjang klip dikali punch-in pada titik penekanan."""
     terms = []
     if slow:
         terms.append(f"(1+0.12*t/{in_dur:.3f})")
     if punches:
         bumps = "+".join(
-            f"{PUNCH}*clip(min((t-{s:.3f})/{PUNCH_EASE},({e:.3f}-t)/{PUNCH_EASE}),0,1)" for s, e in punches[:60])
+            f"{(p[2] if len(p) > 2 else PUNCH):.3f}*clip(min((t-{p[0]:.3f})/{PUNCH_EASE},({p[1]:.3f}-t)/{PUNCH_EASE}),0,1)"
+            for p in punches[:60])
         terms.append(f"(1+{bumps})")
     return "*".join(terms) or None
 
@@ -93,7 +94,7 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
                   camera: Optional[list[tuple[float, float]]] = None,
                   punches: Optional[list[tuple[float, float]]] = None,
                   layers: Optional[list] = None, framing: Optional[dict] = None,
-                  out_scale: float = 1.0) -> list[str]:
+                  out_scale: float = 1.0, graphics_file: Optional[Path] = None) -> list[str]:
     """Mengembalikan argumen FFmpeg (tanpa 'ffmpeg -y' di depannya).
 
     camera  : titik kunci (detik klip, pusat x 0..1) agar bingkai mengikuti wajah
@@ -182,6 +183,11 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
     if req.fade and out_dur > FADE * 3:
         v.append(f"fade=t=in:st=0:d={FADE}")
         v.append(f"fade=t=out:st={out_dur - FADE:.3f}:d={FADE}")
+    if graphics_file is not None:       # M2.3 motion graphics (libass), di bawah subtitle
+        g = f"ass={_filter_path(graphics_file, workdir)}"
+        if FONTS_DIR.is_dir():
+            g += f":fontsdir={_filter_path(FONTS_DIR, workdir)}"
+        v.append(g)
     if subs_file is not None:
         sub = f"ass={_filter_path(subs_file, workdir)}"
         if FONTS_DIR.is_dir():

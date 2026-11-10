@@ -20,8 +20,10 @@ from .clipper import HOOK_WORDS
 from .media import ENERGY_STEP
 from .storage import new_id
 
-TYPES = ("zoom", "keyword", "card", "chips", "checklist")
-_MIN_LEN = {"zoom": 0.8, "keyword": 0.9, "card": 1.5, "chips": 1.5, "checklist": 2.0}
+TYPES = ("zoom", "keyword", "card", "chips", "checklist", "hook", "kinetic", "lower_third", "counter", "cta", "image")
+_MIN_LEN = {"zoom": 0.8, "keyword": 0.9, "card": 1.5, "chips": 1.5, "checklist": 2.0, "hook": 1.0, "kinetic": 1.0,
+            "lower_third": 1.5, "counter": 1.0, "cta": 1.0, "image": 0.5}
+_POS = ("tl", "tr", "bl", "br", "top", "center", "bottom")
 
 STOPWORDS = {
     "yang", "dan", "di", "ke", "dari", "ini", "itu", "aku", "kamu", "kita", "kami", "dia", "mereka", "ada",
@@ -32,6 +34,13 @@ STOPWORDS = {
 _ORDINALS = {"pertama": 1, "kedua": 2, "ketiga": 3, "keempat": 4, "kelima": 5,
              "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
 _WORD_RE = re.compile(r"[\w'-]+", re.UNICODE)
+
+
+def _num(v, default: float, lo: float, hi: float) -> float:
+    try:
+        return round(min(hi, max(lo, float(v))), 3)
+    except (TypeError, ValueError):
+        return default
 
 
 def _clean(word: str) -> str:
@@ -73,7 +82,15 @@ def normalize(items: list[dict], start: float, end: float) -> list[dict]:
             "label": str(raw.get("label") or "").strip()[:40],
             "items": [str(x).strip()[:28] for x in (raw.get("items") or []) if str(x).strip()][:6],
         }
-        if typ in ("keyword", "card") and not item["text"]:
+        if typ == "zoom":
+            item["strength"] = _num(raw.get("strength"), 0.14, 0.03, 0.5)
+        if typ == "image":
+            asset = re.sub(r"[^\w.\- ]", "", str(raw.get("asset") or ""))[:150]
+            if not asset:
+                continue
+            item.update(asset=asset, pos=raw.get("pos") if raw.get("pos") in _POS else "tr",
+                        scale=_num(raw.get("scale"), 0.22, 0.05, 1.0), opacity=_num(raw.get("opacity"), 1.0, 0.1, 1.0))
+        if typ in ("keyword", "card", "hook", "kinetic", "lower_third", "counter", "cta") and not item["text"]:
             continue
         if typ in ("chips", "checklist") and not item["items"]:
             continue
@@ -119,13 +136,31 @@ def heuristic(transcript: dict, energy: list[float], start: float, end: float) -
                 items.append({"type": "card", "label": f"Poin {n}", "text": title[:1].upper() + title[1:],
                               "start": w["start"], "end": min(end, w["start"] + 3.5)})
 
+    # M2.3 hook pembuka (2,8 dtk pertama) dari kalimat paling memancing di klip; dapat diedit.
+    from .motion import hook_suggestion
+    hook = hook_suggestion(words, start, end)
+    if hook:
+        items.append(hook)
+    busy_until = hook["end"] if hook else -99.0
+
+    # Angka yang diucapkan (mis. "2,5 kg", "8 golongan"): animasi angka berhitung.
+    last_num = -99.0
+    for i, w in enumerate(words):
+        token = _clean(w["word"])
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", token) and w["start"] >= busy_until and w["start"] - last_num >= 5.0:
+            unit = _clean(words[i + 1]["word"]) if i + 1 < len(words) else ""
+            unit = unit if unit and unit.lower() not in STOPWORDS and not unit[0].isdigit() else ""
+            items.append({"type": "counter", "text": f"{token} {unit}".strip(), "start": w["start"],
+                          "end": w["start"] + 2.2})
+            last_num = w["start"]
+
     # Kata kunci besar: kata terpanjang yang bukan kata umum, maksimal satu tiap ~7 detik.
     last_kw = -99.0
     for w in words:
         token = _clean(w["word"])
         if (len(token) >= 7 or token.isdigit()) and token.lower() not in STOPWORDS \
-                and w["start"] - last_kw >= 7.0:
-            if any(it["type"] == "card" and it["start"] <= w["start"] <= it["end"] for it in items):
+                and w["start"] - last_kw >= 7.0 and w["start"] >= busy_until:
+            if any(it["type"] in ("card", "counter") and it["start"] - 0.5 <= w["start"] <= it["end"] for it in items):
                 continue
             items.append({"type": "keyword", "text": token.upper(), "start": w["start"], "end": w["start"] + 1.4})
             last_kw = w["start"]

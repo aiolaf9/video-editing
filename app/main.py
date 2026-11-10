@@ -1183,6 +1183,53 @@ def put_recipe(pid: str, body: recipe.SaveBody, user: dict = CurrentUser):
     return _recipe_public(pid, state)
 
 
+ASSET_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+MAX_ASSET_BYTES = 8 * 1024 * 1024
+
+
+@app.get("/api/projects/{pid}/assets")
+def list_assets(pid: str, user: dict = CurrentUser):
+    """M2.3: gambar/logo milik proyek untuk overlay."""
+    _project_for(pid, user)
+    folder = storage.project_dir(pid) / "assets"
+    return sorted(p.name for p in folder.glob("*") if p.suffix.lower() in ASSET_EXTS) if folder.is_dir() else []
+
+
+@app.post("/api/projects/{pid}/assets")
+async def upload_asset(pid: str, file: UploadFile = File(...), user: dict = CurrentUser):
+    _project_for(pid, user)
+    name = storage.safe_filename(file.filename or "logo.png", "logo.png")
+    if Path(name).suffix.lower() not in ASSET_EXTS:
+        raise HTTPException(400, "Gambar harus PNG, JPG, atau WebP.")
+    data = await file.read(MAX_ASSET_BYTES + 1)
+    if len(data) > MAX_ASSET_BYTES:
+        raise HTTPException(413, "Gambar maksimal 8 MB.")
+    from io import BytesIO
+
+    from PIL import Image, UnidentifiedImageError
+    try:
+        with Image.open(BytesIO(data)) as im:       # hanya gambar sungguhan; ukuran wajar
+            im.verify()
+            if im.width * im.height > 40_000_000:
+                raise HTTPException(400, "Resolusi gambar terlalu besar.")
+    except (UnidentifiedImageError, OSError) as exc:
+        raise HTTPException(400, "Berkas bukan gambar yang valid.") from exc
+    folder = storage.project_dir(pid) / "assets"
+    folder.mkdir(exist_ok=True)
+    (folder / name).write_bytes(data)
+    _touch(pid)
+    return {"name": name}
+
+
+@app.get("/api/projects/{pid}/assets/{name}")
+def get_asset(pid: str, name: str, user: dict = CurrentUser):
+    _project_for(pid, user)
+    path = storage.project_dir(pid) / "assets" / storage.safe_filename(name)
+    if not path.is_file() or path.suffix.lower() not in ASSET_EXTS:
+        raise HTTPException(404)
+    return FileResponse(path)
+
+
 @app.get("/api/subtitle-presets")
 def subtitle_presets(user: dict = CurrentUser):
     """M2.2: daftar preset subtitle animasi untuk galeri."""

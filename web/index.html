@@ -259,7 +259,8 @@
 
           <section class="tab-panel" id="animTab" hidden>
             <p class="muted">Animasi mengikuti isi omongan pada rentang klip yang dipilih (Awal–Akhir di atas):
-              kartu, kata kunci besar, chip, checklist, dan zoom penekanan. Bisa diedit sebelum render.</p>
+              hook pembuka, kartu, kata kunci, animasi angka, lower-third, kinetic text, CTA, logo, dan zoom penekanan.
+              Atur teks serta waktu mulai–selesai tiap elemen; cek tampilan persisnya dengan ▶ Pratinjau hasil.</p>
             <div class="row wrap">
               <button id="planAutoBtn" title="Gratis, lokal, berbasis kata kunci & suara">⚡ Otomatis (gratis)</button>
               <button id="planPromptBtn" class="ghost" title="Gratis: tempel ke chatbot AI, lalu tempel jawabannya di bawah">📋 Salin prompt (Claude / Gemini / ChatGPT)</button>
@@ -283,9 +284,16 @@
                 <option value="keyword">+ Kata kunci</option>
                 <option value="chips">+ Chips</option>
                 <option value="checklist">+ Checklist</option>
-                <option value="zoom">+ Zoom</option>
+                <option value="zoom">+ Zoom / punch-in</option>
+                <option value="hook">+ Hook pembuka</option>
+                <option value="kinetic">+ Kinetic typography</option>
+                <option value="lower_third">+ Lower-third narasumber</option>
+                <option value="counter">+ Animasi angka</option>
+                <option value="cta">+ CTA (ajakan)</option>
+                <option value="image">+ Gambar/logo</option>
               </select>
               <button id="planAddBtn" class="ghost">Tambah di posisi video</button>
+              <label class="ghost-btn" title="PNG/JPG/WebP, maks 8 MB">🖼 Unggah gambar<input type="file" id="assetInput" accept="image/png,image/jpeg,image/webp" hidden></label>
             </div>
             <details class="settings-box" id="guidebookBox">
               <summary>📘 Guidebook gaya unit</summary>

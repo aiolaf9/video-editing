@@ -105,6 +105,18 @@ def test_smart_framing_controls_and_preview_clip(studio_server, sample_video):
             time.sleep(0.3)
         sub = _recipe(page, pid)["subtitles"]
         assert sub["style"] == "documentary" and sub["box"] and sub["emphasis"] and sub["pos_y"] == 0.83
+        # Motion graphics: tambah lower-third di tab Animasi, isi nama & jabatan, tersimpan di resep.
+        page.click("[data-tab=animTab]")
+        page.select_option("#planAddType", "lower_third")
+        page.click("#planAddBtn")
+        row = page.locator(".plan-item", has_text="Narasumber")
+        row.locator("input[data-f=text]").fill("Ustadz Ahmad")
+        row.locator("input[data-f=label]").fill("Pemateri")
+        deadline = time.time() + 10
+        while not any(o["type"] == "lower_third" and o["text"] == "Ustadz Ahmad" for o in (_recipe(page, pid)["overlays"] or [])) \
+                and time.time() < deadline:
+            time.sleep(0.3)
+        assert any(o["type"] == "lower_third" and o["label"] == "Pemateri" for o in _recipe(page, pid)["overlays"])
         page.click("#previewClipBtn")
         page.wait_for_selector("#previewClipBox:not([hidden])", timeout=60000)
         page.wait_for_function("document.getElementById('previewClip').readyState >= 1", timeout=30000)

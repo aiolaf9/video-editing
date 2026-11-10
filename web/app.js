@@ -589,6 +589,7 @@ async function openProject(id) {
   state.transcript = { segments: [] };
   state.plan = [];
   state.faces = [];
+  state.assets = [];
   state.words = [];
   state.clips = [];
   await refreshProjectData();
@@ -621,6 +622,7 @@ async function refreshProjectData() {
       const [planItems, faces] = await Promise.all([api(`/api/projects/${p.id}/plan`), api(`/api/projects/${p.id}/faces`)]);
       state.plan = planItems;
       state.faces = faces;
+      state.assets = await api(`/api/projects/${p.id}/assets`).catch(() => []);
       layoutCropFrame();  // data wajah baru tersedia: posisikan ulang bingkai
       renderTranscript();
       scheduleSuggestions();
@@ -1663,7 +1665,9 @@ function bind() {
 }
 
 // ------------------------------------------------------------ rencana animasi
-const PLAN_LABELS = { zoom: "🔍 Zoom", keyword: "🔤 Kata", card: "🪪 Kartu", chips: "🏷 Chips", checklist: "✅ Checklist" };
+const PLAN_LABELS = { zoom: "🔍 Zoom", keyword: "🔤 Kata", card: "🪪 Kartu", chips: "🏷 Chips", checklist: "✅ Checklist",
+  hook: "🎣 Hook", kinetic: "💥 Kinetic", lower_third: "👤 Narasumber", counter: "🔢 Angka", cta: "👉 CTA", image: "🖼 Gambar/logo" };
+const POS_LABELS = { tr: "Kanan atas", tl: "Kiri atas", br: "Kanan bawah", bl: "Kiri bawah", top: "Atas tengah", center: "Tengah", bottom: "Bawah tengah" };
 
 function planInRange() {
   return state.plan.filter((i) => i.end > state.sel.start && i.start < state.sel.end);
@@ -1687,8 +1691,23 @@ function renderPlan() {
       fields = `<input data-f="text" value="${esc(it.text)}" placeholder="Kata kunci">`;
     } else if (it.type === "chips" || it.type === "checklist") {
       fields = `<input data-f="items" value="${esc(it.items.join(", "))}" placeholder="Pisahkan dengan koma">`;
+    } else if (it.type === "hook" || it.type === "kinetic" || it.type === "cta") {
+      const ph = { hook: "Kalimat pembuka (mis. pertanyaan)", kinetic: "Kata-kata yang muncul bergantian", cta: "Ajakan (mis. Ikuti untuk kajian berikutnya)" }[it.type];
+      fields = `<input data-f="text" value="${esc(it.text)}" placeholder="${ph}">`;
+    } else if (it.type === "lower_third") {
+      fields = `<input data-f="text" value="${esc(it.text)}" placeholder="Nama narasumber">
+                <input class="label" data-f="label" value="${esc(it.label)}" placeholder="Jabatan / keterangan">`;
+    } else if (it.type === "counter") {
+      fields = `<input data-f="text" value="${esc(it.text)}" placeholder="Angka, mis. 2,5 kg atau Rp 50.000">
+                <input class="label" data-f="label" value="${esc(it.label)}" placeholder="Keterangan (opsional)">`;
+    } else if (it.type === "image") {
+      const opts = (state.assets || []).map((a) => `<option${a === it.asset ? " selected" : ""}>${esc(a)}</option>`).join("");
+      fields = `<select data-f="asset">${opts || '<option value="">(unggah gambar dulu)</option>'}</select>
+        <select data-f="pos">${Object.entries(POS_LABELS).map(([k, l]) => `<option value="${k}"${k === it.pos ? " selected" : ""}>${l}</option>`).join("")}</select>
+        <label class="mini">Ukuran <input type="range" data-f="scale" min="0.05" max="1" step="0.01" value="${it.scale ?? 0.22}"></label>
+        <label class="mini">Pekat <input type="range" data-f="opacity" min="0.1" max="1" step="0.05" value="${it.opacity ?? 1}"></label>`;
     } else {
-      fields = '<span class="muted">Punch-in zoom</span>';
+      fields = `<label class="mini">Kekuatan punch-in <input type="range" data-f="strength" min="0.05" max="0.4" step="0.01" value="${it.strength ?? 0.14}"></label>`;
     }
     return `<li class="plan-item" data-id="${esc(it.id)}">
       <span class="type">${PLAN_LABELS[it.type] || it.type}</span>
@@ -1726,6 +1745,12 @@ function updateOverlayPreview() {
   const unit = Math.min(ow, oh) * (fh / oh);
   box.innerHTML = active.map((i) => {
     if (i.type === "keyword") return `<div class="ovp-keyword" style="font-size:${unit * 0.13}px">${esc(i.text)}</div>`;
+    if (i.type === "hook") return `<div class="ovp-hook" style="font-size:${unit * 0.105}px">${esc(i.text.toUpperCase())}</div>`;
+    if (i.type === "kinetic") return `<div class="ovp-kinetic" style="font-size:${unit * 0.2}px">${esc((i.text.split(/\s+/)[0] || "").toUpperCase())}…</div>`;
+    if (i.type === "counter") return `<div class="ovp-counter" style="font-size:${unit * 0.17}px">${esc(i.text)}${i.label ? `<small style="font-size:${unit * 0.045}px">${esc(i.label)}</small>` : ""}</div>`;
+    if (i.type === "cta") return `<div class="ovp-cta" style="font-size:${unit * 0.06}px"><span>${esc(i.text)}</span></div>`;
+    if (i.type === "lower_third") return `<div class="ovp-lower" style="font-size:${unit * 0.064}px"><b>${esc(i.text)}</b>${i.label ? `<small style="font-size:${unit * 0.044}px">${esc(i.label)}</small>` : ""}</div>`;
+    if (i.type === "image") return `<img class="ovp-image ovp-${esc(i.pos || "tr")}" style="width:${(i.scale || 0.22) * 100}%;opacity:${i.opacity ?? 1}" src="/api/projects/${state.project.id}/assets/${encodeURIComponent(i.asset)}" alt="">`;
     if (i.type === "card") return `<div class="ovp-card" style="font-size:${unit * 0.058}px">${i.label ? `<small style="font-size:${unit * 0.034}px">${esc(i.label)}</small>` : ""}${esc(i.text)}</div>`;
     const cls = i.type === "chips" ? "ovp-chips" : "ovp-check";
     return `<div class="${cls}" style="font-size:${unit * 0.04}px">${i.items.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`;
@@ -1850,11 +1875,34 @@ function bindPlan() {
     const item = li && state.plan.find((i) => i.id === li.dataset.id);
     if (!item) return;
     const f = e.target.dataset.f;
-    if (f === "start" || f === "end") item[f] = +e.target.value;
+    if (["start", "end", "strength", "scale", "opacity"].includes(f)) item[f] = +e.target.value;
     else if (f === "items") item.items = e.target.value.split(",").map((x) => x.trim()).filter(Boolean);
     else item[f] = e.target.value;
     $("ovPreview").dataset.key = "";
     savePlanSoon();
+  });
+  $("planList").addEventListener("change", (e) => {
+    if (e.target.tagName !== "SELECT") return;
+    const li = e.target.closest("li[data-id]");
+    const item = li && state.plan.find((i) => i.id === li.dataset.id);
+    if (!item) return;
+    item[e.target.dataset.f] = e.target.value;
+    $("ovPreview").dataset.key = "";
+    savePlanSoon();
+  });
+  $("assetInput").addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f || !state.project) return;
+    const form = new FormData();
+    form.append("file", f);
+    try {
+      const res = await api(`/api/projects/${state.project.id}/assets`, { method: "POST", body: form });
+      state.assets = await api(`/api/projects/${state.project.id}/assets`);
+      toast(`Gambar "${res.name}" diunggah. Tambahkan lewat "+ Gambar/logo".`);
+      $("planAddType").value = "image";
+      renderPlan();
+    } catch (err) { toast(err.message, true); }
   });
   $("planList").addEventListener("click", (e) => {
     const li = e.target.closest("li[data-id]");
@@ -1875,8 +1923,17 @@ function bindPlan() {
     const t = Math.max(state.sel.start, Math.min($("player").currentTime, state.sel.end - 1));
     const item = { id: Math.random().toString(16).slice(2, 14), type, start: +t.toFixed(1),
       end: +Math.min(state.sel.end, t + (type === "zoom" ? 1.5 : 3)).toFixed(1),
-      text: type === "card" ? "Judul kartu" : type === "keyword" ? "KATA" : "", label: type === "card" ? "Tips" : "",
+      text: { card: "Judul kartu", keyword: "KATA", hook: "Tahukah Anda?", kinetic: "Kata yang ingin ditekankan",
+        lower_third: "Nama narasumber", counter: "100", cta: "Ikuti untuk kajian berikutnya" }[type] || "",
+      label: { card: "Tips", lower_third: "Jabatan" }[type] || "",
       items: type === "chips" || type === "checklist" ? ["Poin 1", "Poin 2"] : [] };
+    if (type === "image") {
+      if (!(state.assets || []).length) { toast("Unggah gambar/logo dulu (tombol 🖼 Unggah gambar).", true); return; }
+      Object.assign(item, { asset: state.assets[0], pos: "tr", scale: 0.18, opacity: 1, start: +state.sel.start.toFixed(1),
+        end: +state.sel.end.toFixed(1) });
+    }
+    if (type === "hook") { item.start = +state.sel.start.toFixed(1); item.end = +Math.min(state.sel.end, state.sel.start + 2.8).toFixed(1); }
+    if (type === "zoom") item.strength = 0.14;
     state.plan.push(item);
     state.plan.sort((a, b) => a.start - b.start);
     renderPlan();
