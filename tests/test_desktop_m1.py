@@ -158,3 +158,15 @@ def test_render_batch_real_mp4_and_export_copies(desktop, sample_video, fake_tra
         assert _probe(p)["streams"][0]["codec_name"] == "h264"
     c.delete(f"/api/projects/{pid}")
     assert (desktop / "Ceramah Pagi").exists()       # menghapus proyek tidak menghapus hasil ekspor pengguna
+
+
+def test_oslock_exclusive_between_handles(tmp_path):
+    from app import oslock
+    path = tmp_path / "x.part"
+    path.write_bytes(b"x" * 64)
+    with open(path, "r+b") as a, open(path, "r+b") as b:
+        assert oslock.try_lock(a)
+        assert not oslock.try_lock(b)
+        oslock.unlock(a)
+        assert oslock.try_lock(b)
+        oslock.unlock(b)

@@ -9,7 +9,6 @@
 - Upgrade: satu transaksi (PostgreSQL & SQLite) + kunci (advisory lock / BEGIN IMMEDIATE + file lock) sehingga
   beberapa proses yang start bersamaan aman; SQLite disalin ke data/backups/ sebelum diubah.
 """
-import fcntl
 import logging
 import os
 import sqlite3
@@ -26,6 +25,7 @@ from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
+from . import oslock
 from .config import AUTO_MIGRATE, DATA_DIR, DATABASE_URL
 
 log = logging.getLogger("video-editing.migrate")
@@ -162,11 +162,11 @@ def _process_lock(url: str) -> Iterator[None]:
     if url.startswith("sqlite"):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         with open(DATA_DIR / ".migrate.lock", "w") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
+            oslock.lock(fh)
             try:
                 yield
             finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+                oslock.unlock(fh)
         return
     eng = create_engine(url, poolclass=NullPool)
     with eng.connect() as conn:

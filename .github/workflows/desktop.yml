@@ -51,6 +51,9 @@ jobs:
           python -m pip install -r desktop/requirements-desktop.txt
           python -m pip freeze | Tee-Object build-freeze.txt
 
+      - name: Uji cepat modul khusus Windows (kunci berkas, RAM, impor app)
+        run: python desktop/ci/windows_smoke.py
+
       - name: Periksa lisensi paket Python yang dibundel
         run: |
           New-Item -ItemType Directory -Force build/desktop/licenses | Out-Null

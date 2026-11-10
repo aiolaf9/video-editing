@@ -20,7 +20,6 @@ Keamanan
 """
 import base64
 import binascii
-import fcntl
 import hashlib
 import json
 import logging
@@ -32,7 +31,7 @@ from typing import Callable, Optional
 
 from sqlalchemy import func, insert, select, update
 
-from . import db, lifecycle, media, storage
+from . import db, lifecycle, media, oslock, storage
 from .config import (MAX_ACTIVE_UPLOADS_PER_USER, MAX_UPLOAD_MB, PROJECTS_DIR, UPLOAD_CHUNK_MAX_MB,
                      UPLOAD_RESUME_HOURS)
 
@@ -230,9 +229,7 @@ class ChunkWriter:
             self.hasher = CHECKSUMS[algo]()
         lifecycle.ensure_disk(length or 0)
         self.fh = open(part_path(row), "r+b")
-        try:
-            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # satu penulis per sesi, juga antar-proses web
-        except BlockingIOError:
+        if not oslock.try_lock(self.fh):  # satu penulis per sesi, juga antar-proses web
             self.fh.close()
             raise UploadError(423, "Potongan lain untuk upload ini sedang dikirim.")
         try:
@@ -298,7 +295,7 @@ class ChunkWriter:
 
     def close(self) -> None:
         try:
-            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            oslock.unlock(self.fh)
         finally:
             self.fh.close()
 

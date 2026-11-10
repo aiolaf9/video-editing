@@ -142,7 +142,30 @@ def cpu_percent() -> Optional[float]:
 
 # ------------------------------------------------------------------ RAM
 
+def _windows_meminfo() -> Optional[dict]:
+    """Windows (aplikasi desktop): RAM fisik total & tersedia lewat GlobalMemoryStatusEx."""
+    import ctypes
+
+    class _MemStatus(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    st = _MemStatus()
+    st.dwLength = ctypes.sizeof(_MemStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+        return None
+    return {"MemTotal": int(st.ullTotalPhys), "MemAvailable": int(st.ullAvailPhys)}
+
+
 def _meminfo() -> Optional[dict]:
+    if os.name == "nt":
+        try:
+            return _windows_meminfo()
+        except (OSError, AttributeError):
+            return None
     try:
         return {l.split(":")[0]: int(l.split()[1]) * 1024 for l in Path("/proc/meminfo").read_text().splitlines()}
     except (OSError, ValueError, IndexError):
