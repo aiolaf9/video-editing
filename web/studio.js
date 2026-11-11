@@ -226,7 +226,8 @@
     let added = 0;
     if ($("autoStyleMotion").checked) {
       for (const it of rec.items) {
-        const clash = state.plan.some((p) => p.type === it.type && p.end > it.start && p.start < it.end);
+        const clash = state.plan.some((p) => p.type === it.type && (it.type !== "fx" || p.preset === it.preset)
+          && p.end > it.start && p.start < it.end);
         if (clash) continue;
         state.plan.push({ ...it, id: Math.random().toString(16).slice(2, 14) });
         added++;

@@ -29,6 +29,13 @@ PRIORITY = {"lower_third": 0, "counter": 1, "hook": 2, "card": 3, "checklist": 3
 PREFERRED = {"hook": [0.30, 0.18, 0.12, 0.42], "kinetic": [0.42, 0.30, 0.18], "counter": [0.32, 0.20, 0.45],
              "cta": [0.64, 0.12, 0.50], "lower_third": [0.648, 0.53, 0.40, 0.12], "keyword": [0.30, 0.18, 0.45],
              "card": [0.16, 0.30, 0.45]}
+# M2.5 Motion Library: grafis ASS per `kind` (app/motion_kinds) ikut ditempatkan safe-zone
+from . import motionlib as _ml  # noqa: E402
+PREFERRED.update(_ml.PREFERRED_Y)
+DECORATIVE |= set(_ml.DECORATIVE_KINDS)
+INFO |= set(_ml.ASS_KINDS) - set(_ml.DECORATIVE_KINDS)
+PRIORITY.update({"progress": 1, "bars": 1, "chapter": 2, "title_cinematic": 2, "title_wipe": 3, "follow_bar": 4,
+                 "title_slam": 5})
 SCAN = [round(0.04 + 0.01 * i, 2) for i in range(93)]       # 0,04 .. 0,96 (celah sempit antarpanel ikut dicoba)
 SCALES = (1.0, 0.8, 0.65)
 INFO_SCALES = SCALES + (0.5,)    # informasi boleh lebih kecil (nama ±35 px, angka ±92 px pada lebar 1080) daripada menutupi
@@ -57,6 +64,8 @@ def size_of(item: dict, ow: int, oh: int, scale: float = 1.0) -> tuple[float, fl
         return 0.86, 0.15 * unit * max(1, min(3, n // 2 + 1)) * scale / oh, 0.07
     if typ == "card":
         return 0.84, (0.09 * unit + 0.072 * unit * max(1, min(3, n // 4 + 1))) * scale / oh, 0.08
+    if typ in _ml.ASS_KINDS:
+        return _ml.size_hint(typ, unit, oh, scale, item.get("params"))
     return 0.8, 0.1 * scale, 0.1
 
 
@@ -92,7 +101,7 @@ def _search(it: dict, busy: list[dict], ow: int, oh: int):
     """(biaya, skala, y, rect, kena) terbaik; biaya 0 = bebas."""
     best = None
     for scale in (INFO_SCALES if it["type"] in INFO else SCALES):
-        for y in PREFERRED[it["type"]] + SCAN:
+        for y in (it.get("prefer") or []) + PREFERRED[it["type"]] + SCAN:
             w, h, x = size_of(it, ow, oh, scale)
             top = y - h / 2
             if top < 0.01 or top + h > 0.99:
@@ -153,7 +162,7 @@ def place(items: list[dict], tl: list[dict], ow: int, oh: int) -> dict[str, dict
             continue
         segs = [seg for seg in tl if seg["t0"] < it["end"] and seg["t1"] > it["start"]]
         layouts = sorted({seg["layout"] for seg in segs})
-        default_y = PREFERRED[it["type"]][0]
+        default_y = (it.get("prefer") or PREFERRED[it["type"]])[0]
         whole = _search(it, _busy(tl, placed, it["start"], it["end"], vertical), ow, oh)
         if whole[4] and len(segs) > 1:
             parts = []

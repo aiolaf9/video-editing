@@ -1276,6 +1276,24 @@ def subtitle_preset_media(preset: str, kind: str, user: dict = CurrentUser):
     return FileResponse(path, media_type=mt, headers={"Cache-Control": "private, max-age=86400"})
 
 
+@app.get("/api/motion-presets")
+def motion_presets(user: dict = CurrentUser):
+    """M2.5 Motion Library: kategori, preset (nilai bawaan + kontrol), tingkat intensitas, kombinasi Auto Style."""
+    from . import autostyle, motionlib
+    return {**motionlib.public(), "combos": autostyle.MOTION_COMBOS_PUBLIC}
+
+
+@app.get("/api/motion-presets/{preset}/{kind}")
+def motion_preset_media(preset: str, kind: str, user: dict = CurrentUser):
+    """Klip gerak (preview.mp4) / thumbnail (thumb.png) preset, dirender jalur render yang sama dengan hasil akhir."""
+    from . import motion_gallery, motionlib
+    if not motionlib.get(preset) or kind not in ("preview.mp4", "thumb.png"):
+        raise HTTPException(404)
+    mp4, png = motion_gallery.render(preset)
+    path, mt = (mp4, "video/mp4") if kind == "preview.mp4" else (png, "image/png")
+    return FileResponse(path, media_type=mt, headers={"Cache-Control": "private, max-age=86400"})
+
+
 @app.get("/api/projects/{pid}/framing")
 def get_framing(pid: str, start: float, end: float, mode: Optional[str] = None, user: dict = CurrentUser):
     """M2.1: rencana bingkai klip dari resep tersimpan (mode/pilihan per bagian) beserta alasannya."""

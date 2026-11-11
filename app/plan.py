@@ -20,9 +20,10 @@ from .clipper import HOOK_WORDS
 from .media import ENERGY_STEP
 from .storage import new_id
 
-TYPES = ("zoom", "keyword", "card", "chips", "checklist", "hook", "kinetic", "lower_third", "counter", "cta", "image")
+TYPES = ("zoom", "keyword", "card", "chips", "checklist", "hook", "kinetic", "lower_third", "counter", "cta", "image",
+         "fx")
 _MIN_LEN = {"zoom": 0.8, "keyword": 0.9, "card": 1.5, "chips": 1.5, "checklist": 2.0, "hook": 1.0, "kinetic": 1.0,
-            "lower_third": 1.5, "counter": 1.0, "cta": 1.0, "image": 0.5}
+            "lower_third": 1.5, "counter": 1.0, "cta": 1.0, "image": 0.5, "fx": 0.2}
 _POS = ("tl", "tr", "bl", "br", "top", "center", "bottom")
 
 STOPWORDS = {
@@ -90,6 +91,12 @@ def normalize(items: list[dict], start: float, end: float) -> list[dict]:
                 continue
             item.update(asset=asset, pos=raw.get("pos") if raw.get("pos") in _POS else "tr",
                         scale=_num(raw.get("scale"), 0.22, 0.05, 1.0), opacity=_num(raw.get("opacity"), 1.0, 0.1, 1.0))
+        if typ == "fx":
+            from . import motionlib
+            fx = motionlib.clean_item(raw)
+            if not fx:
+                continue
+            item.update(fx)
         if typ in ("keyword", "card", "hook", "kinetic", "lower_third", "counter", "cta") and not item["text"]:
             continue
         if typ in ("chips", "checklist") and not item["items"]:

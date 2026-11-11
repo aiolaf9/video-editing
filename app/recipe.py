@@ -85,6 +85,7 @@ class Motion(_Strict):
     speed: float = Field(1.0, ge=0.5, le=2.0)
     zoom: Literal["none", "slow"] = "none"
     fade: bool = True
+    level: Literal["ringan", "seimbang", "dinamis"] = "seimbang"    # M2.5 intensitas Motion Library
 
 
 class Audio(_Strict):
@@ -296,7 +297,7 @@ def to_render_request(pid: str, recipe: Recipe, start: float, end: float, title:
         frame_sections=list(recipe.crop.sections),
         color=recipe.look.color, brightness=recipe.look.brightness, contrast=recipe.look.contrast,
         saturation=recipe.look.saturation, speed=recipe.motion.speed, zoom=recipe.motion.zoom,
-        fade=recipe.motion.fade, normalize_audio=recipe.audio.normalize, encoder=recipe.encoder,
+        fade=recipe.motion.fade, motion_level=recipe.motion.level, normalize_audio=recipe.audio.normalize, encoder=recipe.encoder,
         subtitles=SubtitleSettings(**recipe.subtitles.model_dump()),
         music=MusicSettings(file=recipe.audio.music, volume=recipe.audio.volume, ducking=recipe.audio.ducking),
         overlays=[PlanItem(**i) for i in effective_overlays(pid, recipe)],

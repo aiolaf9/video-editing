@@ -95,7 +95,8 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
                   camera: Optional[list[tuple[float, float]]] = None,
                   punches: Optional[list[tuple[float, float]]] = None,
                   layers: Optional[list] = None, framing: Optional[dict] = None,
-                  out_scale: float = 1.0, graphics_file: Optional[Path] = None) -> list[str]:
+                  out_scale: float = 1.0, graphics_file: Optional[Path] = None,
+                  camera_fx: Optional[dict] = None) -> list[str]:
     """Mengembalikan argumen FFmpeg (tanpa 'ffmpeg -y' di depannya).
 
     camera  : titik kunci (detik klip, pusat x 0..1) agar bingkai mengikuti wajah
@@ -150,12 +151,21 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
         else:
             v.append(f"crop={cw}:{ch}:{cx}:{cy}")
     z = zoom_expression(req.zoom == "slow", in_dur, punches or [])
+    cam = camera_fx or {}
+    if cam.get("z"):                    # M2.5 Motion Library: Ken Burns, punch-in, goyang, whip (waktu = detik klip)
+        z = f"({z or '1'})*(1+{'+'.join(cam['z'])})"
+    dxe = f"clip({'+'.join(cam['dx'])},-1,1)" if cam.get("dx") else "0"
+    dye = f"clip({'+'.join(cam['dy'])},-1,1)" if cam.get("dy") else "0"
     if z:
         v.append(f"scale=w='trunc({ow}*{z}/2)*2':h='trunc({oh}*{z}/2)*2':eval=frame:flags=bicubic")
-        # Pusat zoom sedikit di atas tengah: biasanya posisi wajah.
-        v.append(f"crop={ow}:{oh}:(iw-{ow})/2:(ih-{oh})*0.4")
+        # Pusat zoom sedikit di atas tengah (biasanya posisi wajah); geser kamera memakai ruang tepi hasil zoom.
+        v.append(f"crop={ow}:{oh}:x='(iw-{ow})/2*(1+{dxe})':y='(ih-{oh})*(0.4+0.4*{dye})'")
     elif not segments:
         v.append(f"scale={ow}:{oh}:flags=lanczos")
+    for b0, b1, size in cam.get("blur", []):
+        v.append(f"avgblur=sizeX={max(2, int(size * ow / 1080))}:sizeY=1:enable='between(t,{b0:.3f},{b1:.3f})'")
+    if cam.get("bright"):
+        v.append(f"eq=brightness='{'+'.join(cam['bright'])}':eval=frame")
     if abs(req.speed - 1.0) >= 1e-3:
         v.append(f"setpts=PTS/{req.speed:.4f}")
     v += COLOR_PRESETS[req.color]

@@ -45,11 +45,16 @@ PRESETS = {
     "neon": {"label": "Neon", "desc": "Huruf berpendar, kata aktif paling terang", "anim": "neon",
              "font": "Bebas Neue", "uppercase": True, "words_per_line": 3, "highlight": "#39FF14",
              "color": "#E6FFF0", "size": 1.15, "outline": 0.5},
+    # M2.5 Motion Library
+    "wordbounce": {"label": "Kata Memantul", "desc": "Satu kata besar meluncur dari bawah, memantul, miring bergantian",
+                   "anim": "wordbounce", "font": "Anton", "uppercase": True, "words_per_line": 1,
+                   "highlight": "#FFFFFF", "size": 1.3},
     "typewriter": {"label": "Isi Warna", "desc": "Warna mengisi kata dari kiri ke kanan mengikuti ucapan",
                    "anim": "typewriter", "font": "Anton", "uppercase": True, "words_per_line": 3,
                    "highlight": "#FFE600", "color": "#FFFFFF"},
 }
 STYLES = tuple(PRESETS)
+ONE_WORD = ("word", "wordbounce")
 # Kata umum yang tidak pernah disorot sebagai "kata penting".
 STOPWORDS = set("""yang dan di ke dari untuk dengan itu ini ada pada adalah juga akan tidak sudah saya kita kami
 kalian mereka dia ia atau karena jadi kalau bahwa dalam bisa lebih sangat seperti agar supaya oleh para sebuah satu
@@ -188,10 +193,10 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
               opts: SubtitleOptions, speed: float = 1.0) -> str:
     style = opts.style if opts.style in STYLES else "karaoke"
     words = collect_words(transcript, clip_start, clip_end, speed)
-    per_line = 1 if style == "word" else max(1, min(int(opts.words_per_line), 8))
+    per_line = 1 if style in ONE_WORD else max(1, min(int(opts.words_per_line), 8))
 
     base = min(width, height) * 0.075 * max(0.4, min(float(opts.size), 2.5))
-    if style == "word":
+    if style in ONE_WORD:
         base *= 1.4
     size = int(round(base))
     outline = max(2, round(size * 0.08)) if opts.outline > 0 else 0
@@ -204,7 +209,7 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
     margin_h = int(width * 0.06)
 
     primary = ass_color(opts.color)
-    hl = ass_color(opts.highlight)
+    hl = base_hl = ass_color(opts.highlight)
     emph = ass_color(opts.emphasis_color)
     font = opts.font.replace(",", " ") or "Arial"
     border_style, out_col, back_col = 1, ass_color(opts.outline_color), ass_color(opts.shadow_color, 0x80)
@@ -248,22 +253,33 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
     # M2.4: gaya animasi per bagian (opts.sections). Kata dikelompokkan per gaya lalu dipotong jadi baris.
     base_style, base_per_line = style, per_line
 
-    def style_at(t: float) -> str:
-        return next((z[2] for z in opts.sections if z[0] <= t < z[1] and z[2] in STYLES), base_style)
-    chunks, chunk_styles = [], []
+    # M2.5: bagian boleh membawa tampilan preset caption Motion Library (z[3]: highlight, font, size, huruf besar,
+    # kata per baris, intensitas k) -> rentang waktu berbeda bisa memakai preset caption berbeda.
+    def section_at(t: float):
+        return next((z for z in opts.sections if z[0] <= t < z[1] and z[2] in STYLES), None)
+    chunks, chunk_styles, chunk_extra = [], [], []
     run: list[dict] = []
-    run_style = None
+    run_key = run_sec = None
     for w in words + [None]:
-        st = style_at(w["start"]) if w else None
-        if run and (w is None or st != run_style):
-            pl = 1 if run_style == "word" else (base_per_line if base_style != "word" else max(1, min(int(opts.words_per_line), 8)))
+        sec = section_at(w["start"]) if w else None
+        key = (sec[2] if sec else base_style, id(sec) if sec and len(sec) > 3 else 0) if w else None
+        if run and (w is None or key != run_key):
+            run_style = run_key[0]
+            extra = run_sec[3] if run_sec and len(run_sec) > 3 else {}
+            if run_style in ONE_WORD:
+                pl = 1
+            elif extra.get("words_per_line"):
+                pl = max(1, min(int(extra["words_per_line"]), 8))
+            else:
+                pl = base_per_line if base_style not in ONE_WORD else max(1, min(int(opts.words_per_line), 8))
             for c in chunk_words(run, pl):
                 chunks.append(c)
                 chunk_styles.append(run_style)
+                chunk_extra.append(extra)
             run = []
         if w:
             run.append(w)
-            run_style = st
+            run_key, run_sec = key, sec
     default_pos, default_cy = pos, cy
     skipped = 0
     for ci, chunk in enumerate(chunks):
@@ -271,6 +287,7 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
             skipped += 1
             continue
         style = chunk_styles[ci]
+        extra = chunk_extra[ci]
         zone = next((z for z in opts.zones if z[0] <= chunk[0]["start"] < z[1]), None)
         if zone:
             cy = int(height * zone[2])
@@ -278,7 +295,19 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
         else:
             pos, cy = default_pos, default_cy
             legacy = style in LEGACY_STYLES and opts.pos_y is None
-        tokens = [_clean(w["word"], opts.uppercase) for w in chunk]
+        hl = ass_color(extra["highlight"]) if extra.get("highlight") else base_hl
+        if extra:
+            legacy = False
+            if not zone and extra.get("pos_y") is not None:
+                cy = int(height * float(extra["pos_y"]))
+            tags = rf"\an5\pos({cx},{cy})"
+            if extra.get("font"):
+                tags += rf"\fn{str(extra['font']).replace(',', ' ')}"
+            if extra.get("size"):
+                tags += rf"\fs{int(round(size * float(extra['size']) / max(0.4, float(opts.size))))}"
+            pos = tags
+        upper = extra.get("uppercase", opts.uppercase) if extra else opts.uppercase
+        tokens = [_clean(w["word"], upper) for w in chunk]
         imp = important_words(chunk, terms) if opts.emphasis else set()
         base_tok = [rf"{{\c{emph}}}{t}{{\c{primary}}}" if i in imp else t for i, t in enumerate(tokens)]
         chunk_start = chunk[0]["start"]
@@ -303,6 +332,20 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
             if not legacy:
                 pop = "{" + pos + r"\fscx70\fscy70\t(0,90,\fscx100\fscy100)}"
             event(chunk_start, chunk_end, pop + base_tok[0])
+            continue
+
+        if style == "wordbounce":
+            # M2.5: kata tunggal meluncur dari bawah, melonjak (overshoot), kembali, miring bergantian
+            k = float(extra.get("k", 1.0)) if extra else 1.0
+            sp = max(0.4, float(extra.get("speed", 1.0))) if extra else 1.0
+            rot = (1 if ci % 2 else -1) * min(8.0, 3.0 * k)
+            dy = int(height * 0.045 * min(1.6, k))
+            m1, m2, m3 = int(120 / sp), int(200 / sp), int(260 / sp)
+            col = rf"\c{hl}" if extra.get("highlight") or opts.highlight != "#FFFFFF" else ""
+            fx = (rf"\an5\move({cx},{cy + dy},{cx},{cy},0,{m1})\fscx80\fscy120\frz{rot:.1f}"
+                  rf"\t(0,{m1},\fscx112\fscy92)\t({m1},{m2},\fscx96\fscy104)\t({m2},{m3},\fscx100\fscy100){col}")
+            extra_tags = pos.split(")", 1)[1] if ")" in pos else ""
+            event(chunk_start, chunk_end, "{" + fx + extra_tags + "}" + base_tok[0])
             continue
 
         if style == "typewriter":

@@ -1,5 +1,5 @@
-"""Auto Style (M2.5): rekomendasi gaya untuk Kajian, Wawancara, Dokumentasi Sosial, Kisah Penerima Manfaat, dan
-Fundraising dengan aturan LOKAL yang bisa dijelaskan (kata yang muncul di transkrip + sinyal gambar dari analisis
+"""Auto Style (M2.5): rekomendasi gaya untuk Kajian, Wawancara, Dokumentasi Sosial, Kisah Penerima Manfaat,
+Fundraising, dan Edukasi dengan aturan LOKAL yang bisa dijelaskan (kata yang muncul di transkrip + sinyal gambar dari analisis
 bingkai). Bukan model AI; hasilnya hanya saran dan pengguna selalu bisa memilih kategori lain.
 
 Tiap kategori punya daftar kata penanda (bobot 1) dan sinyal tambahan. Skor = jumlah bobot; keyakinan = porsi
@@ -53,11 +53,36 @@ CATEGORIES = {
         "why": "Ajakan berbagi: subtitle energik, warna cerah, ajakan (CTA) di akhir. Data rekening/QR TIDAK dibuat "
                "otomatis: tambahkan sendiri dari sumber resmi.",
     },
+    "edukasi": {
+        "label": "Edukasi",
+        "words": "belajar pelajaran materi siswa murid guru langkah cara caranya tips contoh rumus pengertian "
+                 "penjelasan memahami pahami praktik latihan soal jawaban mudah penting perhatikan",
+        "style": {"subtitle": "pop", "frame": "auto", "look": "vivid", "music": False},
+        "motion": ["lower_third"],
+        "why": "Materi belajar: kata aktif membesar, kartu bab per langkah, grafik untuk angka.",
+    },
 }
+# M2.5: kombinasi preset Motion Library per kategori. Peran -> waktu ditentukan motion_combo (tidak saling tumpang
+# tindih; guard di app/motionlib tetap menyaring bila klip pendek). Dipilih agar tidak berlebihan: satu judul pembuka,
+# paling banyak satu gerak kamera halus, satu transisi, satu grafis/bab, satu CTA. Grafik batang tidak pernah
+# ditambahkan otomatis (datanya harus dari pengguna; angka tidak dikarang).
+MOTION_COMBOS = {
+    "kajian": {"opening": "title.cinematic", "camera": "cam.ken_burns", "chapter": "story.chapter",
+               "cta": "cta.follow_bar"},
+    "wawancara": {"opening": "title.mask_wipe", "camera": "cam.punch_in"},
+    "dokumentasi": {"opening": "title.cinematic", "camera": "cam.handheld", "transition": "tr.flash",
+                    "graphic": "gfx.progress"},
+    "penerima": {"opening": "title.cinematic", "camera": "cam.ken_burns"},
+    "fundraising": {"opening": "title.slam_stack", "camera": "cam.punch_in", "graphic": "gfx.progress",
+                    "transition": "tr.flash", "cta": "cta.follow_bar"},
+    "edukasi": {"opening": "title.mask_wipe", "chapter": "story.chapter", "graphic": "gfx.progress",
+                "transition": "tr.whip"},
+}
+MOTION_COMBOS_PUBLIC = {k: list(v.values()) for k, v in MOTION_COMBOS.items()}
 _WORD = re.compile(r"[a-zA-Z']+")
 CTA_TEXT = {"fundraising": "Mari berbagi kebaikan bersama", "kajian": "Ikuti untuk kajian berikutnya",
             "dokumentasi": "Ikuti kabar kegiatan berikutnya", "wawancara": "Simak kisah lengkapnya",
-            "penerima": "Ikuti kisah inspiratif lainnya"}
+            "penerima": "Ikuti kisah inspiratif lainnya", "edukasi": "Ikuti untuk materi berikutnya"}
 
 
 def _tokens(transcript: dict, start: float, end: float) -> list[str]:
@@ -125,12 +150,52 @@ def recommendation(category: str) -> dict:
             "motion": cat["motion"], "why": cat["why"], "cta": CTA_TEXT.get(category, "")}
 
 
-def motion_items(rec: dict, transcript: dict, start: float, end: float) -> list[dict]:
-    """Elemen motion yang disarankan kategori ini (semua dapat diedit/dihapus): hook, lower-third, angka, CTA."""
+def motion_combo(category: str, start: float, end: float, transcript: Optional[dict] = None) -> list[dict]:
+    """M2.5: item fx Motion Library untuk kategori ini (detik sumber). Judul pembuka memakai kalimat hook dari
+    transkrip bila ada; angka grafis TIDAK dikarang: progres/grafik hanya dipakai bila transkrip menyebut angka
+    (nilainya diisi pengguna; bawaan preset ditandai untuk dicek)."""
     from . import motion, plan
+    combo = MOTION_COMBOS.get(category) or MOTION_COMBOS["kajian"]
+    dur = end - start
     words = [w for seg in (transcript or {}).get("segments", []) for w in seg.get("words") or []]
     out: list[dict] = []
-    if "hook" in rec["motion"]:
+
+    def add(pid: str, s: float, e: float, **params) -> None:
+        s, e = max(start, s), min(end, e)
+        if e - s >= 0.3:
+            out.append({"type": "fx", "preset": pid, "params": params, "start": round(s, 2), "end": round(e, 2)})
+    if "opening" in combo:
+        h = motion.hook_suggestion(words, start, end) if words else None
+        text = (h or {}).get("text") or ""
+        add(combo["opening"], start + 0.2, start + min(3.2, dur * 0.3), **({"text": text[:60]} if text else {}))
+    if "camera" in combo and dur > 8:
+        add(combo["camera"], start + dur * 0.35, start + dur * 0.35 + min(5.0, dur * 0.2))
+    if "chapter" in combo and dur > 14:
+        add(combo["chapter"], start + dur * 0.55, start + dur * 0.55 + 3.0)
+    if "graphic" in combo and dur > 12:
+        # hanya persentase yang benar-benar diucapkan (mis. "72 persen") -> bar progres bernilai itu
+        for i in plan.heuristic(transcript or {}, [], start, end):
+            m = re.match(r"^\s*(\d{1,3})(?:[.,]\d+)?\s*(%|persen)", (i.get("text") or "").lower()) \
+                if i["type"] == "counter" else None
+            if m and int(m.group(1)) <= 100:
+                add(combo["graphic"], i["start"], i["start"] + 3.5, value=int(m.group(1)),
+                    text=(i.get("label") or "Capaian")[:40])
+                break
+    if "transition" in combo and dur > 16:
+        mid = start + dur * 0.5
+        add(combo["transition"], mid - 0.2, mid + 0.2)
+    if "cta" in combo and dur > 10:
+        add(combo["cta"], end - 3.5, end, text=CTA_TEXT.get(category, ""))
+    return plan.normalize(out, start, end)
+
+
+def motion_items(rec: dict, transcript: dict, start: float, end: float) -> list[dict]:
+    """Elemen motion yang disarankan kategori ini (semua dapat diedit/dihapus). M2.5: judul pembuka, kamera,
+    transisi, bab, grafis, dan CTA dari Motion Library (motion_combo); lower-third & angka tetap elemen M2."""
+    from . import motion, plan
+    words = [w for seg in (transcript or {}).get("segments", []) for w in seg.get("words") or []]
+    out: list[dict] = motion_combo(rec["category"], start, end, transcript)
+    if "hook" in rec["motion"] and not out:
         h = motion.hook_suggestion(words, start, end)
         if h:
             out.append(h)
@@ -140,7 +205,8 @@ def motion_items(rec: dict, transcript: dict, start: float, end: float) -> list[
                     else "Narasumber", "start": round(s0, 2), "end": round(min(end, s0 + 4), 2), "items": []})
     if "counter" in rec["motion"]:
         out += [i for i in plan.heuristic(transcript, [], start, end) if i["type"] == "counter"][:2]
-    if "cta" in rec["motion"] and rec.get("cta") and end - start > 8:
+    if "cta" in rec["motion"] and rec.get("cta") and end - start > 8 and not any(
+            i.get("preset", "").startswith("cta.") for i in out):
         out.append({"type": "cta", "text": rec["cta"], "start": round(max(start, end - 3), 2), "end": round(end, 2),
                     "items": []})
     return plan.normalize(out, start, end)

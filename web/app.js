@@ -148,7 +148,8 @@ function recipeFromControls() {
       distance: $("frameDistance").value || "auto", sections: (state.frameSections || []).slice(0, 60) },
     look: { color: $("colorSelect").value, brightness: +$("brightness").value, contrast: +$("contrast").value,
       saturation: +$("saturation").value },
-    motion: { speed: +$("speedSelect").value, zoom: $("zoomCheck").checked ? "slow" : "none", fade: $("fadeCheck").checked },
+    motion: { speed: +$("speedSelect").value, zoom: $("zoomCheck").checked ? "slow" : "none", fade: $("fadeCheck").checked,
+      level: state.motionLevel || "seimbang" },
     subtitles: {
       enabled: $("subEnabled").checked, style: $("subStyle").value, font: $("subFont").value, size: +$("subSize").value,
       color: $("subColor").value.toUpperCase(), highlight: $("subHighlight").value.toUpperCase(),
@@ -209,6 +210,8 @@ function applyRecipeToControls(r) {
   setControl("speedSelect", r.motion.speed);
   setControl("zoomCheck", r.motion.zoom === "slow");
   setControl("fadeCheck", r.motion.fade);
+  state.motionLevel = r.motion.level || "seimbang";             // M2.5 intensitas Motion Library
+  if (window.MotionLib) window.MotionLib.markLevel();
   const s = r.subtitles;
   setControl("subEnabled", s.enabled); setControl("subStyle", s.style); setControl("subFont", s.font);
   setControl("subSize", s.size); setControl("subColor", s.color.toLowerCase());
@@ -1707,7 +1710,8 @@ function bind() {
 
 // ------------------------------------------------------------ rencana animasi
 const PLAN_LABELS = { zoom: "🔍 Zoom", keyword: "🔤 Kata", card: "🪪 Kartu", chips: "🏷 Chips", checklist: "✅ Checklist",
-  hook: "🎣 Hook", kinetic: "💥 Kinetic", lower_third: "👤 Narasumber", counter: "🔢 Angka", cta: "👉 CTA", image: "🖼 Gambar/logo" };
+  hook: "🎣 Hook", kinetic: "💥 Kinetic", lower_third: "👤 Narasumber", counter: "🔢 Angka", cta: "👉 CTA", image: "🖼 Gambar/logo",
+  fx: "🎬 Motion" };
 const POS_LABELS = { tr: "Kanan atas", tl: "Kiri atas", br: "Kanan bawah", bl: "Kiri bawah", top: "Atas tengah", center: "Tengah", bottom: "Bawah tengah" };
 
 function planInRange() {
@@ -1725,7 +1729,9 @@ function renderPlan() {
   }
   list.innerHTML = items.map((it) => {
     let fields = "";
-    if (it.type === "card") {
+    if (it.type === "fx") {
+      fields = window.MotionLib ? window.MotionLib.itemFields(it) : esc(it.preset);
+    } else if (it.type === "card") {
       fields = `<input class="label" data-f="label" value="${esc(it.label)}" placeholder="Label">
                 <input data-f="text" value="${esc(it.text)}" placeholder="Judul kartu">`;
     } else if (it.type === "keyword") {
@@ -1760,7 +1766,7 @@ function renderPlan() {
 }
 
 // Hasil safe-zone (GET /motion-layout): grafis dipindah / diperkecil / disembunyikan dan alasannya.
-const PLACE_ICON = { tetap: "", dipindah: "↕", diperkecil: "↘", "tumpang tindih": "⚠", disembunyikan: "🚫" };
+const PLACE_ICON = { tetap: "", dipindah: "↕", diperkecil: "↘", "tumpang tindih": "⚠", disembunyikan: "🚫", dilewati: "⏭" };
 function placeBadge(it) {
   const p = (state.placement || {})[it.id];
   if (!p || p.action === "tetap") return "";
@@ -1808,6 +1814,12 @@ function updateOverlayPreview() {
     if (i.type === "counter") return `<div class="ovp-counter" style="${posOf(i)}font-size:${unit * 0.17}px">${esc(i.text)}${i.label ? `<small style="font-size:${unit * 0.045}px">${esc(i.label)}</small>` : ""}</div>`;
     if (i.type === "cta") return `<div class="ovp-cta" style="${posOf(i)}font-size:${unit * 0.06}px"><span>${esc(i.text)}</span></div>`;
     if (i.type === "lower_third") return `<div class="ovp-lower" style="${posOf(i)}font-size:${unit * 0.064}px"><b>${esc(i.text)}</b>${i.label ? `<small style="font-size:${unit * 0.044}px">${esc(i.label)}</small>` : ""}</div>`;
+    if (i.type === "fx") {
+      // Penanda posisi saja: tampilan sebenarnya dari engine render (▶ Pratinjau hasil / klip galeri).
+      const p = window.MotionLib && window.MotionLib.preset(i.preset);
+      if (!p || ["camera", "transitions", "captions"].includes(p.category)) return "";
+      return `<div class="ovp-fx" style="${posOf(i)}font-size:${unit * 0.045}px">🎬 ${esc(p.label)}${i.params && i.params.text ? `: ${esc(i.params.text)}` : ""}</div>`;
+    }
     if (i.type === "image") return `<img class="ovp-image ovp-${esc(i.pos || "tr")}" style="width:${(i.scale || 0.22) * 100}%;opacity:${i.opacity ?? 1}" src="/api/projects/${state.project.id}/assets/${encodeURIComponent(i.asset)}" alt="">`;
     if (i.type === "card") return `<div class="ovp-card" style="font-size:${unit * 0.058}px">${i.label ? `<small style="font-size:${unit * 0.034}px">${esc(i.label)}</small>` : ""}${esc(i.text)}</div>`;
     const cls = i.type === "chips" ? "ovp-chips" : "ovp-check";
@@ -1932,6 +1944,7 @@ function bindPlan() {
     const li = e.target.closest("li[data-id]");
     const item = li && state.plan.find((i) => i.id === li.dataset.id);
     if (!item) return;
+    if (window.MotionLib && window.MotionLib.onParam(e)) return;      // M2.5 kontrol preset (params)
     const f = e.target.dataset.f;
     if (["start", "end", "strength", "scale", "opacity"].includes(f)) item[f] = +e.target.value;
     else if (f === "items") item.items = e.target.value.split(",").map((x) => x.trim()).filter(Boolean);
@@ -1941,6 +1954,7 @@ function bindPlan() {
   });
   $("planList").addEventListener("change", (e) => {
     if (e.target.tagName !== "SELECT") return;
+    if (window.MotionLib && window.MotionLib.onParam(e)) return;
     const li = e.target.closest("li[data-id]");
     const item = li && state.plan.find((i) => i.id === li.dataset.id);
     if (!item) return;

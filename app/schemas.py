@@ -3,7 +3,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
-SUB_STYLES = Literal["karaoke", "pop", "word", "simple", "bounce", "slide", "zoom", "fade", "cinematic", "documentary",
+SUB_STYLES = Literal["karaoke", "pop", "word", "simple", "bounce", "slide", "zoom", "fade", "cinematic", "documentary", "wordbounce",
                      "storytelling", "highlight", "neon", "typewriter"]
 HEX = r"^#[0-9A-Fa-f]{6}$"
 
@@ -48,7 +48,7 @@ class PlanItem(BaseModel):
     id: Optional[str] = Field(None, max_length=40)
     # M2.3: hook pembuka, kinetic typography, lower-third, animasi angka, CTA, gambar/logo
     type: Literal["zoom", "keyword", "card", "chips", "checklist", "hook", "kinetic", "lower_third", "counter", "cta",
-                  "image"]
+                  "image", "fx"]
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     text: str = Field("", max_length=200)
@@ -59,6 +59,9 @@ class PlanItem(BaseModel):
     pos: Literal["tl", "tr", "bl", "br", "top", "center", "bottom"] = "tr"
     scale: float = Field(0.22, ge=0.05, le=1.0)             # image: lebar relatif bingkai
     opacity: float = Field(1.0, ge=0.1, le=1.0)
+    # M2.5 Motion Library: type="fx" -> preset dari app/data/motion_presets.json + nilai kontrol yang diubah
+    preset: str = Field("", max_length=60, pattern=r"^[a-z0-9_.]*$")
+    params: dict = Field(default_factory=dict, max_length=20)
 
 
 class FrameSection(BaseModel):
@@ -93,6 +96,7 @@ class RenderRequest(BaseModel):
     saturation: float = Field(1.0, ge=0.0, le=2.0)
     speed: float = Field(1.0, ge=0.5, le=2.0)
     zoom: Literal["none", "slow"] = "none"
+    motion_level: Literal["ringan", "seimbang", "dinamis"] = "seimbang"   # M2.5 intensitas visual Motion Library
     fade: bool = True
     normalize_audio: bool = True
     encoder: Literal["cpu", "nvidia", "intel", "amd", "mac"] = "cpu"

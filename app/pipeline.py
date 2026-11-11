@@ -370,12 +370,19 @@ def assemble(req: RenderRequest, transcript: Optional[dict], sub_opts: Optional[
     grafis, motion ASS, PNG overlay, dan punch-in. Dipakai prepare() dan bench/m2/studio_demo.py."""
     subs = None
     placement: dict = {}
+    fx_specs: list[dict] = []
     if req.animations and items:
         placement = layout_items(req, items, frame, src[0], src[1], width, height)
+        fx_specs, _ = fx_plan(req, items, frame)
     if sub_opts is not None:
         sub_opts.zones = subtitle_zones(frame, req, height / max(1, width))
-        sub_opts.sections = tuple(((x.start - req.start) / req.speed, (x.end - req.start) / req.speed, x.style)
-                                  for x in req.subtitles.sections if x.end > req.start and x.start < req.end)
+        from . import motionlib
+        # M2.5: preset caption Motion Library per rentang didahulukan dari gaya per bagian M2.4
+        fx_caps = tuple((f["start"], f["end"], f["params"].get("anim", "karaoke"), motionlib.caption_extra(f))
+                        for f in fx_specs if f["kind"] == "caption")
+        sub_opts.sections = fx_caps + tuple(((x.start - req.start) / req.speed, (x.end - req.start) / req.speed,
+                                             x.style) for x in req.subtitles.sections
+                                            if x.end > req.start and x.start < req.end)
         # Hanya teks besar yang BENAR-BENAR tampil boleh menggantikan subtitle (yang disembunyikan safe-zone tidak).
         shown = [i for i in items if (placement.get(i.get("id")) or {}).get("action") != "disembunyikan"]
         sub_opts.suppress = text_windows(req, shown, transcript or {})
@@ -390,7 +397,18 @@ def assemble(req: RenderRequest, transcript: Optional[dict], sub_opts: Optional[
     if req.animations and items:
         overlay_dir.mkdir(exist_ok=True)
         motion_items = []
+        for f in fx_specs:                                   # M2.5 judul/grafis/cerita (ASS per kind)
+            if f["kind"] not in motion_kinds_ass():
+                continue
+            pl = placement.get(f["id"])
+            if pl and pl.get("parts"):
+                for part in (x for x in pl["parts"] if x["action"] != "disembunyikan"):
+                    motion_items.append({**f, "type": "fx", "start": part["start"], "end": part["end"], "place": part})
+            elif not pl or pl["action"] not in ("disembunyikan", "dilewati"):
+                motion_items.append({**f, "type": "fx", "place": pl})
         for item in items:
+            if item.get("type") == "fx":
+                continue
             pl = placement.get(item.get("id"))
             if pl and pl["action"] == "disembunyikan":
                 continue                                    # grafis dekoratif tanpa ruang aman (alasan di editor)
@@ -425,8 +443,47 @@ def assemble(req: RenderRequest, transcript: Optional[dict], sub_opts: Optional[
         if motion_items:
             graphics = workdir / f"{tag}.motion.ass"
             graphics.write_text(motion.build(motion_items, width, height), encoding="utf-8")
+    camera_fx = None
+    cam_specs = [f for f in fx_specs if f["kind"] in ("camera", "transition")]
+    if cam_specs:
+        from . import motionlib
+        camera_fx = motionlib.camera_terms(cam_specs, req.speed)
     return {"subs": subs, "frame": frame, "punches": punches, "layers": layers, "overlay_dir": overlay_dir,
-            "graphics": graphics, "placement": placement}
+            "graphics": graphics, "placement": placement, "camera_fx": camera_fx}
+
+
+def motion_kinds_ass() -> tuple:
+    from . import motionlib
+    return motionlib.ASS_KINDS
+
+
+def fx_plan(req: RenderRequest, items: list[dict], frame: Optional[dict]) -> tuple[list[dict], dict]:
+    """M2.5: item fx resep -> spesifikasi render (timeline output) yang lolos guard kombinasi.
+    -> (dipakai, {id: alasan dilewati}). Efek kamera (dan whip) tidak dipakai pada bagian Materi + Wajah /
+    Materi saja karena memperbesar kanvas akan memotong papan dan panel wajah."""
+    from . import motionlib
+    specs, skipped = [], {}
+    busy = [((s["start"] - req.start) / req.speed, (s["end"] - req.start) / req.speed)
+            for s in (frame or {}).get("segments") or [] if s["layout"] in ("split", "material")]
+    for it in items:
+        if it.get("type") != "fx":
+            continue
+        s0, e0 = max(it["start"], req.start), min(it["end"], req.end)
+        if e0 - s0 < 0.1:
+            continue
+        spec = motionlib.resolve({**it, "start": (s0 - req.start) / req.speed, "end": (e0 - req.start) / req.speed},
+                                 req.motion_level)
+        if spec is None:
+            skipped[it.get("id")] = "preset tidak dikenal"
+            continue
+        zooms = spec["kind"] == "camera" or (spec["kind"] == "transition" and spec["params"].get("effect") == "whip")
+        if zooms and any(spec["start"] < b and spec["end"] > a for a, b in busy):
+            skipped[spec["id"]] = "tidak dipakai pada tata letak Materi + Wajah / Materi (akan memotong papan)"
+            continue
+        specs.append(spec)
+    kept, why = motionlib.guard(specs, req.motion_level)
+    skipped.update(why)
+    return kept, skipped
 
 
 def big_text_windows(req: RenderRequest, pid: str, transcript: Optional[dict] = None) -> tuple:
@@ -447,11 +504,18 @@ def text_windows(req: RenderRequest, items: list[dict], transcript: dict) -> tup
     from .subtitles import collect_words, norm_tokens, spoken_span
     words = collect_words(transcript, req.start, req.end, req.speed)
     out = []
+    from . import motionlib
     for it in items:
-        if it["type"] in ("hook", "kinetic") and it["end"] > req.start and it["start"] < req.end:
+        big = it["type"] in ("hook", "kinetic")
+        text = it.get("text", "")
+        if it["type"] == "fx":                         # M2.5: judul Motion Library juga teks besar
+            spec = motionlib.resolve(it, req.motion_level)
+            big = bool(spec) and spec["category"] == "titles"
+            text = (spec or {}).get("params", {}).get("text", "")
+        if big and it["end"] > req.start and it["start"] < req.end:
             t0 = (max(it["start"], req.start) - req.start) / req.speed
             t1 = (min(it["end"], req.end) - req.start) / req.speed
-            seq = tuple(norm_tokens(it.get("text", "")))
+            seq = tuple(norm_tokens(text))
             span = spoken_span(seq, words, t0, t1)
             if span:
                 out.append((span[0], span[1], seq, t0, t1))
@@ -488,7 +552,17 @@ def layout_items(req: RenderRequest, items: list[dict], frame: Optional[dict], s
         s0, e0 = max(it["start"], req.start), min(it["end"], req.end)
         if e0 - s0 >= 0.3 and it["type"] in safezone.PREFERRED:
             cand.append({**it, "start": (s0 - req.start) / req.speed, "end": (e0 - req.start) / req.speed})
-    return safezone.place(cand, tl, width, height)
+    kept, skipped = fx_plan(req, items, frame)
+    for f in kept:                                   # M2.5 grafis ASS Motion Library ikut safe-zone
+        if f["kind"] in safezone.PREFERRED and f["end"] - f["start"] >= 0.3:
+            cand.append({"id": f["id"], "type": f["kind"], "start": f["start"], "end": f["end"],
+                         "text": f["params"].get("text", ""), "label": f["params"].get("label", ""),
+                         "params": f["params"],
+                         "prefer": [f["params"]["pos_y"]] if f["params"].get("pos_y") is not None else []})
+    out = safezone.place(cand, tl, width, height)
+    for fid, why in skipped.items():
+        out[fid] = {"action": "dilewati", "reason": why}
+    return out
 
 
 def drop_split_punches(punches: list[tuple], frame: Optional[dict], start: float) -> list[tuple]:
@@ -547,7 +621,7 @@ def render(job: Job, pid: str, req: RenderRequest) -> dict:
 
     def run(r: RenderRequest) -> None:
         cmd = build_command(src, out, r, meta, subs, music, renders, camera, punches, layers, frame,
-                            graphics_file=assets["graphics"])
+                            graphics_file=assets["graphics"], camera_fx=assets.get("camera_fx"))
         media.run_ffmpeg(cmd, duration, progress, cwd=renders)
 
     progress = job.stage(2, 98, "Merender video...")
@@ -656,7 +730,7 @@ def render_preview(pid: str, req: RenderRequest) -> Path:
         try:
             cmd = build_command(source_path(pid), tmp, req, meta, assets["subs"], assets["music"], folder, None,
                                 assets["punches"], assets["layers"], assets["frame"], out_scale=PREVIEW_SCALE,
-                                graphics_file=assets["graphics"])
+                                graphics_file=assets["graphics"], camera_fx=assets.get("camera_fx"))
             media.run_ffmpeg(cmd, (req.end - req.start) / req.speed, None, cwd=folder, stall_timeout=60)
             tmp.replace(out)
         finally:

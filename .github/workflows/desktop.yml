@@ -166,6 +166,18 @@ jobs:
           Get-Content build/m2/bingkai-pemateri-jauh/rencana.json
           Get-ChildItem build/m2/bukti, build/m2/bingkai-pemateri-jauh | Select-Object Name, Length
 
+      - name: Bukti M2.5 Motion Library (contoh MP4 per kategori, tingkat intensitas, waktu & RAM)
+        env:
+          FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
+          FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
+        run: |
+          $env:PATH = "$PWD\build\desktop\bin;$env:PATH"
+          python -m pip install -q psutil==6.1.1      # hanya untuk mengukur RAM puncak FFmpeg di Windows (BSD-3)
+          python bench/m25/library_demo.py build/m2/kajian.mp4 build/m25/kajian --transcript build/m2/kajian.json --levels
+          if ($LASTEXITCODE -ne 0) { throw "contoh Motion Library gagal" }
+          Get-Content build/m25/kajian/ukuran.json
+          Get-ChildItem build/m25/kajian | Select-Object Name, Length
+
       - name: Build PyInstaller (onedir)
         run: |
           pyinstaller desktop/nh_clip_studio.spec --noconfirm --clean --distpath dist --workpath build/pyi
@@ -402,6 +414,14 @@ jobs:
             build/m2/bingkai-pemateri-jauh/
             build/m2/safezone-pemateri-jauh/
             build/m2/kajian.json
+          retention-days: 30
+
+      - name: Unggah contoh Motion Library (M2.5)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: m25-motion-library
+          path: build/m25/
           retention-days: 30
 
       - name: Unggah bukti sebelum/sesudah (MP4)

@@ -352,9 +352,25 @@
               <select id="autoStyleCat"></select>
             </label>
             <p class="hint" id="autoStyleWhy"></p>
-            <label class="check"><input type="checkbox" id="autoStyleMotion" checked> Tambahkan elemen motion yang disarankan (hook, lower-third, CTA, angka)</label>
+            <label class="check"><input type="checkbox" id="autoStyleMotion" checked> Tambahkan kombinasi motion yang disarankan (judul pembuka, kamera, transisi, bab, CTA, lower-third)</label>
             <button type="button" id="autoStyleApply">Terapkan gaya ini</button>
             <p class="hint">Rekomendasi memakai aturan lokal (kata di transkrip + deteksi papan/wajah), bukan AI. Semua pengaturan tetap bisa diubah dan dibatalkan (↶).</p>
+          </section>
+          <section class="card" id="secMotionLib">
+            <h3>🎬 Motion Library</h3>
+            <div class="seg" id="mlLevel" role="group" aria-label="Intensitas visual">
+              <button type="button" data-v="ringan">Ringan</button><button type="button" data-v="seimbang" class="active">Seimbang</button><button type="button" data-v="dinamis">Dinamis</button>
+            </div>
+            <p class="hint">Intensitas mengatur kekuatan gerak dan batas kepadatan efek. Efek yang terlalu rapat dilewati (alasannya tampil di daftar Animasi).</p>
+            <div class="ml-cats" id="mlCats" role="tablist" aria-label="Kategori preset"></div>
+            <div class="seg small" id="mlScope" role="group" aria-label="Terapkan ke">
+              <button type="button" data-v="here" class="active">Di posisi video</button><button type="button" data-v="clip">Seluruh klip</button><button type="button" data-v="ranges">Beberapa rentang</button>
+            </div>
+            <label class="field" id="mlRangesRow" hidden>Rentang (detik dari awal klip)
+              <input id="mlRanges" placeholder="mis. 0-3, 10-12.5, 20-24"></label>
+            <div class="preset-gallery ml-gallery" id="mlGallery" role="listbox" aria-label="Galeri Motion Library"></div>
+            <p class="hint">Klik kartu untuk menambahkan. Arahkan kursor untuk melihat gerakannya (dirender engine yang sama dengan MP4).
+              Teks, warna, font, posisi, intensitas, kecepatan, dan easing diatur di tab Animasi.</p>
           </section>
           <section class="card" id="secFormat">
             <h3>Format</h3>
@@ -548,6 +564,7 @@
 <script src="subeditor.js"></script>
 <script src="evaltool.js"></script>
 <script src="studio.js"></script>
+<script src="motionlib.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

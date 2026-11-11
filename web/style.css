@@ -495,3 +495,24 @@ button.small { padding: 4px 8px; }
 .place-badge { display: block; grid-column: 1 / -1; font-size: 11px; opacity: .85; margin-top: 2px; }
 .place-badge.place-tumpang-tindih { color: #fbbf24; }
 .place-badge.place-disembunyikan { color: #f87171; }
+
+/* M2.5 Motion Library */
+.ml-cats { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 6px; }
+.ml-cats button { background: var(--bg); border: 1px solid var(--line); font-weight: 500; padding: 4px 8px; font-size: 12px; }
+.ml-cats button.active { background: var(--accent); border-color: var(--accent); }
+.ml-cats small { opacity: .7; }
+.seg.small button { font-size: 12px; padding: 4px 8px; }
+.ml-gallery { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); }
+.preset-card .ml-media { aspect-ratio: 9 / 16; }
+.plan-item .ml-name { margin-right: 6px; }
+.plan-item input[type="color"] { width: 34px; height: 24px; padding: 0; border: 0; background: none; }
+.ovp-fx { position: absolute; left: 6%; right: 6%; top: 30%; text-align: center; border: 1px dashed rgba(255,255,255,.75);
+  border-radius: 6px; color: #fff; background: rgba(0,0,0,.25); padding: .2em .4em; font-family: Poppins, sans-serif; }
+.place-dilewati { color: var(--muted, #999); }
+.plan-item .fields:has(.ml-name) { flex-wrap: wrap; align-items: center; row-gap: 4px; }
+.plan-item .fields .ml-name { flex: 0 0 100%; font-size: 13px; }
+.plan-item .fields:has(.ml-name) input[data-p=text], .plan-item .fields:has(.ml-name) input[data-p=items] { flex: 1 1 100%; }
+.plan-item .fields:has(.ml-name) .mini { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.plan-item .fields:has(.ml-name) .mini input[type=range] { width: 90px; flex: 0 0 90px; }
+.plan-item .fields:has(.ml-name) .mini input[type=number] { width: 64px; flex: 0 0 64px; }
+.plan-item .fields:has(.ml-name) select { max-width: 140px; }

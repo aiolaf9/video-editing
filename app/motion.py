@@ -67,6 +67,8 @@ def build(items: list[dict], width: int, height: int, accent: str = ACCENT) -> s
         f"Style: Cta,Poppins,{int(unit * 0.06)},{black},&H000000FF,{acc},&H60000000,-1,0,0,0,100,100,0,0,3,"
         f"{int(unit * 0.03)},{max(2, unit // 250)},5,0,0,0,1",
         f"Style: Shape,Arial,20,{white},&H000000FF,{black},&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
+        f"Style: Fx,Poppins,{int(unit * 0.06)},{white},&H000000FF,{black},&H80000000,0,0,0,0,100,100,0,0,1,"
+        f"{max(2, unit // 300)},1,5,0,0,0,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
@@ -76,6 +78,10 @@ def build(items: list[dict], width: int, height: int, accent: str = ACCENT) -> s
 
     cx = width // 2
     for it in sorted(items, key=lambda i: i["start"]):
+        if it.get("type") == "fx":                       # M2.5 Motion Library (renderer per kind)
+            from . import motion_kinds
+            motion_kinds.render(it, ev, width, height)
+            continue
         s, e, typ = it["start"], it["end"], it["type"]
         text = _txt(it.get("text", ""))
         # Penempatan dari safe-zone (app/safezone.py): pusat vertikal & skala; tanpa itu = posisi bawaan.

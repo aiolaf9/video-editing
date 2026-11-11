@@ -197,7 +197,7 @@ def run(base: str, key: str, video: Path, export_dir: Path, language: str = "en"
     report["exported"] = [str(p) for p in exported]
     step(f"{len(outputs)} MP4 terverifikasi + {len(exported)} salinan di {export_dir}")
     report["m2"] = m2_checks(c, pid, chosen[0], project_dir, render_timeout)
-    step(f"M2: {report['m2']['presets']} preset, bingkai {report['m2']['framing']}, motion "
+    step(f"M2: {report['m2']['presets']} preset, Motion Library {report['m2']['motion_library']} preset, bingkai {report['m2']['framing']}, motion "
          f"{report['m2']['motion_items']} elemen, pratinjau {report['m2']['preview_bytes']} B, render "
          f"{report['m2']['render_size']}")
     report["total_seconds"] = round(time.time() - t0, 1)
@@ -230,6 +230,21 @@ def m2_checks(c: "Client", pid: str, clip: dict, renders: Path, timeout: float) 
              {"type": "counter", "text": "2,5 kg", "start": start + 6, "end": start + 8},
              {"type": "zoom", "start": start + 3, "end": start + 4.5, "strength": 0.2},
              {"type": "cta", "text": "Ikuti kajian berikutnya", "start": max(start, end - 3), "end": end}]
+    # M2.5 Motion Library: galeri dari engine render bundel (satu preset per kategori) + item fx di render final
+    status, lib = c.get("/api/motion-presets")
+    _check(status == 200 and len(lib["presets"]) >= 15 and len(lib["categories"]) == 6, f"motion library: {status}")
+    per_cat = {}
+    for p in lib["presets"]:
+        per_cat.setdefault(p["category"], p["id"])
+    for pid_fx in per_cat.values():
+        status, clip_bytes = c.get(f"/api/motion-presets/{pid_fx}/preview.mp4")
+        _check(status == 200 and isinstance(clip_bytes, bytes) and len(clip_bytes) > 2000, f"galeri motion {pid_fx}: {status}")
+    out["motion_library"] = len(lib["presets"])
+    items += [{"type": "fx", "preset": "cap.highlight_box", "start": start, "end": end},
+              {"type": "fx", "preset": "tr.flash", "start": start + 5.8, "end": start + 6.2},
+              {"type": "fx", "preset": "cam.ken_burns", "start": start + 8, "end": start + 11},
+              {"type": "fx", "preset": "gfx.progress", "start": start + 8.5, "end": start + 11.5,
+               "params": {"value": 60, "text": "Selftest progres"}}]
     status, plan = c.json("PUT", f"/api/projects/{pid}/plan", items)
     _check(status == 200 and len(plan) == len(items), f"motion graphics: {status} {plan}")
     out["motion_items"] = len(plan)

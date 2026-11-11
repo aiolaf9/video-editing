@@ -1,4 +1,5 @@
-"""M2.4/M2.5: gaya subtitle per kalimat, dan Auto Style lokal yang dapat dijelaskan untuk 5 jenis konten NH."""
+"""M2.4/M2.5: gaya subtitle per kalimat, dan Auto Style lokal yang dapat dijelaskan untuk 6 jenis konten NH."""
+import json
 import re
 
 import pytest
@@ -26,6 +27,8 @@ SAMPLES = {
                 "keluarga saya bisa hidup lebih baik, terima kasih.",
     "fundraising": "Mari bantu saudara kita dengan sedekah dan donasi terbaik. Ayo dukung program wakaf ini, "
                    "salurkan infak Anda, berbagi kebaikan bersama.",
+    "edukasi": "Hari ini kita belajar materi baru. Perhatikan langkah pertama, lalu contoh soal dan cara "
+               "memahami rumus ini dengan mudah. Tips penting untuk latihan siswa.",
 }
 
 
@@ -51,9 +54,10 @@ def test_fundraising_motion_has_cta_but_never_account_or_qr():
     tr = _tr(SAMPLES["fundraising"] + " Target terkumpul 100 paket untuk 2 desa minggu ini ya.", step=0.5)
     rec = autostyle.recommendation("fundraising")
     items = autostyle.motion_items(rec, tr, 0, 30)
-    kinds = [i["type"] for i in items]
-    assert "hook" in kinds and "cta" in kinds
-    blob = " ".join(i["text"] + i["label"] for i in items).lower()
+    kinds = [i["type"] if i["type"] != "fx" else i["preset"] for i in items]
+    # M2.5: pembuka & CTA dari Motion Library (judul hentak + bilah ikuti); M2 hook/cta bila kombinasi kosong
+    assert ("hook" in kinds or "title.slam_stack" in kinds) and ("cta" in kinds or "cta.follow_bar" in kinds)
+    blob = " ".join(i["text"] + i["label"] + json.dumps(i.get("params", {})) for i in items).lower()
     assert not re.search(r"rekening|no\. ?rek|qris|\bqr\b|bank|\d{6,}", blob)
     assert "rekening" in rec["why"].lower() and "tidak" in rec["why"].lower()     # pengingat eksplisit
 
