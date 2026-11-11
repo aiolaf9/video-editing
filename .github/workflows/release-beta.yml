@@ -1,0 +1,84 @@
+# Distribusi beta internal: lampirkan installer yang SUDAH LULUS CI ke GitHub Release (tanpa build ulang).
+# Sumber = artefak run "Desktop Windows" yang ditentukan di bawah; SHA-256 harus sama dengan yang dicatat run itu.
+# Release dibuat sebagai DRAFT pre-release: hanya terlihat/terunduh oleh akun dengan akses tulis ke repository
+# (repository ini publik; draft tidak terlihat publik). Tidak menyentuh kode aplikasi, VPS, DNS, atau cPanel.
+name: Beta release (installer lulus CI)
+
+on:
+  push:
+    branches: ["release/**"]
+    paths: [".github/workflows/release-beta.yml"]
+
+permissions:
+  contents: write      # membuat draft release & mengunggah asset
+  actions: read        # mengunduh artefak run CI
+
+concurrency:
+  group: release-beta
+  cancel-in-progress: false
+
+env:
+  SOURCE_RUN: "42932163006"                                   # Desktop Windows, desktop/m2, sukses
+  SOURCE_SHA: ba5f0bf420380629e14f99fb660c54ace699a2ad
+  TAG: m2-beta-ba5f0bf
+  SETUP_SHA256: 91afa141598342be1f96d3a5ebe97e6109776b16e2b73dec9324ef982887fcba   # pragma: allowlist secret (sha256 publik)
+  ADDON_SHA256: d1ebf12f89b2552ffee3bebc76c91e5535fdd1e70f980f5f39f14c4880dcd74e   # pragma: allowlist secret (sha256 publik)
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Pastikan run sumber lulus & berasal dari commit yang diuji
+        run: |
+          run="repos/$GH_REPO/actions/runs/$SOURCE_RUN"
+          name=$(gh api "$run" --jq .name); concl=$(gh api "$run" --jq .conclusion); sha=$(gh api "$run" --jq .head_sha)
+          echo "run $SOURCE_RUN: $name / $concl / $sha"
+          if [ "$name" != "Desktop Windows" ] || [ "$concl" != "success" ] || [ "$sha" != "$SOURCE_SHA" ]; then
+            echo "run sumber tidak sesuai"; exit 1
+          fi
+
+      - name: Unduh installer dari artefak run yang lulus (tanpa build ulang)
+        run: |
+          gh run download "$SOURCE_RUN" -n NH-AI-Clip-Studio-Setup -D dist
+          gh run download "$SOURCE_RUN" -n NH-AI-Clip-Studio-Model-KualitasTinggi -D dist
+          ls -la dist
+
+      - name: Verifikasi SHA-256 = hasil build yang diuji
+        run: |
+          echo "$SETUP_SHA256  dist/NH-AI-Clip-Studio-Setup.exe" | sha256sum -c -
+          echo "$ADDON_SHA256  dist/NH-AI-Clip-Studio-Model-KualitasTinggi.exe" | sha256sum -c -
+          (cd dist && sha256sum NH-AI-Clip-Studio-Setup.exe NH-AI-Clip-Studio-Model-KualitasTinggi.exe) > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Catatan rilis
+        run: |
+          cat > notes.md <<NOTES
+          **Beta internal NH AI Clip Studio M2**: commit \`$SOURCE_SHA\`, installer dari run CI
+          [$SOURCE_RUN](https://github.com/$GH_REPO/actions/runs/$SOURCE_RUN) yang LULUS (tidak dibuild ulang).
+
+          | Berkas | Wajib? | SHA-256 |
+          |---|---|---|
+          | NH-AI-Clip-Studio-Setup.exe | ya (Whisper small standar) | \`$SETUP_SHA256\` |
+          | NH-AI-Clip-Studio-Model-KualitasTinggi.exe | opsional (Whisper large-v3-turbo, mode "Kualitas Tinggi") | \`$ADDON_SHA256\` |
+
+          - Windows 10/11 64-bit, dipasang per pengguna (tanpa hak admin). Belum ditandatangani kode: Windows SmartScreen
+            dapat menampilkan "Windows protected your PC" -> "More info" -> "Run anyway" (jangan matikan antivirus).
+          - Pembaruan dari M1/M1.1 tidak menghapus proyek (%LOCALAPPDATA%\\NH AI Clip Studio) maupun hasil ekspor.
+          - Paket Kualitas Tinggi: cocok untuk ucapan pendek/bising; dapat menghilangkan sebagian ucapan pada rekaman panjang.
+          - Tidak berisi video NH, rahasia, atau data pengguna.
+          NOTES
+
+      - name: Buat DRAFT pre-release & lampirkan installer
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/NH-AI-Clip-Studio-Setup.exe dist/NH-AI-Clip-Studio-Model-KualitasTinggi.exe SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" --draft --prerelease --target "$SOURCE_SHA" \
+              --title "NH AI Clip Studio M2 beta internal (ba5f0bf)" --notes-file notes.md \
+              dist/NH-AI-Clip-Studio-Setup.exe dist/NH-AI-Clip-Studio-Model-KualitasTinggi.exe SHA256SUMS.txt
+          fi
+          gh api "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | {draft, prerelease, html_url, assets: [.assets[] | {name, size, url: .browser_download_url}]}"
