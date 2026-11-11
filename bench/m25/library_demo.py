@@ -40,10 +40,24 @@ def synthetic_transcript(seconds: float) -> dict:
     return {"segments": segs, "language": "id"}
 
 
-def category_items(cat: str, seconds: float) -> list[dict]:
-    """Semua preset satu kategori pada slot berurutan (kamera/transisi juga diberi jeda agar lolos guard)."""
+MIN_SLOT = {"transitions": 2.8, "titles": 2.6, "camera": 2.4}   # dtk per preset agar lolos guard tingkat dinamis
+
+
+def category_batches(cat: str, seconds: float) -> list[list[dict]]:
+    """Preset satu kategori dibagi ke beberapa klip bila klip uji terlalu pendek untuk semuanya (mis. 10 transisi
+    dalam 24 dtk < jarak minimum antartransisi): setiap preset tetap tampil tanpa melonggarkan guard."""
     from app import motionlib
     ps = [p for p in motionlib.presets() if p["category"] == cat]
+    per = max(1, min(len(ps), int(seconds // MIN_SLOT.get(cat, 2.0))))
+    groups = [ps[i:i + per] for i in range(0, len(ps), per)]
+    return [category_items(cat, seconds, g) for g in groups]
+
+
+def category_items(cat: str, seconds: float, ps: list | None = None) -> list[dict]:
+    """Preset pada slot berurutan (kamera/transisi juga diberi jeda agar lolos guard)."""
+    from app import motionlib
+    if ps is None:
+        ps = [p for p in motionlib.presets() if p["category"] == cat]
     slot = seconds / max(1, len(ps))
     items = []
     for i, p in enumerate(ps):
@@ -171,15 +185,18 @@ def main():
     size = output_size(a.aspect, info["width"], info["height"])
     labels = {p["id"]: p["label"] for p in motionlib.presets()}
     index, measures, skipped_all = {}, {}, {}
+    jobs = []
     for cat in [c for c in a.categories.split(",") if c]:
-        items = category_items(cat, end - a.start)
+        batches = category_batches(cat, end - a.start)
+        for bi, items in enumerate(batches):
+            jobs.append((cat, f"kategori-{cat}" + (f"-{bi + 1}" if len(batches) > 1 else ""), items))
+    for cat, name, items in jobs:
         for it in items:
             it["start"] += a.start
             it["end"] += a.start
         # Contoh kategori memadatkan 5-15 preset dalam satu klip: tingkat "dinamis" (batas kepadatan paling longgar)
         # agar setiap preset tampil; pada pemakaian biasa guard tingkat seimbang tetap berlaku.
         req = RenderRequest(start=a.start, end=end, aspect=a.aspect, animations=True, motion_level="dinamis")
-        name = f"kategori-{cat}"
         # Kamera & whip tidak dipakai di tata letak Materi (memotong papan): contohnya memakai Fokus Wajah.
         fr = frames["face"] if cat in ("camera", "transitions") else frame
         measures[name] = render(req, tr, items, fr, info, src, out, name, size)
@@ -191,7 +208,7 @@ def main():
         if gone:
             print(f"PERINGATAN {name}: preset tidak tampil: {gone}", flush=True)
             skipped_all[name] = gone
-        contact(out, cat, out / f"{name}.mp4", [{**it, "start": it["start"] - a.start, "end": it["end"] - a.start}
+        contact(out, name.removeprefix("kategori-"), out / f"{name}.mp4", [{**it, "start": it["start"] - a.start, "end": it["end"] - a.start}
                                                 for it in items], labels)
         print(name, measures[name], flush=True)
     if a.levels:
