@@ -173,6 +173,12 @@ def analyze(video: Path, width: int, height: int, duration: float,
                 x0, y0 = int(board[0] * w), int(board[1] * h)
                 x1, y1 = int((board[0] + board[2]) * w), int((board[1] + board[3]) * h)
                 diff = cv2.absdiff(gray[y0:y1, x0:x1], prev_gray[y0:y1, x0:x1])
+                body = _body_box(face)
+                if body and diff.size:
+                    # M2.5 (uji video nyata): gerak pemateri sendiri bukan aktivitas di area materi
+                    bx0, by0 = max(0, int(body[0] * w) - x0), max(0, int(body[1] * h) - y0)
+                    bx1, by1 = int((body[0] + body[2]) * w) - x0, int((body[1] + body[3]) * h) - y0
+                    diff[max(0, by0):max(0, by1), max(0, bx0):max(0, bx1)] = 0
                 act = round(float((diff > 25).mean() * 100), 2) if diff.size else 0.0   # % piksel area berubah
             prev_gray = gray
             samples.append({"f": face, "nf": nf, "b": board, "bk": kind, "ink": round(ink, 4), "act": act})
@@ -245,9 +251,13 @@ def _label(s: dict, board: Optional[list[float]]) -> tuple[str, str]:
             return "material", "wajah tidak terlihat (mungkin menghadap papan)"
         cx = face[0] + face[2] / 2
         near = board[0] - 0.08 <= cx <= board[0] + board[2] + 0.08
-        if near:
+        # Area "detail" (tepi padat: rak buku, poster, dekorasi) bukan papan tulis: dekat pemateri saja tidak cukup,
+        # harus ada perubahan yang jelas (mis. layar presentasi berganti, benda diperagakan). Ditemukan pada uji
+        # video kajian nyata M2.5: rak buku di belakang imam terbaca sebagai area materi.
+        detail = s.get("bk") == "detail"
+        if near and not detail:
             return "split", "pemateri berada di dekat area materi"
-        if s.get("act", 0) >= ACT_THRESHOLD:
+        if s.get("act", 0) >= ACT_THRESHOLD * (2.5 if detail else 1):
             return "split", "ada perubahan di area materi (menulis/menunjuk)"
         return "face", "area materi tidak berubah, fokus ke pemateri"
     if face:

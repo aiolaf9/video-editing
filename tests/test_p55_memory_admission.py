@@ -23,6 +23,28 @@ def _cg(tmp_path, version, limit, used, inactive=0):
     return tmp_path
 
 
+def _descendants(root: int) -> set[int]:
+    from pathlib import Path
+    parent = {}
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            st = resources._proc_stat(int(entry.name))
+            if st:
+                parent[int(entry.name)] = st[0]
+    out, todo = set(), [root]
+    while todo:
+        pid = todo.pop()
+        out.add(pid)
+        todo += [c for c, pp in parent.items() if pp == pid and c not in out]
+    return out
+
+
+def _no_leftover_reservations(monkeypatch):
+    """Uji hitungan host/cgroup murni: reservasi job yang masih berjalan dari tes lain (worker latar belakang,
+    mis. impor URL di test_p54_ssrf) tidak boleh ikut terhitung."""
+    monkeypatch.setattr(resources, "_inflight", {})
+
+
 @pytest.mark.parametrize("version", [1, 2])
 def test_cgroup_limit_and_usage_detected(tmp_path, version):
     root = _cg(tmp_path, version, 512 * MB, 300 * MB, inactive=200 * MB)
@@ -45,6 +67,7 @@ def test_inactive_larger_than_usage_never_negative(tmp_path):
 
 def test_page_cache_from_large_download_does_not_starve_worker(tmp_path, monkeypatch):
     """worker-io (512 MB) setelah menulis berkas besar: memory.current ±500 MB, sebagian besar page cache."""
+    _no_leftover_reservations(monkeypatch)
     monkeypatch.setattr(resources, "CGROUP_ROOT", _cg(tmp_path, 2, 512 * MB, 500 * MB, inactive=400 * MB))
     monkeypatch.setattr(resources, "_meminfo", lambda: {"MemTotal": 16 * 2**30, "MemAvailable": 10 * 2**30})
     assert resources.admit("io") == (True, "")
@@ -56,6 +79,7 @@ def test_page_cache_from_large_download_does_not_starve_worker(tmp_path, monkeyp
 
 
 def test_host_without_cgroup_keeps_host_reserve(monkeypatch):
+    _no_leftover_reservations(monkeypatch)
     monkeypatch.setattr(resources, "_cgroup_memory", lambda root=None: None)
     monkeypatch.setattr(resources, "_meminfo", lambda: {"MemTotal": 8 * 2**30, "MemAvailable": 700 * MB})
     ok, why = resources.admit("io")                               # 300 + 512 (cadangan host) > 700
@@ -66,6 +90,7 @@ def test_host_without_cgroup_keeps_host_reserve(monkeypatch):
 
 def test_reserve_is_not_double_counted(monkeypatch):
     """Cadangan host diterapkan pada RAM host, ruang aman pada container — tidak dijumlahkan berdua."""
+    _no_leftover_reservations(monkeypatch)
     monkeypatch.setattr(resources, "memory", lambda: {"total": 512 * MB, "available": 370 * MB, "used": 142 * MB,
                                                      "host_available": 10 * 2**30, "container_available": 370 * MB})
     assert resources.admit("io")[0]                               # 300 + 64 <= 370, padahal 300 + 512 + 64 > 370
@@ -433,11 +458,25 @@ def test_page_cache_active_counts_as_used_inactive_does_not(tmp_path):
 
 def test_child_process_memory_counts_towards_reservation(monkeypatch):
     """Subprocess (seperti FFmpeg) termasuk pohon proses: RAM yang sudah dipakainya mengurangi sisa cadangan."""
+    _no_leftover_reservations(monkeypatch)
     import subprocess
     import sys
 
     monkeypatch.setattr(resources, "_inflight", {})
     monkeypatch.setattr(resources, "_own_base", None)
+    # Proses turunan yang SUDAH ada (mis. FFmpeg dari job latar belakang tes lain) bukan bagian uji ini: RSS-nya
+    # bisa naik/turun selama jendela ukur. Hanya anak yang dibuat tes ini yang dihitung.
+    import os
+    foreign = _descendants(os.getpid()) - {os.getpid()}
+    real_tree = resources.process_tree_usage
+
+    def tree_without_foreign(root=None):
+        u = real_tree(root)
+        if u is None:
+            return u
+        extra = sum(st[2] for st in (resources._proc_stat(pid) for pid in foreign) if st)
+        return {**u, "rss": u["rss"] - extra}
+    monkeypatch.setattr(resources, "process_tree_usage", tree_without_foreign)
     resources.reserve("A", "io")                                            # 300 MB
     child = subprocess.Popen([sys.executable, "-c", "import sys,time; b=bytearray(200*2**20); "
                               "b[::4096]=b'x'*len(b[::4096]); print('ok', flush=True); time.sleep(30)"],

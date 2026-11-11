@@ -173,7 +173,7 @@ jobs:
         run: |
           $env:PATH = "$PWD\build\desktop\bin;$env:PATH"
           python -m pip install -q psutil==6.1.1      # hanya untuk mengukur RAM puncak FFmpeg di Windows (BSD-3)
-          python bench/m25/library_demo.py build/m2/kajian.mp4 build/m25/kajian --transcript build/m2/kajian.json --levels
+          python bench/m25/library_demo.py build/m2/kajian.mp4 build/m25/kajian --transcript build/m2/kajian.json --levels --strict
           if ($LASTEXITCODE -ne 0) { throw "contoh Motion Library gagal" }
           Get-Content build/m25/kajian/ukuran.json
           Get-ChildItem build/m25/kajian | Select-Object Name, Length

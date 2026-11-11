@@ -33,9 +33,12 @@ PREFERRED = {"hook": [0.30, 0.18, 0.12, 0.42], "kinetic": [0.42, 0.30, 0.18], "c
 from . import motionlib as _ml  # noqa: E402
 PREFERRED.update(_ml.PREFERRED_Y)
 DECORATIVE |= set(_ml.DECORATIVE_KINDS)
-INFO |= set(_ml.ASS_KINDS) - set(_ml.DECORATIVE_KINDS)
+INFO |= set(_ml.PREFERRED_Y) - set(_ml.DECORATIVE_KINDS)
 PRIORITY.update({"progress": 1, "bars": 1, "chapter": 2, "title_cinematic": 2, "title_wipe": 3, "follow_bar": 4,
-                 "title_slam": 5})
+                 "title_slam": 5, "statcard": 1, "ring": 1, "donut": 1, "linechart": 1, "compare": 1, "timeline": 2,
+                 "numlist": 2, "location": 0, "quote": 2, "end_card": 2, "title_typewriter": 3, "title_split": 3,
+                 "title_boxed": 3, "title_outline_fill": 3, "title_marker": 3, "title_flip": 5, "title_glitch": 5,
+                 "cta_button": 4})
 SCAN = [round(0.04 + 0.01 * i, 2) for i in range(93)]       # 0,04 .. 0,96 (celah sempit antarpanel ikut dicoba)
 SCALES = (1.0, 0.8, 0.65)
 INFO_SCALES = SCALES + (0.5,)    # informasi boleh lebih kecil (nama ±35 px, angka ±92 px pada lebar 1080) daripada menutupi

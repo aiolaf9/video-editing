@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 SUB_STYLES = Literal["karaoke", "pop", "word", "simple", "bounce", "slide", "zoom", "fade", "cinematic", "documentary", "wordbounce",
-                     "storytelling", "highlight", "neon", "typewriter"]
+                     "storytelling", "highlight", "neon", "typewriter", "letterpop"]
 HEX = r"^#[0-9A-Fa-f]{6}$"
 
 

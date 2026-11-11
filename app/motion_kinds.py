@@ -607,7 +607,7 @@ def _k_cta_button(it, p, ev, W, H):
     unit, sc, y, sp, a, k, acc, font = _common(it, p, W, H, 0.70)
     s, e = it["start"], it["end"]
     text = _t(p.get("text")).upper() or "IKUTI"
-    fs = int(unit * 0.06 * sc)
+    fs = int(unit * 0.08 * sc)
     bw, bh = int(len(text) * fs * 0.62 + fs * 2.2), int(fs * 1.9)
     click = _ms(0.9, sp)
     ev(s, e, "Shape", rf"{{\an5\pos({W // 2},{y})\c{acc}\fscx0\fscy0\t(0,{_ms(0.25, sp)},\fscx105\fscy105)"
@@ -670,14 +670,12 @@ def _k_tr_swipe(it, p, ev, W, H):
 
 
 def _k_tr_iris(it, p, ev, W, H):
-    """Iris: lingkaran gelap menutup ke titik tengah (bingkai luar gelap), lalu membuka kembali."""
+    """Iris: lubang lingkaran (isi transparan, garis tepi hitam sangat tebal) mengecil ke titik tengah lalu membuka."""
     s, e = it["start"], it["end"]
     d = int((e - s) * 1000)
     R = int((W ** 2 + H ** 2) ** 0.5 / 2) + 10
-    ring = (f"m {-R * 2} {-R * 2} l {R * 2} {-R * 2} {R * 2} {R * 2} {-R * 2} {R * 2} "      # persegi besar ...
-            + _circle(R).replace("m 0", "m 0", 1))                                              # ... berlubang lingkaran
-    ev(s, e, "Shape", rf"{{\an7\pos({W // 2},{H // 2})\c&H000000&\fscx100\fscy100\t(0,{d // 2},\fscx3\fscy3)"
-                      rf"\t({d // 2},{d},\fscx100\fscy100)\p1}}{ring}{{\p0}}", 6)
+    ev(s, e, "Shape", rf"{{\an7\pos({W // 2},{H // 2})\1a&HFF&\3c&H000000&\bord{R + 40}\shad0\fscx100\fscy100"
+                      rf"\t(0,{d // 2},\fscx1\fscy1)\t({d // 2},{d},\fscx100\fscy100)\p1}}{_circle(R)}{{\p0}}", 6)
 
 
 def _k_tr_blinds(it, p, ev, W, H):

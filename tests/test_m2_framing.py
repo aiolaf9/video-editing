@@ -1,6 +1,7 @@
 """M2.1 Smart Framing: deteksi area materi (heuristik), rencana Otomatis/Wajah/Materi/Manual, pilihan per bagian,
 render per bagian menjadi MP4 nyata, kompatibilitas resep lama, dan pratinjau MP4 dari pipeline yang sama."""
 import json
+import re
 import subprocess
 import time
 
@@ -184,7 +185,8 @@ def test_corrected_transcript_used_by_every_preset_in_preview_and_render(client,
         rec["subtitles"].update(style=preset, emphasis=True)
         v = client.put(f"/api/projects/{pid}/recipe", json={"version": state["version"], "recipe": rec}).json()["version"]
         assert client.post(f"/api/projects/{pid}/preview-clip", json={"version": v, "start": 0, "end": 3}).status_code == 200
-        assert "INSYAALLAH" in seen[-1].upper() and "KENAPA" not in seen[-1].upper(), preset
+        shown = re.sub(r"\{[^}]*\}", "", seen[-1]).upper()        # teks tampil (tanpa tag ASS per huruf/kata)
+        assert "INSYAALLAH" in shown and "KENAPA" not in shown, preset
     job = client.post(f"/api/projects/{pid}/render-recipe", json={"version": v, "start": 0, "end": 3}).json()
     assert _wait(client, job["id"])["status"] == "selesai"
     assert "INSYAALLAH" in seen[-1].upper() and r"\kf" in seen[-1]          # render final, gaya terakhir (typewriter)

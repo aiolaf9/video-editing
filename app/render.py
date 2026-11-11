@@ -158,12 +158,22 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
     dye = f"clip({'+'.join(cam['dy'])},-1,1)" if cam.get("dy") else "0"
     if z:
         v.append(f"scale=w='trunc({ow}*{z}/2)*2':h='trunc({oh}*{z}/2)*2':eval=frame:flags=bicubic")
+        if cam.get("rot"):              # M2.5 rotasi sebelum crop: zoom kompensasi menutup sudut hitam
+            v.append(f"rotate=a='{'+'.join(cam['rot'])}':ow=iw:oh=ih:c=black")
         # Pusat zoom sedikit di atas tengah (biasanya posisi wajah); geser kamera memakai ruang tepi hasil zoom.
         v.append(f"crop={ow}:{oh}:x='(iw-{ow})/2*(1+{dxe})':y='(ih-{oh})*(0.4+0.4*{dye})'")
     elif not segments:
         v.append(f"scale={ow}:{oh}:flags=lanczos")
-    for b0, b1, size in cam.get("blur", []):
-        v.append(f"avgblur=sizeX={max(2, int(size * ow / 1080))}:sizeY=1:enable='between(t,{b0:.3f},{b1:.3f})'")
+    for b in cam.get("blur", []):
+        b0, b1, size = b[:3]
+        sx = max(2, int(size * ow / 1080))
+        sy = sx if len(b) > 3 and b[3] == "xy" else 1
+        v.append(f"avgblur=sizeX={sx}:sizeY={sy}:enable='between(t,{b0:.3f},{b1:.3f})'")
+    for p0, p1, size in cam.get("pix", []):
+        px = max(2, int(size * ow / 1080))
+        v.append(f"pixelize=w={px}:h={px}:enable='between(t,{p0:.3f},{p1:.3f})'")
+    for r0, r1, rh, bh in cam.get("rgb", []):
+        v.append(f"rgbashift=rh={int(rh * ow / 1080)}:bh={int(bh * ow / 1080)}:enable='between(t,{r0:.3f},{r1:.3f})'")
     if cam.get("bright"):
         v.append(f"eq=brightness='{'+'.join(cam['bright'])}':eval=frame")
     if abs(req.speed - 1.0) >= 1e-3:

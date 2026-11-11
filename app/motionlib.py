@@ -29,7 +29,12 @@ LEVEL_RULES = {   # bobot maksimum per jendela 6 dtk, jarak minimum antartransis
     "seimbang": {"budget": 5, "tr_gap": 4.0},
     "dinamis": {"budget": 8, "tr_gap": 2.5},
 }
-ASS_KINDS = ("title_cinematic", "title_slam", "title_wipe", "chapter", "follow_bar", "progress", "bars")
+ASS_KINDS = ("title_cinematic", "title_slam", "title_wipe", "chapter", "follow_bar", "progress", "bars",
+             # tahap 2
+             "title_typewriter", "title_split", "title_boxed", "title_glitch", "title_outline_fill", "title_marker",
+             "title_flip", "ring", "donut", "location", "timeline", "compare", "numlist", "linechart", "statcard",
+             "quote", "cta_button", "end_card", "tr_light_leak", "tr_swipe", "tr_iris", "tr_blinds")
+FULLFRAME_KINDS = ("tr_light_leak", "tr_swipe", "tr_iris", "tr_blinds")    # transisi layar penuh: tanpa safe-zone
 EASE_ASS = {"out": 0.5, "in": 2.0, "inout": 1.0, "linear": 1.0}      # \t accel libass
 ENGINE_VERSION = "m25-1"     # naikkan bila tampilan renderer berubah (cache galeri dibuat ulang)
 
@@ -138,7 +143,7 @@ def _ease(u: str, easing: str) -> str:
 def camera_terms(specs: list[dict], speed: float = 1.0) -> dict:
     """Ekspresi FFmpeg (waktu = detik klip masukan): tambahan zoom, geser x/y (-1..1 dari ruang tepi), kecerahan,
     dan jendela blur. Dipakai app/render.build_command."""
-    z, dx, dy, bright, blur = [], [], [], [], []
+    z, dx, dy, bright, blur, rot, rgb, pix = [], [], [], [], [], [], [], []
     for s in specs:
         p, k = s["params"], s["params"]["k"]
         t0, t1 = s["start"] * speed, s["end"] * speed
@@ -167,9 +172,57 @@ def camera_terms(specs: list[dict], speed: float = 1.0) -> dict:
                 a = 0.55
                 dx.append(f"{a:.2f}*{ramp}*(sin(6.2832*{f:.2f}*t)+0.5*sin(6.2832*{f * 1.73:.2f}*t+1.3))/1.5")
                 dy.append(f"{a:.2f}*{ramp}*(cos(6.2832*{f * 0.87:.2f}*t)+0.5*sin(6.2832*{f * 2.1:.2f}*t+0.4))/1.5")
+            elif move == "zoomout":                   # mulai dekat lalu mundur memperlihatkan seluruh adegan
+                u = f"clip((t-{t0:.3f})/{d:.3f},0,1)"
+                z.append(f"{amt:.4f}*(1-{_ease(u, p.get('easing', 'out'))})*between(t,{t0:.3f},{t1:.3f})")
+            elif move in ("pan", "tilt"):              # geser tanpa zoom berarti: zoom kecil tetap + geser penuh
+                u = f"clip((t-{t0:.3f})/{d:.3f},0,1)"
+                e = _ease(u, p.get("easing", "inout"))
+                ramp = f"clip(min((t-{t0:.3f})/0.4,({t1:.3f}-t)/0.4),0,1)"
+                z.append(f"{amt:.4f}*{ramp}")
+                rev = p.get("direction") in ("kiri", "atas")
+                term = f"{ramp}*({'1-2*' if not rev else '-1+2*'}{e})"
+                (dy if move == "tilt" else dx).append(f"{0.9:.2f}*{term}")
+            elif move == "breathe":                    # zoom keluar-masuk pelan (bernapas)
+                f = 0.35 * float(p.get("speed", 1.0))
+                ramp = f"clip(min((t-{t0:.3f})/0.5,({t1:.3f}-t)/0.5),0,1)"
+                z.append(f"{amt:.4f}*{ramp}*(0.5-0.5*cos(6.2832*{f:.2f}*(t-{t0:.3f})))")
+            elif move == "rotate":                     # miring pelan (derajat) + zoom kompensasi agar tanpa sudut hitam
+                deg = float(p.get("angle", 3.0)) * k
+                sign = -1 if p.get("direction") == "kiri" else 1
+                u = f"clip((t-{t0:.3f})/{d:.3f},0,1)"
+                ramp = f"clip(min((t-{t0:.3f})/0.5,({t1:.3f}-t)/0.5),0,1)"
+                a = f"{sign * deg * 0.017453:.5f}*{ramp}*{_ease(u, p.get('easing', 'inout'))}"
+                rot.append(a)
+                z.append(f"{abs(deg) * 0.017453 * 1.9:.5f}*{ramp}")
+            elif move == "focus":                      # fokus menajam: blur dua arah mengecil bertahap
+                n = 4
+                for i in range(n):
+                    blur.append((t0 + d * 0.5 * i / n, t0 + d * 0.5 * (i + 1) / n, int(min(40, 18 * k) * (n - i) / n), "xy"))
+            elif move == "steps":                      # zoom bertingkat: 3 hentakan kecil
+                n = 3
+                for i in range(n):
+                    a0 = t0 + d * i / n
+                    z.append(f"{amt / n:.4f}*clip((t-{a0:.3f})/0.08,0,1)*between(t,{t0:.3f},{t1:.3f})")
         elif s["kind"] == "transition":
             mid, half = (t0 + t1) / 2, max(0.05, d / 2)
             b = f"max(0,1-abs(t-{mid:.3f})/{half:.3f})"
+            if p.get("effect") == "zoomblur":
+                z.append(f"{0.35 * min(1.4, k):.3f}*{b}")
+                blur.append((mid - half * 0.6, mid + half * 0.6, int(min(50, 22 * k)), "xy"))
+            elif p.get("effect") == "spin":
+                deg = 14 * min(1.4, k)
+                rot.append(f"{deg * 0.017453:.5f}*{b}")
+                z.append(f"{deg * 0.017453 * 1.9 + 0.1:.4f}*{b}")
+            elif p.get("effect") == "glitch":
+                amt = int(min(40, 18 * k))
+                for i, (r_, b_) in enumerate(((amt, -amt), (-amt // 2, amt), (amt // 3, -amt // 3))):
+                    rgb.append((t0 + d * i / 3, t0 + d * (i + 1) / 3, r_, b_))
+            elif p.get("effect") == "pixelate":
+                big = int(min(64, 28 * k))
+                pix.append((t0, t0 + d * 0.3, max(4, big // 3)))
+                pix.append((t0 + d * 0.3, t0 + d * 0.7, big))
+                pix.append((t0 + d * 0.7, t1, max(4, big // 3)))
             if p.get("effect") == "flash":
                 dark = str(p.get("color", "#FFFFFF")).upper() in ("#000000", "BLACK")
                 bright.append(f"{(-0.9 if dark else 0.85) * min(1.3, k):.3f}*{b}")
@@ -178,7 +231,7 @@ def camera_terms(specs: list[dict], speed: float = 1.0) -> dict:
                 z.append(f"{0.18 * min(1.4, k):.3f}*{b}")
                 dx.append(f"{0.98 * sign:.2f}*{b}")
                 blur.append((mid - half * 0.7, mid + half * 0.7, int(min(60, 26 * k))))
-    return {"z": z, "dx": dx, "dy": dy, "bright": bright, "blur": blur}
+    return {"z": z, "dx": dx, "dy": dy, "bright": bright, "blur": blur, "rot": rot, "rgb": rgb, "pix": pix}
 
 
 # ------------------------------------------------------------------------------------------- penempatan
@@ -186,15 +239,25 @@ def camera_terms(specs: list[dict], speed: float = 1.0) -> dict:
 def size_hint(kind: str, unit: int, oh: int, scale: float = 1.0, params: Optional[dict] = None) -> tuple[float, float, float]:
     """(lebar, tinggi, x) ternormalisasi untuk safe-zone (cocok dengan renderer app/motion)."""
     h = {"title_cinematic": 0.24, "title_slam": 0.42, "title_wipe": 0.16, "chapter": 0.30, "follow_bar": 0.15,
-         "progress": 0.20, "bars": 0.50}.get(kind, 0.2)
-    w = {"follow_bar": 0.88, "progress": 0.84, "bars": 0.80}.get(kind, 0.9)
+         "progress": 0.20, "bars": 0.50, "title_typewriter": 0.10, "title_split": 0.24, "title_boxed": 0.16,
+         "title_glitch": 0.12, "title_outline_fill": 0.14, "title_marker": 0.12, "title_flip": 0.16, "ring": 0.40,
+         "donut": 0.40, "location": 0.16, "timeline": 0.30, "compare": 0.36, "numlist": 0.32, "linechart": 0.46,
+         "statcard": 0.32, "quote": 0.34, "cta_button": 0.16, "end_card": 0.30}.get(kind, 0.2)
+    w = {"follow_bar": 0.88, "progress": 0.84, "bars": 0.80, "ring": 0.5, "location": 0.8, "statcard": 0.66,
+         "cta_button": 0.7}.get(kind, 0.9)
     return w, h * unit * scale / oh, (1 - w) / 2
 
 
 PREFERRED_Y = {"title_cinematic": [0.30, 0.20], "title_slam": [0.30, 0.25], "title_wipe": [0.25, 0.15, 0.40],
                "chapter": [0.28, 0.18], "follow_bar": [0.72, 0.12, 0.62], "progress": [0.25, 0.15, 0.42],
-               "bars": [0.30, 0.25, 0.40]}
-DECORATIVE_KINDS = {"title_slam", "title_wipe", "follow_bar"}
+               "bars": [0.30, 0.25, 0.40], "title_typewriter": [0.28, 0.18, 0.40], "title_split": [0.28, 0.20, 0.40],
+               "title_boxed": [0.25, 0.15, 0.40], "title_glitch": [0.28, 0.18, 0.40],
+               "title_outline_fill": [0.28, 0.18, 0.40], "title_marker": [0.28, 0.18, 0.40],
+               "title_flip": [0.28, 0.18, 0.40], "ring": [0.30, 0.25, 0.42], "donut": [0.30, 0.25, 0.42],
+               "location": [0.22, 0.14, 0.62], "timeline": [0.30, 0.22, 0.42], "compare": [0.30, 0.25, 0.42],
+               "numlist": [0.30, 0.25, 0.42], "linechart": [0.30, 0.26, 0.42], "statcard": [0.30, 0.22, 0.42],
+               "quote": [0.30, 0.25, 0.42], "cta_button": [0.70, 0.62, 0.15], "end_card": [0.45, 0.35]}
+DECORATIVE_KINDS = {"title_slam", "title_wipe", "follow_bar", "title_glitch", "title_flip", "cta_button"}
 
 
 # ------------------------------------------------------------------------------------------- validasi item resep
@@ -241,6 +304,6 @@ def clean_item(raw: dict) -> Optional[dict]:
 def caption_extra(spec: dict) -> dict:
     """Spesifikasi caption -> tampilan bagian subtitle (app/subtitles opts.sections[i][3])."""
     p = spec["params"]
-    out = {k: p[k] for k in ("highlight", "font", "size", "uppercase", "words_per_line", "pos_y", "speed") if k in p}
+    out = {k: p[k] for k in ("highlight", "font", "size", "uppercase", "words_per_line", "pos_y", "speed", "box") if k in p}
     out["k"] = p.get("k", 1.0)
     return out

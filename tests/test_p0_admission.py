@@ -198,5 +198,7 @@ def test_downloaded_url_waiting_for_offline_analysis_says_so(client, fleet):
     plain = jobs.view(jobs.get(jobs.submit("render", "render", pid, {}, "Render")["id"]))
     assert plain["message"].startswith("Server render video sedang tidak aktif")
     fleet.up("analisis", ["analisis", "render"])                  # worker kembali: pesan tidak lagi "tidak aktif"
-    assert jobs.view(jobs.get(job["id"]))["wait"]["reason"] != "worker_tidak_aktif"
+    # Worker yang kembali bisa langsung mengambil job (wait = None): itu juga berarti tidak lagi "tidak aktif".
+    after = jobs.view(jobs.get(job["id"]))
+    assert (after.get("wait") or {}).get("reason") != "worker_tidak_aktif"
     storage.delete_project(pid)

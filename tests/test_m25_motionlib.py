@@ -273,3 +273,48 @@ def test_user_position_is_first_choice_but_safe_zone_still_applies():
     # posisi pilihan di pita subtitle (0,78) -> dipindah dengan alasan
     low = pipeline.layout_items(req, [_fx("gfx.progress", 0.5, 4, "p", pos_y=0.78)], None, 1280, 720, 1080, 1920)
     assert abs(low["p"]["y"] - 0.78) > 0.05 and low["p"]["action"] in ("dipindah", "diperkecil")
+
+
+def test_detail_area_like_bookshelf_does_not_force_split_layout():
+    """Uji video kajian nyata M2.5: rak buku (area 'detail', tepi padat) di belakang imam tidak boleh memicu
+    tata letak Materi + Wajah hanya karena dekat pemateri; papan tulis sungguhan tetap memicunya."""
+    from app import framing
+    face = [0.49, 0.40, 0.06, 0.10]
+    shelf = {"f": face, "b": [0.375, 0.22, 0.625, 0.78], "bk": "detail", "act": 0.9}
+    assert framing._label(shelf, shelf["b"])[0] == "face"
+    assert framing._label({**shelf, "act": 3.0}, shelf["b"])[0] == "split"          # layar/benda benar berubah
+    board = {**shelf, "bk": "papan", "act": 0.0}
+    assert framing._label(board, board["b"])[0] == "split"
+
+
+def test_all_60_presets_available_per_category_target():
+    from collections import Counter
+    c = Counter(p["category"] for p in motionlib.presets())
+    assert c == {"captions": 15, "titles": 10, "camera": 10, "transitions": 10, "graphics": 10, "story": 5}
+
+
+@pytest.mark.parametrize("pid", [p["id"] for p in motionlib.presets() if p["kind"] in motionlib.ASS_KINDS])
+def test_every_ass_preset_renders_events(pid):
+    spec = motionlib.resolve(_fx(pid, 0.5, 4.0), "seimbang")
+    ass = motion.build([{**spec, "type": "fx"}], 1080, 1920)
+    events = [x for x in ass.splitlines() if x.startswith("Dialogue:")]
+    assert len(events) >= 1, pid
+    assert all("{" in e and e.count("{") == e.count("}") for e in events), pid      # tag ASS seimbang
+
+
+def test_new_ffmpeg_camera_and_transition_filters_run_for_real(sample_video, tmp_path):
+    import subprocess
+    from app import media
+    info = media.probe(sample_video)
+    req = RenderRequest(start=0, end=6, aspect="9:16", normalize_audio=False)
+    specs = [motionlib.resolve(_fx(pid, s, e), "seimbang") for pid, s, e in
+             [("cam.rotate", 0.2, 2.0), ("tr.pixelate", 2.2, 2.7), ("tr.glitch", 3.0, 3.4), ("cam.focus", 3.6, 5.6),
+              ("tr.spin", 5.0, 5.5)]]
+    cam = motionlib.camera_terms(specs, req.speed)
+    out = tmp_path / "fx.mp4"
+    cmd = build_command(sample_video, out, req, info, None, None, tmp_path, camera_fx=cam)
+    joined = " ".join(cmd)
+    assert "rotate=" in joined and "pixelize=" in joined and "rgbashift=" in joined
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], check=True, cwd=tmp_path)
+    v = media.probe(out)
+    assert (v["width"], v["height"]) == (1080, 1920) and abs(v["duration"] - 6) < 0.3

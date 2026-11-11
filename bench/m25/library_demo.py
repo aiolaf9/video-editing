@@ -152,6 +152,7 @@ def main():
     ap.add_argument("--aspect", default="9:16")
     ap.add_argument("--categories", default=",".join(motionlib.categories()))
     ap.add_argument("--levels", action="store_true", help="tambahkan tingkat-ringan/seimbang/dinamis (kombinasi sama)")
+    ap.add_argument("--strict", action="store_true", help="gagal bila ada preset kategori yang tidak tampil")
     a = ap.parse_args()
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -169,19 +170,27 @@ def main():
     frame = frames["auto"]
     size = output_size(a.aspect, info["width"], info["height"])
     labels = {p["id"]: p["label"] for p in motionlib.presets()}
-    index, measures = {}, {}
+    index, measures, skipped_all = {}, {}, {}
     for cat in [c for c in a.categories.split(",") if c]:
         items = category_items(cat, end - a.start)
         for it in items:
             it["start"] += a.start
             it["end"] += a.start
-        req = RenderRequest(start=a.start, end=end, aspect=a.aspect, animations=True)
+        # Contoh kategori memadatkan 5-15 preset dalam satu klip: tingkat "dinamis" (batas kepadatan paling longgar)
+        # agar setiap preset tampil; pada pemakaian biasa guard tingkat seimbang tetap berlaku.
+        req = RenderRequest(start=a.start, end=end, aspect=a.aspect, animations=True, motion_level="dinamis")
         name = f"kategori-{cat}"
         # Kamera & whip tidak dipakai di tata letak Materi (memotong papan): contohnya memakai Fokus Wajah.
         fr = frames["face"] if cat in ("camera", "transitions") else frame
         measures[name] = render(req, tr, items, fr, info, src, out, name, size)
-        index[name] = [{"preset": it["preset"], "label": labels[it["preset"]], "mulai": it["start"] - a.start,
+        index[name] = [{"preset": it["preset"], "tingkat": "dinamis", "label": labels[it["preset"]], "mulai": it["start"] - a.start,
                         "akhir": it["end"] - a.start} for it in items]
+        placed = json.loads((out / f"{name}.penempatan.json").read_text(encoding="utf-8"))
+        gone = {it["preset"]: placed[it["id"]]["reason"] for it in items
+                if placed.get(it["id"], {}).get("action") in ("dilewati", "disembunyikan")}
+        if gone:
+            print(f"PERINGATAN {name}: preset tidak tampil: {gone}", flush=True)
+            skipped_all[name] = gone
         contact(out, cat, out / f"{name}.mp4", [{**it, "start": it["start"] - a.start, "end": it["end"] - a.start}
                                                 for it in items], labels)
         print(name, measures[name], flush=True)
@@ -197,9 +206,12 @@ def main():
     dur = end - a.start
     for m in measures.values():
         m["x_realtime"] = round(dur / max(0.01, m["detik"]), 2)
+    index["tidak_tampil"] = skipped_all
     (out / "indeks.json").write_text(json.dumps(index, indent=1, ensure_ascii=False), encoding="utf-8")
     (out / "ukuran.json").write_text(json.dumps({"durasi_klip": dur, "ukuran": size, "cpu": os.cpu_count(),
                                                  "render": measures}, indent=1), encoding="utf-8")
+    if a.strict and skipped_all:
+        raise SystemExit(f"preset tidak tampil: {skipped_all}")
 
 
 if __name__ == "__main__":

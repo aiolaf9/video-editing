@@ -49,6 +49,9 @@ PRESETS = {
     "wordbounce": {"label": "Kata Memantul", "desc": "Satu kata besar meluncur dari bawah, memantul, miring bergantian",
                    "anim": "wordbounce", "font": "Anton", "uppercase": True, "words_per_line": 1,
                    "highlight": "#FFFFFF", "size": 1.3},
+    "letterpop": {"label": "Huruf Meletup", "desc": "Huruf muncul satu per satu mengikuti ucapan, tiap huruf meletup",
+                  "anim": "letterpop", "font": "Poppins", "uppercase": True, "words_per_line": 3,
+                  "highlight": "#FFD43B", "size": 1.0},
     "typewriter": {"label": "Isi Warna", "desc": "Warna mengisi kata dari kiri ke kanan mengikuti ucapan",
                    "anim": "typewriter", "font": "Anton", "uppercase": True, "words_per_line": 3,
                    "highlight": "#FFE600", "color": "#FFFFFF"},
@@ -234,13 +237,19 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Default,{font},{size},{primary},&H000000FF,{out_col},{back_col},"
         f"-1,0,0,0,100,100,{spacing},0,{border_style},{outline},{shadow},{align},{margin_h},{margin_h},{margin_v},1",
+        # M2.5: bagian ber-preset caption "kotak" (mis. Kotak Liputan) memakai gaya ini (BorderStyle 3 per gaya)
+        f"Style: Boxed,{font},{size},{primary},&H000000FF,{ass_color('#000000', _alpha(0.65))},"
+        f"{ass_color('#000000', _alpha(0.65))},-1,0,0,0,100,100,0,0,3,{max(outline, int(size * 0.22))},0,{align},"
+        f"{margin_h},{margin_h},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
+    cur_style = ["Default"]
+
     def event(start: float, end: float, text: str, layer: int = 0) -> None:
-        lines.append(f"Dialogue: {layer},{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{text}")
+        lines.append(f"Dialogue: {layer},{ass_time(start)},{ass_time(end)},{cur_style[0]},,0,0,0,,{text}")
 
     terms = {t.lower() for term in opts.emphasis_terms for t in str(term).split()} if opts.emphasis else set()
     legacy = style in LEGACY_STYLES and opts.pos_y is None
@@ -288,6 +297,7 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
             continue
         style = chunk_styles[ci]
         extra = chunk_extra[ci]
+        cur_style[0] = "Boxed" if extra.get("box") else "Default"
         zone = next((z for z in opts.zones if z[0] <= chunk[0]["start"] < z[1]), None)
         if zone:
             cy = int(height * zone[2])
@@ -346,6 +356,24 @@ def build_ass(transcript: dict, clip_start: float, clip_end: float, width: int, 
                   rf"\t(0,{m1},\fscx112\fscy92)\t({m1},{m2},\fscx96\fscy104)\t({m2},{m3},\fscx100\fscy100){col}")
             extra_tags = pos.split(")", 1)[1] if ")" in pos else ""
             event(chunk_start, chunk_end, "{" + fx + extra_tags + "}" + base_tok[0])
+            continue
+
+        if style == "letterpop":
+            # M2.5: tiap huruf muncul (alpha) + meletup (skala) tepat saat katanya diucapkan, merata sepanjang kata
+            parts = []
+            for kk, w in enumerate(chunk):
+                w0 = int(round((w["start"] - chunk_start) * 1000))
+                wd = max(80, int(round((w["end"] - w["start"]) * 1000)))
+                tok = tokens[kk]
+                n = max(1, len(tok))
+                col = rf"\c{emph}" if kk in imp else ""
+                chars = []
+                for j, ch in enumerate(tok):
+                    t = w0 + int(wd * 0.7 * j / n)
+                    chars.append(rf"{{\alpha&HFF&\fscx40\fscy40{col}\t({t},{t + 1},\alpha&H00&)"
+                                 rf"\t({t},{t + 90},\fscx125\fscy125)\t({t + 90},{t + 160},\fscx100\fscy100)}}{ch}")
+                parts.append("".join(chars))
+            event(chunk_start, chunk_end, "{" + pos + "}" + " ".join(parts))
             continue
 
         if style == "typewriter":
