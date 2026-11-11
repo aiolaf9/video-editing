@@ -13,7 +13,7 @@ dirender oleh engine yang sama untuk galeri, pratinjau, dan MP4 final (FFmpeg + 
 | Caption | `app/subtitles.py` | animasi per kata (15 gaya, termasuk baru: `wordbounce`, `letterpop`), tampilan per rentang |
 | Kamera/transisi | `app/render.py` (`camera_fx`) | zoom, geser, rotasi (dengan zoom kompensasi), blur, kecerahan, `pixelize`, `rgbashift` |
 | Penyusunan | `app/pipeline.py` (`assemble`, `fx_plan`) | item fx -> subtitle / kamera / ASS + safe-zone; jalur sama untuk pratinjau & render |
-| Galeri | `app/motion_gallery.py`, `GET /api/motion-presets[/<id>/preview.mp4|thumb.png]` | klip 4 dtk per preset dari jalur render yang sama, adegan contoh digambar PIL sendiri |
+| Galeri | `app/motion_gallery.py`, `GET /api/motion-presets[/status|/<id>/preview.mp4|thumb.png]` | klip 4 dtk per preset dari jalur render yang sama, adegan contoh digambar PIL sendiri; installer membawa galeri yang sudah dirender saat build (`scripts/build_motion_gallery.py`), di luar itu dirender satu per satu di thread latar belakang |
 | UI | `web/motionlib.js`, panel "Motion Library" | kategori, kartu bergerak, sekali klik, cakupan, intensitas; kontrol per item di tab Animasi |
 
 Menambah preset = menambah data; menambah *teknik* baru = satu renderer `kind`.

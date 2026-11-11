@@ -34,14 +34,38 @@
     markLevel();
   }
 
+  // Kartu tampil seketika (nama + placeholder); gambar baru dimuat setelah server melaporkan "siap". Render galeri
+  // pertama kali berjalan di satu thread server, jadi koneksi browser tetap bebas untuk menyimpan resep.
+  let pollTimer = null;
   function renderGallery() {
     if (!lib) return;
     $("mlGallery").innerHTML = lib.presets.filter((p) => p.category === cat).map((p) => `
-      <button type="button" class="preset-card ml-card" data-id="${esc(p.id)}" title="${esc(p.desc)}">
-        <span class="pc-media ml-media"><img loading="lazy" alt="" src="/api/motion-presets/${esc(p.id)}/thumb.png">
+      <button type="button" class="preset-card ml-card pending" data-id="${esc(p.id)}" title="${esc(p.desc)}">
+        <span class="pc-media ml-media"><img alt="" data-src="/api/motion-presets/${esc(p.id)}/thumb.png">
           <video muted loop playsinline preload="none" data-src="/api/motion-presets/${esc(p.id)}/preview.mp4"></video></span>
         <span class="pc-name">${esc(p.label)}</span>
       </button>`).join("");
+    pollGallery();
+  }
+
+  async function pollGallery() {
+    clearTimeout(pollTimer);
+    const cards = [...document.querySelectorAll("#mlGallery .ml-card.pending")];
+    if (!cards.length) return;
+    let st = {};
+    try { st = await api(`/api/motion-presets/status?ids=${encodeURIComponent(cards.map((c) => c.dataset.id).join(","))}`); }
+    catch { /* coba lagi */ }
+    for (const c of cards) {
+      if (st[c.dataset.id] === "siap") {
+        const img = c.querySelector("img");
+        img.src = img.dataset.src;
+        c.classList.remove("pending");
+      } else if (st[c.dataset.id] === "gagal") {
+        c.classList.remove("pending");
+        c.classList.add("failed");
+      }
+    }
+    if (document.querySelector("#mlGallery .ml-card.pending")) pollTimer = setTimeout(pollGallery, 1500);
   }
 
   function parseRanges(txt, s0, s1) {
@@ -117,6 +141,7 @@
   function playCard(card, on) {
     const v = card.querySelector("video");
     if (!v) return;
+    if (on && card.classList.contains("pending")) return;          // klip gerak dimuat setelah galeri siap
     if (on) { if (!v.src) v.src = v.dataset.src; card.classList.add("playing"); v.play().catch(() => {}); }
     else { v.pause(); card.classList.remove("playing"); }
   }

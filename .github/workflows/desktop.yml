@@ -180,6 +180,10 @@ jobs:
 
       - name: Build PyInstaller (onedir)
         run: |
+          # Galeri Motion Library dirender sekali dengan FFmpeg bundel -> ikut installer (galeri langsung tampil)
+          $env:PATH = "$PWD\build\desktop\bin;$env:PATH"
+          python scripts/build_motion_gallery.py app/data/motion-gallery
+          if ($LASTEXITCODE -ne 0) { throw "galeri Motion Library gagal" }
           pyinstaller desktop/nh_clip_studio.spec --noconfirm --clean --distpath dist --workpath build/pyi
           $internal = "dist/NH-AI-Clip-Studio/_internal"
           foreach ($dll in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") {

@@ -68,6 +68,12 @@ Temuan & perbaikan dari uji nyata:
    lingkaran bergaris tepi tebal yang mengecil. Rotasi kamera dicek piksel: tidak ada sudut hitam sampai intensitas
    maksimum (Dinamis x 2 = ±8,7°).
 
+4. **Galeri pertama kali menahan penyimpanan** (ditemukan tes browser setelah galeri menjadi 60 preset): membuka
+   kategori baru memicu render thumbnail ±2,5 dtk per preset; permintaan gambar memenuhi batas ±6 koneksi browser
+   per host sehingga penyimpanan item baru tertunda 15,1 dtk. Diperbaiki: thumbnail dirender di satu thread latar
+   belakang (`/api/motion-presets/status`), kartu tampil dengan placeholder sampai siap, dan installer membawa
+   galeri yang sudah dirender saat build. Tes browser kini mewajibkan simpan < 5 dtk saat galeri masih dirender.
+
 ## 4. Konsistensi pratinjau = MP4
 
 Tes API: pratinjau 360x640 dan render final 1080x1920 dari resep yang sama memakai elemen Motion Library yang sama

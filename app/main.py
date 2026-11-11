@@ -1283,6 +1283,18 @@ def motion_presets(user: dict = CurrentUser):
     return {**motionlib.public(), "combos": autostyle.MOTION_COMBOS_PUBLIC}
 
 
+@app.get("/api/motion-presets/status")
+def motion_presets_status(ids: str = "", user: dict = CurrentUser):
+    """Status galeri {id: siap|antre|gagal}. Hanya preset yang DIMINTA (`ids`, kategori yang sedang dibuka di UI) yang
+    diantrekan untuk dirender di latar belakang; tanpa `ids` hanya melaporkan status (tidak merender 60 klip)."""
+    from . import motion_gallery
+    wanted = [i for i in ids.split(",") if i][:20]
+    st = motion_gallery.status(wanted or None)
+    if wanted:
+        motion_gallery.warm([i for i, v in st.items() if v == "antre"])
+    return st
+
+
 @app.get("/api/motion-presets/{preset}/{kind}")
 def motion_preset_media(preset: str, kind: str, user: dict = CurrentUser):
     """Klip gerak (preview.mp4) / thumbnail (thumb.png) preset, dirender jalur render yang sama dengan hasil akhir."""

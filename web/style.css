@@ -516,3 +516,9 @@ button.small { padding: 4px 8px; }
 .plan-item .fields:has(.ml-name) .mini input[type=range] { width: 90px; flex: 0 0 90px; }
 .plan-item .fields:has(.ml-name) .mini input[type=number] { width: 64px; flex: 0 0 64px; }
 .plan-item .fields:has(.ml-name) select { max-width: 140px; }
+.ml-card.pending .ml-media { background: linear-gradient(110deg, #222 30%, #333 50%, #222 70%) 0 0 / 200% 100%;
+  animation: ml-shimmer 1.2s linear infinite; }
+.ml-card.pending img { visibility: hidden; }
+.ml-card.failed .ml-media::after { content: "pratinjau gagal"; position: absolute; inset: auto 0 40% 0; text-align: center;
+  font-size: 11px; color: var(--muted, #999); }
+@keyframes ml-shimmer { to { background-position: -200% 0; } }

@@ -14,3 +14,4 @@ backups/
 # Desktop (PyInstaller / Inno Setup): unduhan & hasil build, tidak di-commit
 /build/
 /dist/
+/app/data/motion-gallery/

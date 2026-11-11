@@ -10,6 +10,7 @@ import http.cookiejar
 import json
 import os
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -240,6 +241,11 @@ def m2_checks(c: "Client", pid: str, clip: dict, renders: Path, timeout: float) 
         status, clip_bytes = c.get(f"/api/motion-presets/{pid_fx}/preview.mp4")
         _check(status == 200 and isinstance(clip_bytes, bytes) and len(clip_bytes) > 2000, f"galeri motion {pid_fx}: {status}")
     out["motion_library"] = len(lib["presets"])
+    status, st = c.get("/api/motion-presets/status")
+    _check(status == 200, f"status galeri: {status}")
+    out["gallery_ready"] = sum(v == "siap" for v in st.values())
+    if getattr(sys, "frozen", False):              # installer: galeri dirender saat build, langsung siap
+        _check(out["gallery_ready"] == len(lib["presets"]), f"galeri bundel tidak lengkap: {st}")
     items += [{"type": "fx", "preset": "cap.highlight_box", "start": start, "end": end},
               {"type": "fx", "preset": "tr.flash", "start": start + 5.8, "end": start + 6.2},
               {"type": "fx", "preset": "cam.ken_burns", "start": start + 8, "end": start + 11},

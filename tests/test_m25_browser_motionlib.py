@@ -56,6 +56,7 @@ def test_motion_library_panel(studio_server, sample_video):  # noqa: F811
         page.click("#mlCats button[data-cat=titles]")
         page.wait_for_function("[...document.querySelectorAll('#mlGallery img')].filter(i => i.naturalWidth > 0).length >= 3",
                                timeout=90000)
+        page.wait_for_selector(".ml-card[data-id='title.slam_stack']:not(.pending) img", timeout=90000)
         page.hover(".ml-card[data-id='title.slam_stack']")
         page.wait_for_function("document.querySelector(\".ml-card[data-id='title.slam_stack'] video\").readyState >= 2",
                                timeout=60000)
@@ -71,7 +72,11 @@ def test_motion_library_panel(studio_server, sample_video):  # noqa: F811
         page.click("#mlScope button[data-v=ranges]")
         page.fill("#mlRanges", "0-2.5, 4-6")
         page.click(".ml-card[data-id='cam.ken_burns']")
-        assert _until(lambda: sum(o["preset"] == "cam.ken_burns" for o in _fx(page, pid)) == 2)
+        t_click = time.time()
+        assert _until(lambda: sum(o["preset"] == "cam.ken_burns" for o in _fx(page, pid)) == 2), (
+            [(o["preset"], o["start"], o["end"]) for o in _fx(page, pid)], errors)
+        # Galeri kamera baru dibuka (thumbnail masih dirender di server): simpan tidak boleh tertahan antrean gambar.
+        assert time.time() - t_click < 5, time.time() - t_click
         # seluruh klip (caption)
         page.click("#mlCats button[data-cat=captions]")
         page.click("#mlScope button[data-v=clip]")

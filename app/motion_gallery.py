@@ -14,7 +14,14 @@ from .config import DATA_DIR
 W, H = 360, 640
 DURATION = 4.0
 CACHE = DATA_DIR / "cache" / "motion-gallery"
+# Galeri yang sudah dirender saat build installer (scripts/build_motion_gallery.py, FFmpeg bundel): dipakai bila
+# kuncinya sama sehingga galeri langsung tampil tanpa render pertama kali di komputer pengguna.
+BUNDLED = Path(__file__).resolve().parent / "data" / "motion-gallery"
 _lock = threading.Lock()
+_queue: "list[str]" = []
+_queue_cv = threading.Condition()
+_worker: "threading.Thread | None" = None
+_failed: dict = {}
 
 
 def _scene(path: Path) -> None:
@@ -57,17 +64,72 @@ def _key(p: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
+def cached(pid: str) -> "tuple[Path, Path] | None":
+    """(mp4, png) bila sudah tersedia (bundel installer atau cache data), tanpa merender."""
+    p = motionlib.get(pid)
+    if not p:
+        return None
+    key, stem = _key(p), pid.replace(".", "_")
+    for folder in (BUNDLED, CACHE):
+        mp4, png = folder / f"{stem}-{key}.mp4", folder / f"{stem}-{key}.png"
+        if mp4.is_file() and png.is_file():
+            return mp4, png
+    return None
+
+
+def status(ids: "list[str] | None" = None) -> dict:
+    """{id: "siap" | "antre" | "gagal"} untuk galeri (UI memuat gambar hanya bila siap)."""
+    out = {}
+    for p in motionlib.presets():
+        if ids and p["id"] not in ids:
+            continue
+        out[p["id"]] = "siap" if cached(p["id"]) else ("gagal" if p["id"] in _failed else "antre")
+    return out
+
+
+def warm(ids: "list[str]") -> None:
+    """Antrekan render galeri di SATU thread latar belakang. Permintaan HTTP tidak menunggu render, sehingga koneksi
+    browser (maks ±6 per host) tetap bebas untuk menyimpan resep/pratinjau saat galeri pertama kali dibuka."""
+    global _worker
+    todo = [i for i in ids if motionlib.get(i) and not cached(i) and i not in _failed]
+    if not todo:
+        return
+    with _queue_cv:
+        for i in todo:
+            if i not in _queue:
+                _queue.append(i)
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_drain, name="motion-gallery", daemon=True)
+            _worker.start()
+        _queue_cv.notify()
+
+
+def _drain() -> None:
+    import logging
+    while True:
+        with _queue_cv:
+            if not _queue:
+                return
+            pid = _queue.pop(0)
+        try:
+            render(pid)
+        except Exception as e:                      # satu preset gagal tidak menghentikan antrean
+            _failed[pid] = str(e)[:200]
+            logging.getLogger(__name__).warning("Galeri Motion Library %s gagal: %s", pid, e)
+
+
 def render(pid: str) -> tuple[Path, Path]:
-    """(mp4, png) demo preset; dibuat sekali lalu diambil dari cache."""
+    """(mp4, png) demo preset; dibuat sekali lalu diambil dari cache (atau bundel installer)."""
     p = motionlib.get(pid)
     if not p:
         raise KeyError(pid)
+    hit = cached(pid)
+    if hit:
+        return hit
     CACHE.mkdir(parents=True, exist_ok=True)
     key = _key(p)
     stem = pid.replace(".", "_")
     mp4, png = CACHE / f"{stem}-{key}.mp4", CACHE / f"{stem}-{key}.png"
-    if mp4.is_file() and png.is_file():
-        return mp4, png
     with _lock:
         if mp4.is_file() and png.is_file():
             return mp4, png

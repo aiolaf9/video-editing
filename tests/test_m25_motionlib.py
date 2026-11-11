@@ -318,3 +318,26 @@ def test_new_ffmpeg_camera_and_transition_filters_run_for_real(sample_video, tmp
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], check=True, cwd=tmp_path)
     v = media.probe(out)
     assert (v["width"], v["height"]) == (1080, 1920) and abs(v["duration"] - 6) < 0.3
+
+
+def test_gallery_uses_installer_bundle_and_renders_missing_in_background(client, tmp_path, monkeypatch):
+    from app import motion_gallery
+    p = motionlib.get("gfx.ring")
+    key, stem = motion_gallery._key(p), "gfx_ring"
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / f"{stem}-{key}.mp4").write_bytes(b"\x00\x00\x00\x18ftypisom")
+    (bundle / f"{stem}-{key}.png").write_bytes(b"\x89PNG")
+    monkeypatch.setattr(motion_gallery, "BUNDLED", bundle)
+    monkeypatch.setattr(motion_gallery, "CACHE", tmp_path / "cache")
+    assert motion_gallery.cached("gfx.ring")[0].parent == bundle          # bundel dipakai tanpa render
+    st = client.get("/api/motion-presets/status", params={"ids": "gfx.ring,tr.iris"}).json()
+    assert st["gfx.ring"] == "siap" and st["tr.iris"] == "antre"          # yang belum ada diantrekan
+    deadline = time.time() + 60
+    while client.get("/api/motion-presets/status", params={"ids": "tr.iris"}).json()["tr.iris"] != "siap":
+        assert time.time() < deadline, "render latar belakang tidak selesai"
+        time.sleep(0.3)
+    assert (tmp_path / "cache").is_dir() and list((tmp_path / "cache").glob("tr_iris-*.mp4"))
+    # tanpa ids: hanya status, tidak mengantrekan seluruh galeri
+    full = client.get("/api/motion-presets/status").json()
+    assert len(full) == len(motionlib.presets()) and not motion_gallery._queue
