@@ -90,6 +90,12 @@ def zoom_expression(slow: bool, in_dur: float, punches: list[tuple]) -> Optional
     return "*".join(terms) or None
 
 
+def _frame_time(expr: str, fps: float) -> str:
+    """Ekspresi waktu 't' (detik klip) -> nomor frame filter `perspective` ('in' / fps)."""
+    import re
+    return re.sub(r"(?<![A-Za-z_])t(?![A-Za-z_(])", f"(in/{fps:g})", expr)
+
+
 def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
                   subs_file: Optional[Path], music_file: Optional[Path], workdir: Path,
                   camera: Optional[list[tuple[float, float]]] = None,
@@ -157,11 +163,20 @@ def build_command(src: Path, out: Path, req: RenderRequest, info: dict,
     dxe = f"clip({'+'.join(cam['dx'])},-1,1)" if cam.get("dx") else "0"
     dye = f"clip({'+'.join(cam['dy'])},-1,1)" if cam.get("dy") else "0"
     if z:
-        v.append(f"scale=w='trunc({ow}*{z}/2)*2':h='trunc({oh}*{z}/2)*2':eval=frame:flags=bicubic")
-        if cam.get("rot"):              # M2.5 rotasi sebelum crop: zoom kompensasi menutup sudut hitam
+        # M2.5.1: zoom/geser dengan `perspective` (ukuran tetap, posisi sub-piksel per frame). Sebelumnya scale(eval=frame)
+        # + crop: crop memakai lebar masukan frame PERTAMA, sehingga zoom selalu menuju pojok kiri atas dan geser kamera
+        # (dx/dy) tidak berpengaruh. zoompan diuji tetapi bergetar ±1 px (posisi dibulatkan ke piksel bulat).
+        if not segments:
+            v.append(f"scale={ow}:{oh}:flags=lanczos")
+        if cam.get("rot"):              # rotasi dulu; zoom kompensasi menutup sudut hitam
             v.append(f"rotate=a='{'+'.join(cam['rot'])}':ow=iw:oh=ih:c=black")
+        fps = float(info.get("fps") or 30.0)
+        zt, dxt, dyt = (_frame_time(e, fps) for e in (z, dxe, dye))
         # Pusat zoom sedikit di atas tengah (biasanya posisi wajah); geser kamera memakai ruang tepi hasil zoom.
-        v.append(f"crop={ow}:{oh}:x='(iw-{ow})/2*(1+{dxe})':y='(ih-{oh})*(0.4+0.4*{dye})'")
+        left, top = f"(W-W/({zt}))/2*(1+{dxt})", f"(H-H/({zt}))*(0.4+0.4*{dyt})"
+        right, bottom = f"({left}+W/({zt}))", f"({top}+H/({zt}))"
+        v.append(f"perspective=x0='{left}':y0='{top}':x1='{right}':y1='{top}':x2='{left}':y2='{bottom}':"
+                 f"x3='{right}':y3='{bottom}':interpolation=linear:sense=source:eval=frame")
     elif not segments:
         v.append(f"scale={ow}:{oh}:flags=lanczos")
     for b in cam.get("blur", []):

@@ -254,7 +254,24 @@ def m2_checks(c: "Client", pid: str, clip: dict, renders: Path, timeout: float) 
     status, plan = c.json("PUT", f"/api/projects/{pid}/plan", items)
     _check(status == 200 and len(plan) == len(items), f"motion graphics: {status} {plan}")
     out["motion_items"] = len(plan)
+    # M2.5.1 Area Dilindungi: kotak di atas tengah selama hook -> safe-zone memindahkan grafis, ikut render final
     status, state = c.get(f"/api/projects/{pid}/recipe")
+    rec = state["recipe"]
+    rec["protect"] = [{"id": "selftest", "start": start, "end": start + 3, "box": [0.25, 0.05, 0.5, 0.4],
+                       "label": "Selftest"}]
+    status, saved = c.json("PUT", f"/api/projects/{pid}/recipe", {"version": state["version"], "recipe": rec})
+    _check(status == 200, f"simpan area dilindungi: {status} {saved}")
+    status, lay = c.get(f"/api/projects/{pid}/motion-layout?start={start}&end={end}")
+    _check(status == 200, f"safe-zone area dilindungi: {status}")
+    out["protect_moved"] = sum(1 for v in lay["items"].values() if "area dilindungi" in (v.get("reason") or "")
+                               or v.get("action") in ("dipindah", "diperkecil"))
+    status, state = c.get(f"/api/projects/{pid}/recipe")
+    _check(len(state["recipe"]["protect"]) == 1, "area dilindungi tidak tersimpan di resep")
+    # saran area (eksperimental): model YOLOX-nano bundel termuat & berjalan offline
+    status, sug = c.json("POST", f"/api/projects/{pid}/protect/suggest",
+                         {"start": start, "end": start + 4, "groups": ["orang", "hewan"]})
+    _check(status == 200 and sug.get("samples", 0) >= 4, f"saran area dilindungi: {status} {sug}")
+    out["protect_suggest_samples"] = sug["samples"]
     status, prev = c.json("POST", f"/api/projects/{pid}/preview-clip",
                           {"version": state["version"], "start": start, "end": start + 10})
     _check(status == 200, f"pratinjau hasil: {status} {prev}")

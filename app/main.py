@@ -31,7 +31,7 @@ from .config import (ALLOW_URL_IMPORT, DATA_DIR, EMBEDDED_WORKERS, FFMPEG, FFPRO
 from .schemas import (EvalFolder, EvalStart, GuidebookIn, LoginRequest, PasswordChange, PlanImport, PlanItem, RangeRequest, ReplaceRequest,
                       RenderRequest, Settings, SuggestRequest, TranscriptEdit, UnitIn, UrlImport, UserCreate,
                       UserUpdate)
-from .schemas import MAX_OVERLAYS
+from .schemas import MAX_OVERLAYS, ProtectSuggestReq
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("video-editing")
@@ -1274,6 +1274,19 @@ def subtitle_preset_media(preset: str, kind: str, user: dict = CurrentUser):
     mp4, png = gallery.render(preset)
     path, mt = (mp4, "video/mp4") if kind == "preview.mp4" else (png, "image/png")
     return FileResponse(path, media_type=mt, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.post("/api/projects/{pid}/protect/suggest")
+def protect_suggest(pid: str, body: ProtectSuggestReq, user: dict = CurrentUser):
+    """M2.5.1 (EKSPERIMENTAL): saran area dilindungi dari deteksi objek lokal YOLOX-nano. Tidak menyimpan apa pun;
+    editor memeriksa lalu menambahkan saran sebagai area biasa."""
+    _project_for(pid, user)
+    from . import subject_detect
+    if not subject_detect.available():
+        raise HTTPException(501, "Model deteksi tidak tersedia di instalasi ini. Tandai area secara manual.")
+    if body.end - body.start < 0.5:
+        raise HTTPException(400, "Rentang terlalu pendek.")
+    return subject_detect.suggest_project(pid, body.start, body.end, list(body.groups))
 
 
 @app.get("/api/motion-presets")

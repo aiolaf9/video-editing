@@ -63,7 +63,7 @@ def _k_title_cinematic(it, p, ev, W, H):
     ev(s, e, "Fx", rf"{{\an5\pos({W // 2},{y})\fn{font}\fs{fs}\b1\fsp{sp0}\bord0\shad2\alpha&HFF&"
                    rf"\t(0,{_ms(0.5, sp)},\alpha&H00&)\t(0,{_ms(1.1, sp)},{a},\fsp{sp1})\fad(0,300)}}{_t(p.get('text')).upper()}", 3)
     if p.get("label"):
-        ev(s + 0.35 / sp, e, "Fx", rf"{{\an5\pos({W // 2},{y + int(unit * 0.075 * sc)})\fn{font}\fs{int(unit * 0.036 * sc)}"
+        ev(s + 0.35 / sp, e, "Fx", rf"{{\an5\pos({W // 2},{y + int(unit * 0.075 * sc)})\fn{font}\fs{int(unit * 0.042 * sc)}"
                                    rf"\c{acc}\fsp{int(unit * 0.012)}\bord0\shad1\fad({_ms(0.35, sp)},300)}}{_t(p.get('label')).upper()}", 3)
 
 
@@ -142,7 +142,7 @@ def _k_follow_bar(it, p, ev, W, H):
     ev(s + 0.3 / sp, e, "Fx", rf"{{\an4\pos({tx},{cy - int(bh * 0.14)})\fn{font}\fs{int(unit * 0.05 * sc)}\b1\bord0\shad0"
                               rf"\alpha&HFF&\t(0,{_ms(0.3, sp)},\alpha&H00&)\fad(0,250)}}{_t(p.get('text'))}", 3)
     if p.get("label"):
-        ev(s + 0.45 / sp, e, "Fx", rf"{{\an4\pos({tx},{cy + int(bh * 0.22)})\fn{font}\fs{int(unit * 0.034 * sc)}\c{acc}\bord0\shad0"
+        ev(s + 0.45 / sp, e, "Fx", rf"{{\an4\pos({tx},{cy + int(bh * 0.22)})\fn{font}\fs{int(unit * 0.042 * sc)}\c{acc}\bord0\shad0"
                                    rf"\fad({_ms(0.3, sp)},250)}}{_t(p.get('label'))}", 3)
 
 
@@ -535,7 +535,7 @@ def _k_linechart(it, p, ev, W, H):
                            rf"{_circle(unit * 0.012)}{{\p0}}", 3)
         ev(t0, e, "Fx", rf"{{\an2\pos({int(px)},{int(py) - 10})\fnAnton\fs{int(unit * 0.045 * sc)}\bord{max(2, unit // 300)}"
                         rf"\shad0\fad(150,250)}}{v:g}", 3)
-        ev(s, e, "Fx", rf"{{\an8\pos({int(px)},{base + 8})\fn{font}\fs{int(unit * 0.035 * sc)}\bord0\shad2\fad(250,250)}}{lab}", 3)
+        ev(s, e, "Fx", rf"{{\an8\pos({int(px)},{base + 8})\fn{font}\fs{int(unit * 0.042 * sc)}\bord0\shad2\fad(250,250)}}{lab}", 3)
     if p.get("text"):
         ev(s, e, "Fx", rf"{{\an2\pos({W // 2},{base - ah - int(unit * 0.06)})\fn{font}\fs{int(unit * 0.055 * sc)}\b1\bord0"
                        rf"\shad2\fad(250,250)}}{_t(p.get('text'))}", 3)

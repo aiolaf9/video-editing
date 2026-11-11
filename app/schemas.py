@@ -64,6 +64,43 @@ class PlanItem(BaseModel):
     params: dict = Field(default_factory=dict, max_length=20)
 
 
+class ProtectArea(BaseModel):
+    """M2.5.1 Area Dilindungi: bagian gambar SUMBER (koordinat 0..1) yang tidak boleh tertutup grafis selama rentang
+    waktu (detik sumber). Kotak = `box`; poligon = `points` (safe-zone memakai kotak pembatasnya, lebih aman)."""
+    id: str = Field("", max_length=40, pattern=r"^[\w-]*$")
+    start: float = Field(ge=0, le=86400)
+    end: float = Field(gt=0, le=86400)
+    box: list[float] = Field(min_length=4, max_length=4)
+    points: list[list[float]] = Field(default_factory=list, max_length=16)
+    label: str = Field("", max_length=40)
+
+    @model_validator(mode="after")
+    def _norm(self):
+        if self.points:
+            if len(self.points) < 3 or any(len(p) != 2 for p in self.points):
+                raise ValueError("Poligon butuh minimal 3 titik (x, y).")
+            self.points = [[min(1.0, max(0.0, float(x))), min(1.0, max(0.0, float(y)))] for x, y in self.points]
+            xs, ys = [p[0] for p in self.points], [p[1] for p in self.points]
+            self.box = [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]
+        x, y, w, h = (float(v) for v in self.box)
+        x, y = min(1.0, max(0.0, x)), min(1.0, max(0.0, y))
+        w, h = min(1.0 - x, max(0.0, w)), min(1.0 - y, max(0.0, h))
+        if w < 0.01 or h < 0.01:
+            raise ValueError("Area dilindungi terlalu kecil.")
+        if self.end <= self.start:
+            raise ValueError("Akhir area dilindungi harus setelah awalnya.")
+        self.box = [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
+        return self
+
+
+class ProtectSuggestReq(BaseModel):
+    """M2.5.1 saran area (eksperimental) untuk rentang detik sumber."""
+    start: float = Field(ge=0, le=86400)
+    end: float = Field(gt=0, le=86400)
+    groups: list[Literal["hewan", "orang", "kendaraan", "produk"]] = Field(default_factory=lambda: ["hewan"],
+                                                                           min_length=1, max_length=4)
+
+
 class FrameSection(BaseModel):
     """M2.1: tata letak pilihan pengguna untuk satu bagian (detik sumber), menimpa pilihan otomatis."""
     start: float = Field(ge=0, le=86400)
@@ -97,6 +134,7 @@ class RenderRequest(BaseModel):
     speed: float = Field(1.0, ge=0.5, le=2.0)
     zoom: Literal["none", "slow"] = "none"
     motion_level: Literal["ringan", "seimbang", "dinamis"] = "seimbang"   # M2.5 intensitas visual Motion Library
+    protect: list[ProtectArea] = Field(default_factory=list, max_length=60)  # M2.5.1 Area Dilindungi
     fade: bool = True
     normalize_audio: bool = True
     encoder: Literal["cpu", "nvidia", "intel", "amd", "mac"] = "cpu"

@@ -370,7 +370,8 @@
     setFrameMode($("frameMode").value || "auto", false);
   }
 
-  window.Studio = { setFrameMode, onSelection: () => { refreshSections(); renderSubSections(); refreshAuto(); refreshPlacement(); }, refreshSections,
+  window.Studio = { setFrameMode, onSelection: () => { refreshSections(); renderSubSections(); refreshAuto(); refreshPlacement();
+    if (window.Protect) window.Protect.render(); }, refreshSections,
     markPreset, applyPreset, renderSubSections, onDirty, resetHistory, restore, refreshPlacement };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setup); else setup();
 })();

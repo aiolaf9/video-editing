@@ -178,6 +178,16 @@ jobs:
           Get-Content build/m25/kajian/ukuran.json
           Get-ChildItem build/m25/kajian | Select-Object Name, Length
 
+      - name: Bukti M2.5.1 Area Dilindungi (MP4 sebelum/sesudah, piksel grafis vs subjek)
+        env:
+          FFMPEG_BIN: ${{ github.workspace }}\build\desktop\bin\ffmpeg.exe
+          FFPROBE_BIN: ${{ github.workspace }}\build\desktop\bin\ffprobe.exe
+        run: |
+          $env:PATH = "$PWD\build\desktop\bin;$env:PATH"
+          python bench/m251/protect_compare.py build/m2/kajian-jauh.mp4 build/m251/pemateri-jauh --seconds 24
+          if ($LASTEXITCODE -ne 0) { throw "bukti area dilindungi gagal" }
+          Get-Content build/m251/pemateri-jauh/hasil.json
+
       - name: Build PyInstaller (onedir)
         run: |
           # Galeri Motion Library dirender sekali dengan FFmpeg bundel -> ikut installer (galeri langsung tampil)
@@ -418,6 +428,14 @@ jobs:
             build/m2/bingkai-pemateri-jauh/
             build/m2/safezone-pemateri-jauh/
             build/m2/kajian.json
+          retention-days: 30
+
+      - name: Unggah bukti Area Dilindungi (M2.5.1)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: m251-area-dilindungi
+          path: build/m251/
           retention-days: 30
 
       - name: Unggah contoh Motion Library (M2.5)

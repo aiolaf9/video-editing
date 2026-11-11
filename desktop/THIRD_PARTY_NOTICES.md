@@ -15,6 +15,7 @@ distribusi publik** (lihat catatan GPL di bawah).
 | onnxruntime, tokenizers, huggingface_hub | PyPI | MIT, Apache-2.0, Apache-2.0 | dependensi faster-whisper (offline) |
 | PyAV + pustaka FFmpeg miliknya | PyPI (dependensi faster-whisper) | BSD-3 + LGPL | membaca audio |
 | YuNet face detector | `models/face_detection_yunet_2023mar.onnx` | MIT (`models/LICENSE-YuNet.txt`) | reframe wajah |
+| YOLOX-nano (Megvii, rilis 0.1.1rc0) | `models/yolox_nano.onnx` (3,7 MB, sha256 `c789161e…0b7d`) | Apache-2.0 (`models/LICENSE-YOLOX.txt`) | saran Area Dilindungi (eksperimental, opsional) |
 | OpenCV (headless) | PyPI | Apache-2.0 | deteksi wajah |
 | Font Anton, Bebas Neue, Poppins | `fonts/` | SIL OFL 1.1 (`fonts/OFL-*.txt`) | subtitle |
 | pywebview, pythonnet | PyPI | BSD-3, MIT | jendela aplikasi (Microsoft Edge WebView2) |

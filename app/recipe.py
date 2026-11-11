@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 
 from . import db
 from .schemas import (MAX_OVERLAYS, MAX_SEG_EDITS, MAX_TEXT_FIXES, FrameSection, MusicSettings, PlanItem,
-                      RenderRequest, SubtitleSettings)
+                      ProtectArea, RenderRequest, SubtitleSettings)
 
 SCHEMA_VERSION = 1
 MAX_RECIPE_BYTES = 1536 * 1024         # batas ukuran JSON resep tersimpan (M1.1: koreksi + timing per kata)
@@ -126,6 +126,7 @@ class Recipe(_Strict):
     audio: Audio = Audio()
     animations: bool = True
     overlays: Optional[list[PlanItem]] = Field(None, max_length=MAX_OVERLAYS)
+    protect: list[ProtectArea] = Field(default_factory=list, max_length=60)   # M2.5.1 Area Dilindungi
     text_fixes: dict[str, str] = Field(default_factory=dict, max_length=MAX_TEXT_FIXES)
     seg_edits: dict[str, SegEdit] = Field(default_factory=dict, max_length=MAX_SEG_EDITS)
     reviewed: list[int] = Field(default_factory=list, max_length=20000)        # segmen yang sudah ditinjau
@@ -303,6 +304,7 @@ def to_render_request(pid: str, recipe: Recipe, start: float, end: float, title:
         overlays=[PlanItem(**i) for i in effective_overlays(pid, recipe)],
         text_fixes=dict(recipe.text_fixes),
         seg_edits={k: v.model_dump() for k, v in recipe.seg_edits.items()},
+        protect=list(recipe.protect),
     )
 
 

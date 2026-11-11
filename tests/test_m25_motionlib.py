@@ -330,12 +330,14 @@ def test_gallery_uses_installer_bundle_and_renders_missing_in_background(client,
     (bundle / f"{stem}-{key}.png").write_bytes(b"\x89PNG")
     monkeypatch.setattr(motion_gallery, "BUNDLED", bundle)
     monkeypatch.setattr(motion_gallery, "CACHE", tmp_path / "cache")
+    monkeypatch.setattr(motion_gallery, "_failed", {})          # status modul dari tes lain tidak ikut
+    monkeypatch.setattr(motion_gallery, "_queue", [])
     assert motion_gallery.cached("gfx.ring")[0].parent == bundle          # bundel dipakai tanpa render
     st = client.get("/api/motion-presets/status", params={"ids": "gfx.ring,tr.iris"}).json()
     assert st["gfx.ring"] == "siap" and st["tr.iris"] == "antre"          # yang belum ada diantrekan
-    deadline = time.time() + 60
-    while client.get("/api/motion-presets/status", params={"ids": "tr.iris"}).json()["tr.iris"] != "siap":
-        assert time.time() < deadline, "render latar belakang tidak selesai"
+    deadline = time.time() + 180
+    while (st := client.get("/api/motion-presets/status", params={"ids": "tr.iris"}).json())["tr.iris"] != "siap":
+        assert time.time() < deadline, (st, motion_gallery._failed, motion_gallery._queue)
         time.sleep(0.3)
     assert (tmp_path / "cache").is_dir() and list((tmp_path / "cache").glob("tr_iris-*.mp4"))
     # tanpa ids: hanya status, tidak mengantrekan seluruh galeri

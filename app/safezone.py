@@ -18,7 +18,7 @@ from typing import Optional
 
 DECORATIVE = {"kinetic", "cta", "keyword", "chips"}
 INFO = {"hook", "lower_third", "counter", "card", "checklist"}
-WEIGHT = {"wajah": 3.0, "subtitle": 2.0, "papan": 1.0, "grafis": 2.0, "ui": 1.5}
+WEIGHT = {"wajah": 3.0, "lindung": 3.0, "subtitle": 2.0, "papan": 1.0, "grafis": 2.0, "ui": 1.5}
 TOUCH = 0.5          # penalti tambahan begitu menyentuh area (menutup sedikit wajah tetap buruk)
 # Area tombol/teks aplikasi TikTok/Reels/Shorts di format vertikal (atas & bawah): hindari bila bisa.
 UI_BANDS = ([0.0, 0.0, 1.0, 0.06], [0.0, 0.86, 1.0, 0.14])
@@ -28,7 +28,9 @@ PRIORITY = {"lower_third": 0, "counter": 1, "hook": 2, "card": 3, "checklist": 3
 # posisi pilihan (pusat vertikal) per jenis, lalu pemindaian seluruh tinggi bingkai
 PREFERRED = {"hook": [0.30, 0.18, 0.12, 0.42], "kinetic": [0.42, 0.30, 0.18], "counter": [0.32, 0.20, 0.45],
              "cta": [0.64, 0.12, 0.50], "lower_third": [0.648, 0.53, 0.40, 0.12], "keyword": [0.30, 0.18, 0.45],
-             "card": [0.16, 0.30, 0.45]}
+             "card": [0.16, 0.30, 0.45],
+             # M2.5.1: chips & checklist (PNG) ikut aturan safe-zone yang sama
+             "chips": [0.20, 0.32, 0.45, 0.12], "checklist": [0.24, 0.36, 0.50]}
 # M2.5 Motion Library: grafis ASS per `kind` (app/motion_kinds) ikut ditempatkan safe-zone
 from . import motionlib as _ml  # noqa: E402
 PREFERRED.update(_ml.PREFERRED_Y)
@@ -43,7 +45,7 @@ SCAN = [round(0.04 + 0.01 * i, 2) for i in range(93)]       # 0,04 .. 0,96 (cela
 SCALES = (1.0, 0.8, 0.65)
 INFO_SCALES = SCALES + (0.5,)    # informasi boleh lebih kecil (nama ±35 px, angka ±92 px pada lebar 1080) daripada menutupi
 NAMES = {"wajah": "wajah", "papan": "papan/materi", "subtitle": "subtitle", "grafis": "grafis lain",
-         "ui": "area tombol aplikasi media sosial"}
+         "ui": "area tombol aplikasi media sosial", "lindung": "area dilindungi"}
 
 
 def size_of(item: dict, ow: int, oh: int, scale: float = 1.0) -> tuple[float, float, float]:
@@ -67,6 +69,16 @@ def size_of(item: dict, ow: int, oh: int, scale: float = 1.0) -> tuple[float, fl
         return 0.86, 0.15 * unit * max(1, min(3, n // 2 + 1)) * scale / oh, 0.07
     if typ == "card":
         return 0.84, (0.09 * unit + 0.072 * unit * max(1, min(3, n // 4 + 1))) * scale / oh, 0.08
+    if typ == "chips":           # cocok dengan overlays.render_item: pil 0,042u + padding, dibungkus 90 % lebar
+        texts = item.get("items") or []
+        row_w = sum(len(str(t)) * 0.042 * unit * 0.58 + 0.07 * unit for t in texts) / (0.9 * ow)
+        rows = max(1, int(row_w) + (1 if row_w % 1 > 0.05 else 0))
+        return 0.9, (0.042 * unit + 0.036 * unit) * 1.15 * rows * scale / oh, 0.05
+    if typ == "checklist":       # satu poin per baris, rata kiri mulai 8 % lebar
+        n = max(1, len(item.get("items") or []))
+        longest = max([len(str(t)) for t in item.get("items") or ["x"]])
+        w = min(0.9, (longest * 0.040 * unit * 0.58 + 0.12 * unit) / ow)
+        return w, (0.040 * unit + 0.036 * unit) * 1.05 * n * scale / oh, 0.08
     if typ in _ml.ASS_KINDS:
         return _ml.size_hint(typ, unit, oh, scale, item.get("params"))
     return 0.8, 0.1 * scale, 0.1
@@ -85,13 +97,19 @@ def subtitle_band(y_center: float, size: float, width: int, height: int) -> list
 
 
 def timeline(frame: Optional[dict], start: float, speed: float, ow: int, oh: int, src: tuple[int, int],
-             manual: tuple, distance: str, subs: Optional[dict]) -> list[dict]:
-    """[{t0, t1, layout, rects:[{kind, rect}]}] di timeline output untuk setiap bagian tata letak."""
+             manual: tuple, distance: str, subs: Optional[dict], protect: Optional[list[dict]] = None) -> list[dict]:
+    """[{t0, t1, layout, rects:[{kind, rect[, t0, t1]}]}] di timeline output untuk setiap bagian tata letak.
+    `protect` (M2.5.1): area dilindungi pengguna {box (sumber 0..1), start, end (detik sumber)}; dipetakan ke output
+    lewat geometri bingkai yang sama dengan wajah/papan dan hanya berlaku pada rentang waktunya sendiri."""
     from . import framing
     out = []
     segs = (frame or {}).get("segments") or [{"start": start, "end": start + 1e6, "layout": "center"}]
     for seg in segs:
-        rects = framing.occupied_rects(seg, frame["data"], src[0], src[1], ow, oh, manual, distance) if frame else []
+        mine = [{**p, "t0": (max(p["start"], seg["start"]) - start) / speed,
+                 "t1": (min(p["end"], seg["end"]) - start) / speed}
+                for p in protect or [] if p["start"] < seg["end"] and p["end"] > seg["start"]]
+        rects = framing.occupied_rects(seg, (frame or {}).get("data") or {}, src[0], src[1], ow, oh, manual,
+                                       distance, protect=mine) if (frame or mine) else []
         if subs:
             y = subs["seam_y"] if seg["layout"] == "split" and subs.get("seam_y") else subs["y"]
             rects.append({"kind": "subtitle", "rect": subtitle_band(y, subs["size"], ow, oh)})
@@ -126,7 +144,8 @@ def _search(it: dict, busy: list[dict], ow: int, oh: int):
 
 
 def _busy(tl: list[dict], placed: list, s: float, e: float, vertical: bool) -> list[dict]:
-    b = [r for seg in tl if seg["t0"] < e and seg["t1"] > s for r in seg["rects"]]
+    b = [r for seg in tl if seg["t0"] < e and seg["t1"] > s for r in seg["rects"]
+         if r.get("t0") is None or (r["t0"] < e and r["t1"] > s)]
     b += [{"kind": "grafis", "rect": r} for ps, pe, r in placed if ps < e and pe > s]
     if vertical:
         b += [{"kind": "ui", "rect": r} for r in UI_BANDS]
@@ -189,4 +208,29 @@ def place(items: list[dict], tl: list[dict], ow: int, oh: int) -> dict[str, dict
         result[it["id"]] = d
         if d["action"] != "disembunyikan":
             placed.append((it["start"], it["end"], d["rect"]))
+    for it in items:                                 # M2.5.1: peringatan keterbacaan di layar HP
+        r = result.get(it.get("id"))
+        for d in ([r] + (r.get("parts") or [])) if r else []:
+            px = text_px(it, ow, oh, float(d.get("scale") or 1.0))
+            if d.get("action") not in (None, "disembunyikan") and px < READABLE_PX:
+                d["reason"] = (d.get("reason") or "") + (f"; ⚠ teks terkecil ±{px:.0f} px pada lebar 1080: sulit dibaca"
+                                                          " di HP (beri ruang lebih atau perpendek teks)")
+                d["readable"] = False
     return result
+
+
+# Ukuran teks terkecil tiap jenis grafis (pecahan sisi pendek bingkai) pada skala 1, dari renderer masing-masing.
+MIN_TEXT = {"hook": 0.105, "kinetic": 0.2, "counter": 0.045, "cta": 0.06, "lower_third": 0.044, "keyword": 0.13,
+            "card": 0.034, "chips": 0.042, "checklist": 0.040, "title_cinematic": 0.042, "title_slam": 0.12,
+            "title_wipe": 0.085, "chapter": 0.07, "follow_bar": 0.042, "progress": 0.058, "bars": 0.05,
+            "title_typewriter": 0.075, "title_split": 0.095, "title_boxed": 0.07, "title_glitch": 0.09,
+            "title_outline_fill": 0.11, "title_marker": 0.08, "title_flip": 0.09, "ring": 0.05, "donut": 0.042,
+            "location": 0.042, "timeline": 0.04, "compare": 0.04, "numlist": 0.039, "linechart": 0.042,
+            "statcard": 0.045, "quote": 0.043, "cta_button": 0.08, "end_card": 0.045}
+READABLE_PX = 32          # ukuran font minimum yang masih nyaman di HP untuk output selebar 1080 px
+
+
+def text_px(item: dict, ow: int, oh: int, scale: float = 1.0) -> float:
+    """Ukuran font terkecil grafis ini, dinormalkan ke lebar output 1080 px."""
+    unit = min(ow, oh)
+    return MIN_TEXT.get(item["type"], 0.05) * unit * scale * 1080 / unit

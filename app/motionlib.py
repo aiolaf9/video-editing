@@ -36,7 +36,7 @@ ASS_KINDS = ("title_cinematic", "title_slam", "title_wipe", "chapter", "follow_b
              "quote", "cta_button", "end_card", "tr_light_leak", "tr_swipe", "tr_iris", "tr_blinds")
 FULLFRAME_KINDS = ("tr_light_leak", "tr_swipe", "tr_iris", "tr_blinds")    # transisi layar penuh: tanpa safe-zone
 EASE_ASS = {"out": 0.5, "in": 2.0, "inout": 1.0, "linear": 1.0}      # \t accel libass
-ENGINE_VERSION = "m25-1"     # naikkan bila tampilan renderer berubah (cache galeri dibuat ulang)
+ENGINE_VERSION = "m25-2"     # naikkan bila tampilan renderer berubah (cache galeri dibuat ulang)
 
 
 @lru_cache(maxsize=1)
@@ -215,11 +215,11 @@ def camera_terms(specs: list[dict], speed: float = 1.0) -> dict:
                 rot.append(f"{deg * 0.017453:.5f}*{b}")
                 z.append(f"{deg * 0.017453 * 1.9 + 0.1:.4f}*{b}")
             elif p.get("effect") == "glitch":
-                amt = int(min(40, 18 * k))
+                amt = int(min(70, 34 * k))           # M2.5.1: 18 px nyaris tak terlihat di 1080 px
                 for i, (r_, b_) in enumerate(((amt, -amt), (-amt // 2, amt), (amt // 3, -amt // 3))):
                     rgb.append((t0 + d * i / 3, t0 + d * (i + 1) / 3, r_, b_))
             elif p.get("effect") == "pixelate":
-                big = int(min(64, 28 * k))
+                big = int(min(110, 54 * k))          # M2.5.1: blok lebih besar agar efek piksel jelas
                 pix.append((t0, t0 + d * 0.3, max(4, big // 3)))
                 pix.append((t0 + d * 0.3, t0 + d * 0.7, big))
                 pix.append((t0 + d * 0.7, t1, max(4, big // 3)))

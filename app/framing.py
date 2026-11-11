@@ -526,7 +526,8 @@ def _head(r: list[float]) -> list[float]:
 
 
 def occupied_rects(seg: dict, data: dict, src_w: int, src_h: int, ow: int, oh: int,
-                   manual: tuple[float, float, float], distance: str = "auto") -> list[dict]:
+                   manual: tuple[float, float, float], distance: str = "auto",
+                   protect: Optional[list[dict]] = None) -> list[dict]:
     """Area penting di OUTPUT (0..1) untuk satu bagian: wajah pemateri & papan/materi. Geometri sama dengan
     segment_filter (crop, zoom, panel) sehingga safe-zone grafis cocok dengan gambar yang benar-benar dirender.
     Posisi wajah = median bagian (kamera mengikuti wajah, jadi wajah relatif diam di bingkai)."""
@@ -535,6 +536,20 @@ def occupied_rects(seg: dict, data: dict, src_w: int, src_h: int, ow: int, oh: i
     face, board = seg.get("face"), seg.get("board")
     vertical = oh / ow >= 1.2
     out: list[dict] = []
+
+    def protect_in(win_x, win_y, win_w, win_h, oy=0.0, sh=1.0, ox=0.0, sw=1.0):
+        """M2.5.1: area dilindungi (kotak sumber 0..1) -> kotak output pada jendela/panel ini (bila terlihat)."""
+        for p in protect or []:
+            b = p["box"]
+            r = [ox + (b[0] * src_w - win_x) / win_w * sw, oy + (b[1] * src_h - win_y) / win_h * sh,
+                 b[2] * src_w / win_w * sw, b[3] * src_h / win_h * sh]
+            # hanya bagian yang jatuh di panel ini
+            px0, py0, px1, py1 = ox, oy, ox + sw, oy + sh
+            x0, y0 = max(r[0], px0), max(r[1], py0)
+            x1, y1 = min(r[0] + r[2], px1), min(r[1] + r[3], py1)
+            if x1 - x0 > 0.005 and y1 - y0 > 0.005:
+                out.append({"kind": "lindung", "rect": _clamp_rect([x0, y0, x1 - x0, y1 - y0]),
+                            "t0": p.get("t0"), "t1": p.get("t1"), "ref": p.get("id", "")})
 
     def face_in(win_x, win_y, win_w, win_h, oy=0.0, sh=1.0):
         if not face:
@@ -549,11 +564,11 @@ def occupied_rects(seg: dict, data: dict, src_w: int, src_h: int, ow: int, oh: i
     if lay == "face":
         z = min(_face_zoom(face, distance, mzoom), zoom_limit(src_w, src_h, ow, oh, manual=bool(mzoom and mzoom > 1.0)))
         cw, ch = crop_window(src_w, src_h, ow / oh, z)
-        if face:
-            cx, cy = face[0] + face[2] / 2, face[1] + face[3] / 2
-            x = min(max(cx * src_w - cw / 2, 0), src_w - cw)
-            y = min(max(cy * src_h - ch * 0.38, 0), src_h - ch)
-            face_in(x, y, cw, ch)
+        cx, cy = (face[0] + face[2] / 2, face[1] + face[3] / 2) if face else (0.5, 0.5)
+        x = min(max(cx * src_w - cw / 2, 0), src_w - cw)
+        y = min(max(cy * src_h - ch * 0.38, 0), src_h - ch)
+        face_in(x, y, cw, ch)
+        protect_in(x, y, cw, ch)
     elif lay == "split":
         top_h = _even(oh * 0.56)
         bot_h = oh - top_h
@@ -566,19 +581,32 @@ def occupied_rects(seg: dict, data: dict, src_w: int, src_h: int, ow: int, oh: i
         fx = min(max((face[0] + face[2] / 2) * src_w - fw / 2, 0), src_w - fw)
         fy = min(max((face[1] + face[3] / 2) * src_h - fh * 0.42, 0), src_h - fh)
         face_in(fx, fy, fw, fh, oy=sy, sh=bot_h / oh)
+        protect_in(bx, by, bw, bh, oy=0.0, sh=sy)
+        protect_in(fx, fy, fw, fh, oy=sy, sh=bot_h / oh)
     elif lay == "split_h":
         out.append({"kind": "papan", "rect": [0.0, 0.0, 0.62, 1.0]})
         out.append({"kind": "wajah", "rect": [0.62, 0.0, 0.38, 1.0]})
+        lw = _even(ow * 0.62) / ow
+        bw, bh, bx, by = _region_window(board, src_w, src_h, (lw * ow) / oh)
+        protect_in(bx, by, bw, bh, ox=0.0, sw=lw)
+        fw, fh = crop_window(src_w, src_h, ((1 - lw) * ow) / oh, 1.0)
+        fx = min(max((face[0] + face[2] / 2) * src_w - fw / 2, 0), src_w - fw) if face else (src_w - fw) / 2
+        protect_in(fx, 0, fw, fh, ox=lw, sw=1 - lw)
     elif lay == "material":
         if vertical:
             board_aspect = (board[2] * src_w) / max(1.0, board[3] * src_h)
             fg_h = _even(min(oh * 0.7, ow / board_aspect))
             out.append({"kind": "papan", "rect": _clamp_rect([0.0, (oh - fg_h) * 0.40 / oh, 1.0, fg_h / oh])})
+            bw, bh, bx, by = _region_window(board, src_w, src_h, ow / fg_h, pad=0.04)
+            protect_in(bx, by, bw, bh, oy=(oh - fg_h) * 0.40 / oh, sh=fg_h / oh)
         else:
             out.append({"kind": "papan", "rect": [0.0, 0.0, 1.0, 1.0]})
+            bw, bh, bx, by = _region_window(board, src_w, src_h, ow / oh)
+            protect_in(bx, by, bw, bh)
     else:
         cw, ch = crop_window(src_w, src_h, ow / oh, min(max(1.0, mzoom or 1.0), zoom_limit(src_w, src_h, ow, oh, True)))
         face_in((src_w - cw) * mx, (src_h - ch) * my, cw, ch)
+        protect_in(int((src_w - cw) * mx), int((src_h - ch) * my), cw, ch)
     return out
 
 

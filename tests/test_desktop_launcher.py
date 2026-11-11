@@ -63,4 +63,5 @@ def test_launcher_selftest_from_source(tmp_path):
     m2 = report["m2"]                                                  # M2 di jalur aplikasi desktop
     assert m2["presets"] >= 10 and m2["motion_items"] == 9 and m2["render_size"] == "1080x1920"
     assert m2["motion_library"] >= 15                                  # M2.5: galeri + item fx di render
+    assert m2["protect_moved"] >= 1                                    # M2.5.1: area dilindungi memindahkan grafis
     assert m2["preview_bytes"] > 5000 and m2["framing"]

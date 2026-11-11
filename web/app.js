@@ -150,6 +150,7 @@ function recipeFromControls() {
       saturation: +$("saturation").value },
     motion: { speed: +$("speedSelect").value, zoom: $("zoomCheck").checked ? "slow" : "none", fade: $("fadeCheck").checked,
       level: state.motionLevel || "seimbang" },
+    protect: state.protect || [],                                  // M2.5.1 Area Dilindungi
     subtitles: {
       enabled: $("subEnabled").checked, style: $("subStyle").value, font: $("subFont").value, size: +$("subSize").value,
       color: $("subColor").value.toUpperCase(), highlight: $("subHighlight").value.toUpperCase(),
@@ -212,6 +213,8 @@ function applyRecipeToControls(r) {
   setControl("fadeCheck", r.motion.fade);
   state.motionLevel = r.motion.level || "seimbang";             // M2.5 intensitas Motion Library
   if (window.MotionLib) window.MotionLib.markLevel();
+  state.protect = (r.protect || []).map((x) => ({ ...x }));
+  if (window.Protect) window.Protect.render();
   const s = r.subtitles;
   setControl("subEnabled", s.enabled); setControl("subStyle", s.style); setControl("subFont", s.font);
   setControl("subSize", s.size); setControl("subColor", s.color.toLowerCase());

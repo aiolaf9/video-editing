@@ -431,10 +431,24 @@ def assemble(req: RenderRequest, transcript: Optional[dict], sub_opts: Optional[
                 if pl and pl.get("parts"):
                     pl = next((x for x in pl["parts"] if x.get("y") is not None), None)
                 if pl and pl.get("y") is not None and new_layers:
-                    # kata kunci/kartu: geser seluruh grafis ke posisi aman (tanpa mengubah ukuran PNG)
+                    # kata kunci/kartu/chips/checklist: geser ke posisi aman; bila safe-zone memperkecil (M2.5.1),
+                    # PNG diperkecil juga terhadap pusat kelompok agar ukuran yang dirender = yang diperhitungkan.
                     from PIL import Image
+                    sizes = {ly.path: Image.open(ly.path).size for ly in new_layers}
+                    scale = float(pl.get("scale") or 1.0)
+                    if scale < 0.999:
+                        cx = (min(ly.x for ly in new_layers) + max(ly.x + sizes[ly.path][0] for ly in new_layers)) / 2
+                        cy = (min(ly.y for ly in new_layers) + max(ly.y + sizes[ly.path][1] for ly in new_layers)) / 2
+                        for ly in new_layers:
+                            w, h = sizes[ly.path]
+                            nw, nh = max(2, int(w * scale)), max(2, int(h * scale))
+                            Image.open(ly.path).resize((nw, nh), Image.LANCZOS).save(ly.path)
+                            sizes[ly.path] = (nw, nh)
+                            ly.x = int(cx + (ly.x - cx) * scale)
+                            ly.y = int(cy + (ly.y - cy) * scale)
+                            ly.slide = int(getattr(ly, "slide", 0) * scale)
                     tops = [ly.y for ly in new_layers]
-                    bottoms = [ly.y + Image.open(ly.path).height for ly in new_layers]
+                    bottoms = [ly.y + sizes[ly.path][1] for ly in new_layers]
                     shift = int(pl["y"] * height - (min(tops) + max(bottoms)) / 2)
                     for ly in new_layers:
                         ly.y = max(0, ly.y + shift)
@@ -545,8 +559,9 @@ def layout_items(req: RenderRequest, items: list[dict], frame: Optional[dict], s
         y = s.pos_y if s.pos_y is not None else {"top": 0.14, "middle": 0.5}.get(s.position, 0.78)
         seam = 0.56 if subtitle_zones(frame, req, height / max(1, width)) else None
         subs = {"y": y, "seam_y": seam, "size": s.size * (1.4 if s.style == "word" else 1.0)}
+    protect = [p.model_dump() for p in req.protect if p.end > req.start and p.start < req.end]
     tl = safezone.timeline(frame, req.start, req.speed, width, height, (src_w, src_h),
-                           (req.crop_x, req.crop_y, req.frame_zoom), req.frame_distance, subs)
+                           (req.crop_x, req.crop_y, req.frame_zoom), req.frame_distance, subs, protect)
     cand = []
     for it in items:
         s0, e0 = max(it["start"], req.start), min(it["end"], req.end)

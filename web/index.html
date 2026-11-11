@@ -192,6 +192,7 @@
               <div class="ov-preview" id="ovPreview"></div>
               <div class="caption" id="captionPreview"></div>
             </div>
+            <div class="protect-layer" id="protectLayer"><svg id="protectSvg" class="protect-svg"></svg></div>
           </div>
 
           <div class="preview-clip-row">
@@ -282,6 +283,28 @@
               <div class="row"><button id="pasteApplyBtn">Terapkan</button><button id="pasteCancelBtn" class="ghost">Batal</button></div>
             </div>
             <ul id="planList" class="plan-list"></ul>
+            <details class="settings-box" id="protectBox" open>
+              <summary>🛡 Area Dilindungi <span id="protectCount"></span></summary>
+              <p class="hint">Tandai subjek penting (hewan, orang, produk, kendaraan) yang tidak boleh tertutup grafis.
+                Grafis dipindah, diperkecil, atau (bila dekoratif) disembunyikan; subtitle tidak pernah disembunyikan.
+                Area <b>tidak mengikuti gerakan</b>: untuk subjek bergerak pakai ✂ Pisah di sini lalu ✎ Gambar ulang per rentang.
+                Saran otomatis bersifat eksperimental: subjek kabur/terpotong bisa terlewat, jadi selalu periksa.</p>
+              <div class="row wrap">
+                <button type="button" class="ghost" id="protectRectBtn">▭ + Kotak</button>
+                <button type="button" class="ghost" id="protectPolyBtn">⬠ + Poligon</button>
+                <button type="button" id="protectDone" hidden>Selesai poligon</button>
+                <label class="check"><input type="checkbox" id="protectShow" checked> Tampilkan di video</label>
+              </div>
+              <div class="row wrap">
+                <select id="protectGroup" aria-label="Jenis subjek untuk saran otomatis">
+                  <option value="hewan">Hewan</option><option value="orang">Orang</option>
+                  <option value="kendaraan">Kendaraan</option><option value="produk">Produk/benda</option>
+                </select>
+                <button type="button" class="ghost" id="protectSuggestBtn" title="Deteksi objek lokal (YOLOX-nano), tanpa internet. Hasil hanya saran: periksa setiap area.">✨ Saran area (eksperimental)</button>
+              </div>
+              <p class="hint" id="protectHint" aria-live="polite"></p>
+              <ul id="protectList" class="plan-list"></ul>
+            </details>
             <div class="row wrap">
               <select id="planAddType">
                 <option value="card">+ Kartu</option>
@@ -565,6 +588,7 @@
 <script src="evaltool.js"></script>
 <script src="studio.js"></script>
 <script src="motionlib.js"></script>
+<script src="protect.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -522,3 +522,15 @@ button.small { padding: 4px 8px; }
 .ml-card.failed .ml-media::after { content: "pratinjau gagal"; position: absolute; inset: auto 0 40% 0; text-align: center;
   font-size: 11px; color: var(--muted, #999); }
 @keyframes ml-shimmer { to { background-position: -200% 0; } }
+
+/* M2.5.1 Area Dilindungi */
+.protect-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.protect-layer.drawing { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.protect-svg { position: absolute; inset: 0; overflow: visible; }
+.protect-svg .pa { fill: rgba(61, 220, 151, .18); stroke: #3ddc97; stroke-width: 2; }
+.protect-svg .pa.draft { fill: rgba(255, 212, 59, .18); stroke: #ffd43b; stroke-dasharray: 6 4; }
+.protect-svg polyline.pa.draft { fill: none; }
+.protect-svg text { fill: #3ddc97; font-size: 12px; font-weight: 700; paint-order: stroke; stroke: #000; stroke-width: 3px; }
+.protect-item .pa-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.protect-item .pa-actions button { font-size: 12px; padding: 3px 7px; }
+.place-badge.place-lindung { color: #3ddc97; }
