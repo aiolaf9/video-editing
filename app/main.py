@@ -1244,6 +1244,20 @@ def auto_style(pid: str, start: float, end: float, category: Optional[str] = Non
     return res
 
 
+@app.get("/api/projects/{pid}/motion-layout")
+def motion_layout(pid: str, start: float, end: float, user: dict = CurrentUser):
+    """Safe-zone: posisi tiap grafis di klip [start, end] (resep tersimpan, 9:16 dst.) beserta alasannya."""
+    _project_for(pid, user)
+    from . import pipeline
+    from .render import output_size
+    if end - start < 1:
+        raise HTTPException(400, "Rentang tidak sah.")
+    meta = storage.load_project(pid)
+    req = recipe.to_render_request(pid, recipe.load(pid)["recipe"], start, min(end, start + 600))
+    w, h = output_size(req.aspect, meta["width"], meta["height"])
+    return {"items": pipeline.motion_layout(pid, req, w, h)}
+
+
 @app.get("/api/subtitle-presets")
 def subtitle_presets(user: dict = CurrentUser):
     """M2.2: daftar preset subtitle animasi untuk galeri."""

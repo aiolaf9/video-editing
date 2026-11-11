@@ -129,9 +129,7 @@ oleh NH bila suatu saat dipertimbangkan. Semua animasi M2 dibuat dengan libass/F
 
 **Teks ganda "APA JAWAB MEREKA?"**: keduanya dibuat aplikasi. Hook pembuka otomatis memakai kalimat pertanyaan
 pertama di klip, dan kalimat itu juga sedang diucapkan sehingga subtitle (gaya Pop, sorot hijau) menampilkannya
-bersamaan. Sekarang baris subtitle yang ≥ 60 % katanya sama dengan hook/kinetic text yang sedang tampil dilewati
-(render, pratinjau, dan perkiraan di player). Subtitle dialog lain, termasuk yang tampil pada waktu yang sama,
-tetap ada. Bila animasi dimatikan, subtitle pembuka kembali tampil. Cara memastikan teks tidak menyatu di video
+bersamaan. Aturan awal (≥ 60 % kata sama) sudah DIGANTI dengan aturan ekuivalensi ketat (bagian 10). Bila animasi dimatikan, subtitle pembuka kembali tampil. Cara memastikan teks tidak menyatu di video
 sumber: matikan subtitle dan animasi, lalu klik "▶ Pratinjau hasil"; teks yang masih terlihat berasal dari sumber.
 
 **Kurang tajam**: penyebab terbukti = pembesaran crop, bukan preview atau encode berulang.
@@ -149,3 +147,51 @@ sumber: matikan subtitle dan animasi, lalu klik "▶ Pratinjau hasil"; teks yang
 Batas pembesaran: otomatis 2,0×, zoom manual 2,5× (`app/framing.py` `MAX_UPSCALE`); slider zoom menampilkan
 pembesaran dari sumber. Video sumber 16:9 1080p yang dijadikan 9:16 selalu diperbesar minimal 1,78× (keterbatasan
 fisik crop vertikal); hasil paling tajam bila sumber 4K atau direkam vertikal.
+
+## 10. Safe-zone dinamis motion graphics & deduplikasi ketat
+
+**Area terpakai** per bagian tata letak (`app/framing.occupied_rects`, geometri crop yang sama dengan render):
+kepala & bahu pemateri (Fokus Wajah, panel bawah Materi + Wajah, bingkai tetap), papan/materi (panel atas,
+papan di atas latar blur), pita subtitle (bawah / garis sambung panel / posisi bebas), area tombol aplikasi media
+sosial (atas 6 %, bawah 14 % pada format vertikal), dan grafis lain yang tampil bersamaan.
+
+**Penempatan** (`app/safezone.py`), urutan prioritas lower-third → angka → hook → kartu → CTA → kata kunci → kinetic:
+posisi bawaan bila bebas; bila tidak, dipindah ke posisi bebas pertama (pindai 1 % tinggi bingkai); lalu diperkecil
+80 % / 65 % (informasi juga 50 %). Grafis yang melintasi pergantian tata letak dan tidak muat di keduanya dipecah:
+posisinya berganti tepat di titik potong tata letak tanpa animasi masuk ulang. Bila tetap tidak ada ruang:
+
+| Jenis | Tanpa ruang aman |
+|---|---|
+| Dekoratif: kinetic text, CTA, kata kunci, chips | disembunyikan, dengan alasan |
+| Informasi: hook, lower-third, angka, kartu, checklist | tetap tampil di posisi yang paling sedikit menutupi (bobot wajah > subtitle > UI > papan), dengan alasan |
+| Subtitle (isi percakapan) | tidak pernah disembunyikan oleh safe-zone |
+
+Editor (tab Animasi) menampilkan hasilnya per elemen: ↕ dipindah, ↘ diperkecil, ⚠ tumpang tindih, 🚫 disembunyikan,
+beserta alasannya; pratinjau di player memakai posisi yang sama (`GET /api/projects/{pid}/motion-layout`).
+
+**Deduplikasi subtitle–hook** (pengganti aturan 60 %): sebuah baris subtitle disembunyikan HANYA bila
+1. semua katanya sama persis dan berurutan dengan kata-kata hook/kinetic text,
+2. kata-kata itu diucapkan di rentang waktu kalimat hook tersebut (deret kata transkrip ≥ 3 kata, atau seluruh hook
+   bila lebih pendek, yang identik dengan hook di sekitar waktu tampilnya), dan
+3. baris itu muncul saat teks besar benar-benar tampil (grafis yang disembunyikan safe-zone tidak berlaku).
+Hook yang diedit menjadi kalimat lain, kalimat yang sama diucapkan di luar waktu hook, kalimat yang mirip, dan baris
+yang hanya sebagian sama: semuanya tetap tampil (diuji). Bug yang ditemukan lewat pemeriksaan MP4 sebelum rilis:
+kinetic text yang disembunyikan safe-zone sempat ikut menyembunyikan subtitle kalimat yang sama; sudah diperbaiki.
+
+**Bukti MP4** (`bench/m2/studio_demo.py --safezone` + `bench/m2/safezone_check.py`): elemen yang sama pada momen
+berisiko (hook di awal, lower-third melintasi Fokus Wajah → Materi + Wajah, angka saat Materi + Wajah, kinetic + kata
+kunci saat Fokus Materi, CTA di akhir) dirender tanpa dan dengan safe-zone. Piksel grafis = selisih MP4 terhadap
+render "hanya subtitle"; diukur tiap 0,25 dtk (96 frame) di area wajah, papan, subtitle:
+
+| Video uji | Varian | Maks wajah tertutup | Maks papan | Maks subtitle | Frame > 2 % (wajah/papan/subtitle) |
+|---|---|---|---|---|---|
+| Pemateri dekat | tanpa safe-zone | 28,2 % | 18,2 % | 13,3 % | 38 / 20 / 13 |
+| Pemateri dekat | dengan safe-zone | 0,0 % | 1,1 % | 0,0 % | 0 / 0 / 0 |
+| Pemateri jauh | tanpa safe-zone | 59,1 % | 19,5 % | 13,3 % | 27 / 20 / 13 |
+| Pemateri jauh | dengan safe-zone | 0,0 % | 1,1 % | 0,0 % | 0 / 0 / 0 |
+
+CI Windows menjalankan pemeriksaan yang sama dengan audio ucapan asli + transkrip Whisper dan GAGAL bila safe-zone
+menutup wajah/subtitle > 2 % atau papan > 5 %.
+
+Keterbatasan: posisi wajah per bagian memakai median (pemateri yang banyak bergerak dalam satu bagian bisa
+tersentuh tepi grafis); PNG multi-bagian (chips, checklist) belum dipindahkan; ukuran teks panjang diperkirakan.

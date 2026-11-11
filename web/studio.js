@@ -239,6 +239,23 @@
     toast(`Gaya "${rec.label}" diterapkan${added ? ` + ${added} elemen motion (edit di tab Animasi)` : ""}. Klik ↶ untuk membatalkan.`);
   }
 
+  // ---------------------------------------------------------------- safe-zone grafis
+  let placeTimer = null;
+  function refreshPlacement(delay = 900) {
+    clearTimeout(placeTimer);
+    placeTimer = setTimeout(async () => {
+      if (!state.project || !(state.sel.end - state.sel.start >= 1)) return;
+      const q = new URLSearchParams({ start: state.sel.start.toFixed(3), end: state.sel.end.toFixed(3) });
+      try {
+        const res = await api(`/api/projects/${state.project.id}/motion-layout?${q}`);
+        state.placement = res.items || {};
+        renderPlan();
+        $("ovPreview").dataset.key = "";
+        if (typeof updateOverlayPreview === "function") updateOverlayPreview();
+      } catch { /* abaikan */ }
+    }, delay);
+  }
+
   // ---------------------------------------------------------------- M2.4 undo / redo
   // Riwayat pengaturan gaya, bingkai, subtitle, dan animasi di perangkat ini (bukan teks transkrip: koreksi
   // transkrip M1.1 punya alurnya sendiri dan tidak ikut dibatalkan).
@@ -269,6 +286,7 @@
   }
 
   function onDirty() {
+    refreshPlacement(1500);                     // setelah tersimpan: posisi grafis dihitung ulang
     if (hist.restoring) return;
     clearTimeout(hist.timer);
     hist.timer = setTimeout(record, 350);       // satu langkah per rangkaian perubahan (mis. menggeser slider)
@@ -351,7 +369,7 @@
     setFrameMode($("frameMode").value || "auto", false);
   }
 
-  window.Studio = { setFrameMode, onSelection: () => { refreshSections(); renderSubSections(); refreshAuto(); }, refreshSections,
-    markPreset, applyPreset, renderSubSections, onDirty, resetHistory, restore };
+  window.Studio = { setFrameMode, onSelection: () => { refreshSections(); renderSubSections(); refreshAuto(); refreshPlacement(); }, refreshSections,
+    markPreset, applyPreset, renderSubSections, onDirty, resetHistory, restore, refreshPlacement };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setup); else setup();
 })();

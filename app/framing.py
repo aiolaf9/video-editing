@@ -503,6 +503,75 @@ def segment_filter(seg: dict, data: dict, inp: str, out: str, src_w: int, src_h:
     return f"{inp}crop={cw}:{ch}:{x}:{y},scale={ow}:{oh}:flags=lanczos,setsar=1{out}"
 
 
+def _clamp_rect(r: list[float]) -> list[float]:
+    x0, y0 = max(0.0, r[0]), max(0.0, r[1])
+    x1, y1 = min(1.0, r[0] + r[2]), min(1.0, r[1] + r[3])
+    return [round(x0, 4), round(y0, 4), round(max(0.0, x1 - x0), 4), round(max(0.0, y1 - y0), 4)]
+
+
+def _head(r: list[float]) -> list[float]:
+    """Kotak wajah -> area kepala & bahu yang dilindungi (rambut di atas, dagu & leher di bawah)."""
+    x, y, w, h = r
+    return _clamp_rect([x - 0.35 * w, y - 0.6 * h, w * 1.7, h * 2.2])
+
+
+def occupied_rects(seg: dict, data: dict, src_w: int, src_h: int, ow: int, oh: int,
+                   manual: tuple[float, float, float], distance: str = "auto") -> list[dict]:
+    """Area penting di OUTPUT (0..1) untuk satu bagian: wajah pemateri & papan/materi. Geometri sama dengan
+    segment_filter (crop, zoom, panel) sehingga safe-zone grafis cocok dengan gambar yang benar-benar dirender.
+    Posisi wajah = median bagian (kamera mengikuti wajah, jadi wajah relatif diam di bingkai)."""
+    mx, my, mzoom = manual
+    lay = seg["layout"]
+    face, board = seg.get("face"), seg.get("board")
+    vertical = oh / ow >= 1.2
+    out: list[dict] = []
+
+    def face_in(win_x, win_y, win_w, win_h, oy=0.0, sh=1.0):
+        if not face:
+            return
+        r = [(face[0] * src_w - win_x) / win_w, oy + (face[1] * src_h - win_y) / win_h * sh,
+             face[2] * src_w / win_w, face[3] * src_h / win_h * sh]
+        if r[0] + r[2] > 0 and r[0] < 1 and r[2] > 0:
+            out.append({"kind": "wajah", "rect": _head(r)})
+
+    if lay == "split" and not vertical:
+        lay = "material" if not face else "split_h"
+    if lay == "face":
+        z = min(_face_zoom(face, distance, mzoom), zoom_limit(src_w, src_h, ow, oh, manual=bool(mzoom and mzoom > 1.0)))
+        cw, ch = crop_window(src_w, src_h, ow / oh, z)
+        if face:
+            cx, cy = face[0] + face[2] / 2, face[1] + face[3] / 2
+            x = min(max(cx * src_w - cw / 2, 0), src_w - cw)
+            y = min(max(cy * src_h - ch * 0.38, 0), src_h - ch)
+            face_in(x, y, cw, ch)
+    elif lay == "split":
+        top_h = _even(oh * 0.56)
+        bot_h = oh - top_h
+        bw, bh, bx, by = _region_window(board, src_w, src_h, ow / top_h)
+        sy = top_h / oh
+        out.append({"kind": "papan", "rect": _clamp_rect([(board[0] * src_w - bx) / bw, (board[1] * src_h - by) / bh * sy,
+                                                          board[2] * src_w / bw, board[3] * src_h / bh * sy])})
+        fz = max(1.0, min(SPLIT_MAX_ZOOM, 0.30 / max(face[3], 1e-3), zoom_limit(src_w, src_h, ow, bot_h)))
+        fw, fh = crop_window(src_w, src_h, ow / bot_h, fz)
+        fx = min(max((face[0] + face[2] / 2) * src_w - fw / 2, 0), src_w - fw)
+        fy = min(max((face[1] + face[3] / 2) * src_h - fh * 0.42, 0), src_h - fh)
+        face_in(fx, fy, fw, fh, oy=sy, sh=bot_h / oh)
+    elif lay == "split_h":
+        out.append({"kind": "papan", "rect": [0.0, 0.0, 0.62, 1.0]})
+        out.append({"kind": "wajah", "rect": [0.62, 0.0, 0.38, 1.0]})
+    elif lay == "material":
+        if vertical:
+            board_aspect = (board[2] * src_w) / max(1.0, board[3] * src_h)
+            fg_h = _even(min(oh * 0.7, ow / board_aspect))
+            out.append({"kind": "papan", "rect": _clamp_rect([0.0, (oh - fg_h) * 0.40 / oh, 1.0, fg_h / oh])})
+        else:
+            out.append({"kind": "papan", "rect": [0.0, 0.0, 1.0, 1.0]})
+    else:
+        cw, ch = crop_window(src_w, src_h, ow / oh, min(max(1.0, mzoom or 1.0), zoom_limit(src_w, src_h, ow, oh, True)))
+        face_in((src_w - cw) * mx, (src_h - ch) * my, cw, ch)
+    return out
+
+
 LAYOUT_NAMES = {"face": "Fokus Wajah", "split": "Materi + Wajah", "material": "Fokus Materi", "center": "Bingkai tetap"}
 
 

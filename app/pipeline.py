@@ -340,37 +340,60 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
     """Bahan render (subtitle ASS, musik, rencana bingkai, punch-in, grafis) untuk ukuran output width x height.
     Dipakai render final dan pratinjau cepat agar keduanya identik (hanya resolusi yang berbeda)."""
     folder = storage.project_dir(pid)
+    meta = storage.load_project(pid)
     frame = framing_for(pid, req, job)
-    subs = None
+    transcript = None
+    sub_opts = None
     if req.subtitles.enabled:
         # Transkrip + koreksi teks dari snapshot resep (atau resep proyek bila permintaan tanpa snapshot).
         transcript = recipe.effective_transcript(pid, fixes=req.text_fixes, seg_edits=req.seg_edits) or {}
-        opts = subtitle_options(req.subtitles, pid)
-        opts.zones = subtitle_zones(frame, req, height / max(1, width))
-        opts.sections = tuple(((x.start - req.start) / req.speed, (x.end - req.start) / req.speed, x.style)
-                              for x in req.subtitles.sections if x.end > req.start and x.start < req.end)
-        opts.suppress = big_text_windows(req, pid)
-        ass = build_ass(transcript, req.start, req.end, width, height, opts, speed=req.speed)
-        if "Dialogue:" in ass:
-            subs = workdir / f"{tag}.ass"
-            subs.write_text(ass, encoding="utf-8")
-
+        sub_opts = subtitle_options(req.subtitles, pid)
     music = None
     if req.music.file:
         candidate = folder / "music" / storage.safe_filename(req.music.file)
         if not candidate.is_file():
             raise FileNotFoundError("File musik tidak ditemukan. Unggah ulang musiknya.")
         music = candidate
+    items = []
+    if req.animations:
+        items = [i.model_dump() for i in req.overlays] if req.overlays is not None else recipe.effective_overlays(pid)
+    out = assemble(req, transcript, sub_opts, items, frame, (meta["width"], meta["height"]), width, height, workdir,
+                   tag, folder / "assets")
+    out["music"] = music
+    return out
 
+
+def assemble(req: RenderRequest, transcript: Optional[dict], sub_opts: Optional[SubtitleOptions], items: list[dict],
+             frame: Optional[dict], src: tuple[int, int], width: int, height: int, workdir: Path, tag: str,
+             assets_dir: Optional[Path] = None) -> dict:
+    """Inti penyusunan render tanpa akses proyek: subtitle (zona, gaya per bagian, deduplikasi teks besar), safe-zone
+    grafis, motion ASS, PNG overlay, dan punch-in. Dipakai prepare() dan bench/m2/studio_demo.py."""
+    subs = None
+    placement: dict = {}
+    if req.animations and items:
+        placement = layout_items(req, items, frame, src[0], src[1], width, height)
+    if sub_opts is not None:
+        sub_opts.zones = subtitle_zones(frame, req, height / max(1, width))
+        sub_opts.sections = tuple(((x.start - req.start) / req.speed, (x.end - req.start) / req.speed, x.style)
+                                  for x in req.subtitles.sections if x.end > req.start and x.start < req.end)
+        # Hanya teks besar yang BENAR-BENAR tampil boleh menggantikan subtitle (yang disembunyikan safe-zone tidak).
+        shown = [i for i in items if (placement.get(i.get("id")) or {}).get("action") != "disembunyikan"]
+        sub_opts.suppress = text_windows(req, shown, transcript or {})
+        ass = build_ass(transcript or {}, req.start, req.end, width, height, sub_opts, speed=req.speed)
+        if "Dialogue:" in ass:
+            subs = workdir / f"{tag}.ass"
+            subs.write_text(ass, encoding="utf-8")
     punches: list[tuple] = []
     layers = []
     graphics = None
     overlay_dir = workdir / f"tmp_{tag}"
-    if req.animations:
+    if req.animations and items:
         overlay_dir.mkdir(exist_ok=True)
-        items = [i.model_dump() for i in req.overlays] if req.overlays is not None else recipe.effective_overlays(pid)
         motion_items = []
         for item in items:
+            pl = placement.get(item.get("id"))
+            if pl and pl["action"] == "disembunyikan":
+                continue                                    # grafis dekoratif tanpa ruang aman (alasan di editor)
             s, e = max(item["start"], req.start), min(item["end"], req.end)
             if e - s < 0.3:
                 continue
@@ -378,31 +401,94 @@ def prepare(pid: str, req: RenderRequest, width: int, height: int, workdir: Path
             if item["type"] == "zoom":
                 punches.append((s - req.start, e - req.start, float(item.get("strength") or 0.14)))
             elif item["type"] in motion.TYPES:
-                motion_items.append({**item, "start": t0, "end": t1})
+                if pl and pl.get("parts"):
+                    # berpindah posisi di titik pergantian tata letak; bagian lanjutan tanpa animasi masuk ulang
+                    for k, part in enumerate(x for x in pl["parts"] if x["action"] != "disembunyikan"):
+                        motion_items.append({**item, "start": part["start"], "end": part["end"], "place": part,
+                                             "intro": k == 0, "span": (t0, t1)})
+                else:
+                    motion_items.append({**item, "start": t0, "end": t1, "place": pl})
             else:
-                layers += overlays.render_item(item, overlay_dir, (width, height), t0, t1,
-                                               assets_dir=folder / "assets")
+                new_layers = overlays.render_item(item, overlay_dir, (width, height), t0, t1, assets_dir=assets_dir)
+                if pl and pl.get("parts"):
+                    pl = next((x for x in pl["parts"] if x.get("y") is not None), None)
+                if pl and pl.get("y") is not None and new_layers:
+                    # kata kunci/kartu: geser seluruh grafis ke posisi aman (tanpa mengubah ukuran PNG)
+                    from PIL import Image
+                    tops = [ly.y for ly in new_layers]
+                    bottoms = [ly.y + Image.open(ly.path).height for ly in new_layers]
+                    shift = int(pl["y"] * height - (min(tops) + max(bottoms)) / 2)
+                    for ly in new_layers:
+                        ly.y = max(0, ly.y + shift)
+                layers += new_layers
         punches = drop_split_punches(punches, frame, req.start)
         if motion_items:
             graphics = workdir / f"{tag}.motion.ass"
             graphics.write_text(motion.build(motion_items, width, height), encoding="utf-8")
-    return {"subs": subs, "music": music, "frame": frame, "punches": punches, "layers": layers,
-            "overlay_dir": overlay_dir, "graphics": graphics}
+    return {"subs": subs, "frame": frame, "punches": punches, "layers": layers, "overlay_dir": overlay_dir,
+            "graphics": graphics, "placement": placement}
 
 
-def big_text_windows(req: RenderRequest, pid: str) -> tuple:
-    """Hook pembuka & kinetic text di rentang klip (timeline output): subtitle yang isinya sama pada waktu yang sama
-    tidak ditampilkan dua kali. Subtitle dialog lain tetap tampil."""
+def big_text_windows(req: RenderRequest, pid: str, transcript: Optional[dict] = None) -> tuple:
     if not req.animations:
         return ()
-    from .subtitles import norm_tokens
     items = [i.model_dump() for i in req.overlays] if req.overlays is not None else recipe.effective_overlays(pid)
+    if transcript is None:
+        transcript = recipe.effective_transcript(pid, fixes=req.text_fixes, seg_edits=req.seg_edits) or {}
+    return text_windows(req, items, transcript)
+
+
+def text_windows(req: RenderRequest, items: list[dict], transcript: dict) -> tuple:
+    """Hook pembuka & kinetic text yang isinya SAMA dengan ucapan pada waktu tampilnya (timeline output). Subtitle
+    hanya disembunyikan untuk kata-kata yang benar-benar ekuivalen (lihat subtitles._duplicates_big_text); dialog
+    lain, termasuk yang tampil bersamaan, tetap ada."""
+    if not req.animations:
+        return ()
+    from .subtitles import collect_words, norm_tokens, spoken_span
+    words = collect_words(transcript, req.start, req.end, req.speed)
     out = []
     for it in items:
         if it["type"] in ("hook", "kinetic") and it["end"] > req.start and it["start"] < req.end:
-            out.append(((max(it["start"], req.start) - req.start) / req.speed, (min(it["end"], req.end) - req.start) / req.speed,
-                        frozenset(norm_tokens(it.get("text", "")))))
+            t0 = (max(it["start"], req.start) - req.start) / req.speed
+            t1 = (min(it["end"], req.end) - req.start) / req.speed
+            seq = tuple(norm_tokens(it.get("text", "")))
+            span = spoken_span(seq, words, t0, t1)
+            if span:
+                out.append((span[0], span[1], seq, t0, t1))
     return tuple(out)
+
+
+def motion_layout(pid: str, req: RenderRequest, width: int, height: int, frame: Optional[dict] = None,
+                  job=None) -> dict:
+    """Safe-zone (app/safezone.py): posisi setiap grafis motion/kata kunci/kartu menghindari wajah, papan, dan
+    subtitle pada tata letak yang sedang dipakai. Hasil: {id: {y, scale, action, reason, ...}}."""
+    if not req.animations:
+        return {}
+    if frame is None:
+        frame = framing_for(pid, req, job)
+    meta = storage.load_project(pid)
+    items = [i.model_dump() for i in req.overlays] if req.overlays is not None else recipe.effective_overlays(pid)
+    return layout_items(req, items, frame, meta["width"], meta["height"], width, height)
+
+
+def layout_items(req: RenderRequest, items: list[dict], frame: Optional[dict], src_w: int, src_h: int,
+                 width: int, height: int) -> dict:
+    """Inti safe-zone tanpa akses proyek (dipakai juga oleh bench/m2/studio_demo.py)."""
+    from . import safezone
+    subs = None
+    if req.subtitles.enabled:
+        s = req.subtitles
+        y = s.pos_y if s.pos_y is not None else {"top": 0.14, "middle": 0.5}.get(s.position, 0.78)
+        seam = 0.56 if subtitle_zones(frame, req, height / max(1, width)) else None
+        subs = {"y": y, "seam_y": seam, "size": s.size * (1.4 if s.style == "word" else 1.0)}
+    tl = safezone.timeline(frame, req.start, req.speed, width, height, (src_w, src_h),
+                           (req.crop_x, req.crop_y, req.frame_zoom), req.frame_distance, subs)
+    cand = []
+    for it in items:
+        s0, e0 = max(it["start"], req.start), min(it["end"], req.end)
+        if e0 - s0 >= 0.3 and it["type"] in safezone.PREFERRED:
+            cand.append({**it, "start": (s0 - req.start) / req.speed, "end": (e0 - req.start) / req.speed})
+    return safezone.place(cand, tl, width, height)
 
 
 def drop_split_punches(punches: list[tuple], frame: Optional[dict], start: float) -> list[tuple]:

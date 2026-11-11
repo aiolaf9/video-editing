@@ -950,12 +950,34 @@ function clipWords(start, end) {
 }
 
 const normTokens = (t) => String(t || "").toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+// Sama dengan app/subtitles.spoken_span + _duplicates_big_text: baris subtitle hanya disembunyikan bila kata-katanya
+// sama persis & berurutan dengan hook/kinetic DAN diucapkan di rentang kalimat itu selama teks besar tampil.
+function spokenSpan(seq, t0, t1) {
+  if (!seq.length) return null;
+  const near = state.words.filter((w) => w.end > t0 - 1 && w.start < t1 + 1);
+  const toks = near.map((w) => normTokens(w.word)[0] || "");
+  let best = [0, null];
+  for (let i = 0; i < near.length; i++) {
+    for (let j = 0; j < seq.length; j++) {
+      let k = 0;
+      while (i + k < near.length && j + k < seq.length && toks[i + k] === seq[j + k]) k++;
+      if (k > best[0]) best = [k, [near[i].start, near[i + k - 1].end]];
+    }
+  }
+  return best[0] >= Math.min(3, seq.length) ? best[1] : null;
+}
 function duplicatesBigText(chunk) {
   const s = chunk[0].start, e = chunk[chunk.length - 1].end;
   const toks = normTokens(chunk.map((w) => w.word).join(" "));
   if (!toks.length) return false;
-  return (state.plan || []).some((it) => (it.type === "hook" || it.type === "kinetic") && s < it.end && e > it.start
-    && toks.filter((t) => normTokens(it.text).includes(t)).length / toks.length >= 0.6);
+  return (state.plan || []).some((it) => {
+    if ((it.type !== "hook" && it.type !== "kinetic") || !(s < it.end && e > it.start)) return false;
+    const seq = normTokens(it.text);
+    const span = spokenSpan(seq, it.start, it.end);
+    if (!span || s < span[0] - 0.05 || e > span[1] + 0.05) return false;
+    for (let i = 0; i + toks.length <= seq.length; i++) if (toks.every((t, k) => seq[i + k] === t)) return true;
+    return false;
+  });
 }
 
 function updateCaptionPreview() {
@@ -1731,10 +1753,19 @@ function renderPlan() {
     return `<li class="plan-item" data-id="${esc(it.id)}">
       <span class="type">${PLAN_LABELS[it.type] || it.type}</span>
       <span class="times"><input type="number" step="0.1" data-f="start" value="${it.start}"> – <input type="number" step="0.1" data-f="end" value="${it.end}"></span>
-      <span class="fields">${fields}</span>
+      <span class="fields">${fields}</span>${placeBadge(it)}
       <span><button class="ghost" data-act="seek" title="Putar dari sini">▶</button> <button class="ghost danger" data-act="del" title="Hapus">✕</button></span>
     </li>`;
   }).join("");
+}
+
+// Hasil safe-zone (GET /motion-layout): grafis dipindah / diperkecil / disembunyikan dan alasannya.
+const PLACE_ICON = { tetap: "", dipindah: "↕", diperkecil: "↘", "tumpang tindih": "⚠", disembunyikan: "🚫" };
+function placeBadge(it) {
+  const p = (state.placement || {})[it.id];
+  if (!p || p.action === "tetap") return "";
+  const key = Object.keys(PLACE_ICON).find((k) => p.action.startsWith(k)) || "dipindah";
+  return `<span class="place-badge place-${key.replace(" ", "-")}" title="${esc(p.reason)}">${PLACE_ICON[key]} ${esc(p.action)}: ${esc(p.reason)}</span>`;
 }
 
 let planSaveTimer = null;
@@ -1756,20 +1787,27 @@ function updateOverlayPreview() {
   const t = $("player").currentTime;
   const frame = $("cropFrame");
   if (!$("animEnabled").checked || frame.hidden) { box.innerHTML = ""; return; }
-  const active = state.plan.filter((i) => i.type !== "zoom" && t >= i.start && t < i.end);
+  const placed = state.placement || {};
+  const active = state.plan.filter((i) => i.type !== "zoom" && t >= i.start && t < i.end
+    && !(placed[i.id] && placed[i.id].action === "disembunyikan"));
   const key = active.map((i) => i.id).join(",");
   if (box.dataset.key === key) return;
   box.dataset.key = key;
   const fh = frame.getBoundingClientRect().height;
   const [ow, oh] = OUTPUT_SIZES[state.aspect] || [1, 1];
   const unit = Math.min(ow, oh) * (fh / oh);
+  const posOf = (i) => {      // posisi dari safe-zone (pusat vertikal) bila sudah dihitung
+    let p = placed[i.id];
+    if (p && p.parts) p = p.parts.find((x) => t >= x.start && t < x.end && x.y != null) || null;
+    return p && p.y != null ? `top:${(p.y * 100).toFixed(1)}%;transform:translateY(-50%) scale(${p.scale || 1});` : "";
+  };
   box.innerHTML = active.map((i) => {
-    if (i.type === "keyword") return `<div class="ovp-keyword" style="font-size:${unit * 0.13}px">${esc(i.text)}</div>`;
-    if (i.type === "hook") return `<div class="ovp-hook" style="font-size:${unit * 0.105}px">${esc(i.text.toUpperCase())}</div>`;
-    if (i.type === "kinetic") return `<div class="ovp-kinetic" style="font-size:${unit * 0.2}px">${esc((i.text.split(/\s+/)[0] || "").toUpperCase())}…</div>`;
-    if (i.type === "counter") return `<div class="ovp-counter" style="font-size:${unit * 0.17}px">${esc(i.text)}${i.label ? `<small style="font-size:${unit * 0.045}px">${esc(i.label)}</small>` : ""}</div>`;
-    if (i.type === "cta") return `<div class="ovp-cta" style="font-size:${unit * 0.06}px"><span>${esc(i.text)}</span></div>`;
-    if (i.type === "lower_third") return `<div class="ovp-lower" style="font-size:${unit * 0.064}px"><b>${esc(i.text)}</b>${i.label ? `<small style="font-size:${unit * 0.044}px">${esc(i.label)}</small>` : ""}</div>`;
+    if (i.type === "keyword") return `<div class="ovp-keyword" style="${posOf(i)}font-size:${unit * 0.13}px">${esc(i.text)}</div>`;
+    if (i.type === "hook") return `<div class="ovp-hook" style="${posOf(i)}font-size:${unit * 0.105}px">${esc(i.text.toUpperCase())}</div>`;
+    if (i.type === "kinetic") return `<div class="ovp-kinetic" style="${posOf(i)}font-size:${unit * 0.2}px">${esc((i.text.split(/\s+/)[0] || "").toUpperCase())}…</div>`;
+    if (i.type === "counter") return `<div class="ovp-counter" style="${posOf(i)}font-size:${unit * 0.17}px">${esc(i.text)}${i.label ? `<small style="font-size:${unit * 0.045}px">${esc(i.label)}</small>` : ""}</div>`;
+    if (i.type === "cta") return `<div class="ovp-cta" style="${posOf(i)}font-size:${unit * 0.06}px"><span>${esc(i.text)}</span></div>`;
+    if (i.type === "lower_third") return `<div class="ovp-lower" style="${posOf(i)}font-size:${unit * 0.064}px"><b>${esc(i.text)}</b>${i.label ? `<small style="font-size:${unit * 0.044}px">${esc(i.label)}</small>` : ""}</div>`;
     if (i.type === "image") return `<img class="ovp-image ovp-${esc(i.pos || "tr")}" style="width:${(i.scale || 0.22) * 100}%;opacity:${i.opacity ?? 1}" src="/api/projects/${state.project.id}/assets/${encodeURIComponent(i.asset)}" alt="">`;
     if (i.type === "card") return `<div class="ovp-card" style="font-size:${unit * 0.058}px">${i.label ? `<small style="font-size:${unit * 0.034}px">${esc(i.label)}</small>` : ""}${esc(i.text)}</div>`;
     const cls = i.type === "chips" ? "ovp-chips" : "ovp-check";

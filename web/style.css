@@ -490,3 +490,8 @@ button.small { padding: 4px 8px; }
 .ss-row { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 3px; }
 .ss-row b { flex: 1; }
 .undo-redo { display: inline-flex; gap: 4px; margin-left: 6px; }
+
+/* safe-zone: keterangan posisi grafis */
+.place-badge { display: block; grid-column: 1 / -1; font-size: 11px; opacity: .85; margin-top: 2px; }
+.place-badge.place-tumpang-tindih { color: #fbbf24; }
+.place-badge.place-disembunyikan { color: #f87171; }

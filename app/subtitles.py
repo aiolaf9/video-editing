@@ -80,8 +80,7 @@ class SubtitleOptions:
     emphasis_terms: tuple = ()  # istilah kosakata (dari app/vocab) yang dianggap penting
     sections: tuple = ()        # ((mulai, akhir, gaya), ...) di timeline output: gaya animasi per bagian (M2.4)
     zones: tuple = ()           # ((mulai, akhir, y 0..1), ...) di timeline output: posisi khusus per bagian
-    suppress: tuple = ()        # ((mulai, akhir, kata...), ...): teks besar (hook/kinetic) yang sedang tampil; baris
-    #                             subtitle berisi kata-kata yang SAMA pada waktu itu tidak ditampilkan dua kali
+    suppress: tuple = ()        # teks besar (hook/kinetic) yang ekuivalen dengan ucapan: lihat _duplicates_big_text
     #                             (mis. garis sambung papan/wajah pada tata letak Materi + Wajah)
 
 
@@ -384,16 +383,43 @@ def norm_tokens(text: str) -> list[str]:
     return [t for t in re.split(r"[^\w]+", (text or "").lower()) if t]
 
 
+def _contiguous_in(toks: list[str], seq: tuple) -> bool:
+    n = len(toks)
+    return any(list(seq[i:i + n]) == toks for i in range(len(seq) - n + 1))
+
+
+def spoken_span(big_tokens: tuple, words: list[dict], t0: float, t1: float) -> Optional[tuple[float, float]]:
+    """Rentang waktu (timeline output) saat teks besar itu BENAR-BENAR diucapkan: deret kata transkrip terpanjang
+    di sekitar waktu tampilnya yang sama persis & berurutan dengan kata-kata teks besar. None bila tidak ada deret
+    yang cukup panjang (min. 3 kata, atau seluruh teks bila lebih pendek) -> tidak ada subtitle yang disembunyikan."""
+    if not big_tokens:
+        return None
+    near = [w for w in words if w["end"] > t0 - 1.0 and w["start"] < t1 + 1.0]
+    toks = [(norm_tokens(w["word"]) or [""])[0] for w in near]
+    best = (0, None)
+    for i in range(len(near)):
+        for j in range(len(big_tokens)):
+            k = 0
+            while i + k < len(near) and j + k < len(big_tokens) and toks[i + k] == big_tokens[j + k]:
+                k += 1
+            if k > best[0]:
+                best = (k, (near[i]["start"], near[i + k - 1]["end"]))
+    return best[1] if best[0] >= min(3, len(big_tokens)) else None
+
+
 def _duplicates_big_text(chunk: list[dict], windows: tuple) -> bool:
-    """Baris subtitle yang tampil BERSAMAAN dengan teks besar (hook/kinetic) dan >= 60 % katanya sama."""
+    """Baris subtitle disembunyikan HANYA bila ekuivalen dengan teks besar (hook/kinetic) yang sedang tampil:
+    semua katanya sama persis & berurutan dengan teks besar, DAN kata-kata itu diucapkan di dalam rentang waktu
+    kalimat teks besar tersebut (spoken_span), DAN baris itu muncul saat teks besar masih tampil.
+    windows = ((span_awal, span_akhir, token_teks_besar, tampil_awal, tampil_akhir), ...)."""
     if not windows:
         return False
     s, e = chunk[0]["start"], chunk[-1]["end"]
     toks = norm_tokens(" ".join(w["word"] for w in chunk))
     if not toks:
         return False
-    for t0, t1, words in windows:
-        if s < t1 and e > t0 and sum(t in words for t in toks) / len(toks) >= 0.6:
+    for a, b, seq, t0, t1 in windows:
+        if s >= a - 0.05 and e <= b + 0.05 and s < t1 and e > t0 and _contiguous_in(toks, seq):
             return True
     return False
 

@@ -152,11 +152,17 @@ jobs:
           python bench/m2/make_lecture.py build/m2/astronaut.png build/m2/kajian-jauh.mp4 --seconds 24 --audio build/m2/ucapan.wav --person 300
           if ($LASTEXITCODE -ne 0) { throw "video uji M2 gagal" }
           python bench/m2/transcribe_json.py build/m2/kajian.mp4 build/m2/kajian.json
-          python bench/m2/studio_demo.py build/m2/kajian.mp4 build/m2/kajian.json build/m2/bukti --presets bounce,highlight,documentary,neon,storytelling --motion
+          python bench/m2/studio_demo.py build/m2/kajian.mp4 build/m2/kajian.json build/m2/bukti --presets bounce,highlight,documentary,neon,storytelling --motion --safezone
           if ($LASTEXITCODE -ne 0) { throw "bukti M2 gagal" }
+          # Safe-zone dibuktikan dari piksel MP4: grafis tidak boleh menutup wajah/subtitle > 2 % atau papan > 5 %.
+          python bench/m2/safezone_check.py build/m2/bukti --strict
+          if ($LASTEXITCODE -ne 0) { throw "safe-zone motion graphics gagal (lihat safezone-cek.json)" }
+          python bench/m2/studio_demo.py build/m2/kajian-jauh.mp4 build/m2/kajian.json build/m2/safezone-pemateri-jauh --presets "" --safezone
+          python bench/m2/safezone_check.py build/m2/safezone-pemateri-jauh --strict
+          if ($LASTEXITCODE -ne 0) { throw "safe-zone (pemateri jauh) gagal" }
           python bench/m2/framing_compare.py build/m2/kajian-jauh.mp4 build/m2/bingkai-pemateri-jauh
           if ($LASTEXITCODE -ne 0) { throw "bukti bingkai gagal" }
-          Remove-Item build/m2/bukti/preview480.mp4, build/m2/bingkai-pemateri-jauh/preview480.mp4 -ErrorAction SilentlyContinue
+          Remove-Item build/m2/bukti/preview480.mp4, build/m2/bingkai-pemateri-jauh/preview480.mp4, build/m2/safezone-pemateri-jauh/preview480.mp4 -ErrorAction SilentlyContinue
           Get-Content build/m2/bingkai-pemateri-jauh/rencana.json
           Get-ChildItem build/m2/bukti, build/m2/bingkai-pemateri-jauh | Select-Object Name, Length
 
@@ -394,6 +400,7 @@ jobs:
           path: |
             build/m2/bukti/
             build/m2/bingkai-pemateri-jauh/
+            build/m2/safezone-pemateri-jauh/
             build/m2/kajian.json
           retention-days: 30
 
