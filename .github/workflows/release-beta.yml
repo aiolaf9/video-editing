@@ -19,7 +19,7 @@ concurrency:
 
 env:
   SOURCE_RUN: "42932163006"                                   # Desktop Windows, desktop/m2, sukses
-  SOURCE_SHA: ba5f0bf420380629e14f99fb660c54ace699a2ad
+  SOURCE_SHA: ba5f0bf420380629e14f99fb660c54ace699a2ad   # pragma: allowlist secret (hash commit git publik)
   TAG: m2-beta-ba5f0bf
   SETUP_SHA256: 91afa141598342be1f96d3a5ebe97e6109776b16e2b73dec9324ef982887fcba   # pragma: allowlist secret (sha256 publik)
   ADDON_SHA256: d1ebf12f89b2552ffee3bebc76c91e5535fdd1e70f980f5f39f14c4880dcd74e   # pragma: allowlist secret (sha256 publik)
