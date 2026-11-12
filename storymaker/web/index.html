@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NH StoryMaker AI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">NH <b>StoryMaker</b> AI</div>
+  <div class="sub">Beberapa video liputan → satu cerita vertikal ±60 detik</div>
+  <div id="aiBadge" class="badge"></div>
+</header>
+<div class="layout">
+  <aside>
+    <form id="newForm">
+      <input id="newName" placeholder="Judul liputan" maxlength="120">
+      <button>+ Proyek baru</button>
+    </form>
+    <ul id="projectList"></ul>
+  </aside>
+  <main id="main">
+    <div class="empty">Buat proyek baru atau pilih proyek di kiri.</div>
+  </main>
+</div>
+
+<template id="tplProject">
+  <section class="card">
+    <div class="row">
+      <h2 class="pname"></h2>
+      <label class="inline">Durasi target
+        <select class="target"><option>45</option><option selected>60</option><option>75</option><option>90</option></select> detik
+      </label>
+    </div>
+    <h3>1. Video liputan <span class="hint clipcount"></span></h3>
+    <div class="drop">Seret 3–10 video ke sini atau <label class="link">pilih file<input type="file" class="fileIn" accept="video/*" multiple hidden></label></div>
+    <div class="uploadBar hidden"><div></div></div>
+    <div class="clips"></div>
+    <details class="guidance">
+      <summary>Catatan redaksi untuk AI (opsional)</summary>
+      <textarea class="guide" rows="3" maxlength="2000" placeholder="mis. Fokus pada peran warga. Sebut nama program dengan benar: Kampung Air Bersih."></textarea>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <h3>2. Analisis &amp; susun cerita</h3>
+      <div>
+        <select class="planner">
+          <option value="auto">Otomatis (Claude bila tersedia)</option>
+          <option value="claude">Claude AI</option>
+          <option value="heuristic">Lokal (tanpa AI, gratis)</option>
+        </select>
+        <button class="btnAnalyze primary">Analisis</button>
+      </div>
+    </div>
+    <div class="job hidden"><div class="bar"><div></div></div><div class="jobMsg"></div></div>
+  </section>
+
+  <section class="card planCard hidden">
+    <div class="row">
+      <h3>3. Rencana cerita <span class="hint planInfo"></span></h3>
+      <div class="tools">
+        <button class="btnCopyPrompt" title="Salin prompt ke Claude.ai, lalu tempel jawabannya">📋 Prompt</button>
+        <button class="btnPaste">📥 Tempel jawaban</button>
+        <button class="btnReplan">↻ Susun ulang</button>
+      </div>
+    </div>
+    <div class="titleRow">Judul: <input class="planTitle" maxlength="80"></div>
+    <div class="warnings"></div>
+    <div class="hooks"></div>
+    <div class="sections"></div>
+  </section>
+
+  <section class="card renderCard hidden">
+    <h3>4. Render video</h3>
+    <div class="grid">
+      <label>Bingkai <select name="framing"><option value="auto">Otomatis (ikuti wajah / latar blur)</option><option value="crop">Crop penuh</option><option value="blur">Latar blur</option></select></label>
+      <label>Transisi <select name="transition"><option value="fade">Crossfade</option><option value="dissolve">Dissolve</option><option value="fadeblack">Fade hitam</option><option value="slide">Geser</option><option value="smooth">Smooth up</option><option value="none">Potong langsung</option></select></label>
+      <label>Subtitle <select name="subtitle_style"><option value="highlight">Sorot kata aktif</option><option value="simple">Sederhana</option></select></label>
+      <label>Ukuran teks <input name="subtitle_size" type="range" min="0.6" max="1.6" step="0.1" value="1"></label>
+      <label>Warna sorot <input name="highlight" type="color" value="#FFD400"></label>
+      <label class="chk"><input name="uppercase" type="checkbox"> HURUF BESAR</label>
+      <label class="chk"><input name="show_title" type="checkbox" checked> Judul di awal</label>
+      <label>Musik latar <input class="musicIn" type="file" accept="audio/*"></label>
+      <label>Volume musik <input name="music_volume" type="range" min="0" max="0.5" step="0.02" value="0.12"></label>
+    </div>
+    <button class="btnRender primary">🎬 Render video</button>
+    <div class="outputs"></div>
+  </section>
+</template>
+<script src="/static/app.js"></script>
+</body>
+</html>
