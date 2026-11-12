@@ -1298,13 +1298,14 @@ def motion_presets(user: dict = CurrentUser):
 
 @app.get("/api/motion-presets/status")
 def motion_presets_status(ids: str = "", user: dict = CurrentUser):
-    """Status galeri {id: siap|antre|gagal}. Hanya preset yang DIMINTA (`ids`, kategori yang sedang dibuka di UI) yang
+    """Status galeri {id: siap|proses|antre|gagal|belum}. Hanya preset yang DIMINTA (`ids`, kategori yang dibuka UI) yang
     diantrekan untuk dirender di latar belakang; tanpa `ids` hanya melaporkan status (tidak merender 60 klip)."""
     from . import motion_gallery
     wanted = [i for i in ids.split(",") if i][:20]
     st = motion_gallery.status(wanted or None)
     if wanted:
-        motion_gallery.warm([i for i, v in st.items() if v == "antre"])
+        if motion_gallery.warm([i for i, v in st.items() if v == "belum"]):
+            st = motion_gallery.status(wanted)          # yang baru diantrekan dilaporkan "antre"/"proses"
     return st
 
 

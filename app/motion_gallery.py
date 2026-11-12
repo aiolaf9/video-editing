@@ -18,7 +18,9 @@ CACHE = DATA_DIR / "cache" / "motion-gallery"
 # kuncinya sama sehingga galeri langsung tampil tanpa render pertama kali di komputer pengguna.
 BUNDLED = Path(__file__).resolve().parent / "data" / "motion-gallery"
 _lock = threading.Lock()
+# Status pekerjaan galeri (dijaga _queue_cv): belum -> antre (_queue) -> proses (_running) -> siap (berkas) / gagal.
 _queue: "list[str]" = []
+_running: "set[str]" = set()
 _queue_cv = threading.Condition()
 _worker: "threading.Thread | None" = None
 _failed: dict = {}
@@ -78,44 +80,77 @@ def cached(pid: str) -> "tuple[Path, Path] | None":
 
 
 def status(ids: "list[str] | None" = None) -> dict:
-    """{id: "siap" | "antre" | "gagal"} untuk galeri (UI memuat gambar hanya bila siap)."""
+    """{id: "siap" | "proses" | "antre" | "gagal" | "belum"} untuk galeri (UI memuat gambar hanya bila siap).
+    "proses" = sedang dirender di thread galeri; "belum" = belum pernah diminta (endpoint mengantrekannya)."""
     out = {}
+    with _queue_cv:
+        running, queued, failed = set(_running), set(_queue), set(_failed)
     for p in motionlib.presets():
-        if ids and p["id"] not in ids:
+        pid = p["id"]
+        if ids and pid not in ids:
             continue
-        out[p["id"]] = "siap" if cached(p["id"]) else ("gagal" if p["id"] in _failed else "antre")
+        if cached(pid):
+            out[pid] = "siap"
+        elif pid in running:
+            out[pid] = "proses"
+        elif pid in queued:
+            out[pid] = "antre"
+        elif pid in failed:
+            out[pid] = "gagal"
+        else:
+            out[pid] = "belum"
     return out
 
 
-def warm(ids: "list[str]") -> None:
-    """Antrekan render galeri di SATU thread latar belakang. Permintaan HTTP tidak menunggu render, sehingga koneksi
-    browser (maks ±6 per host) tetap bebas untuk menyimpan resep/pratinjau saat galeri pertama kali dibuka."""
+def warm(ids: "list[str]") -> int:
+    """Antrekan render galeri di SATU thread latar belakang (permintaan HTTP tidak menunggu render, sehingga koneksi
+    browser tetap bebas untuk menyimpan resep). Idempoten: preset yang sudah siap, sedang antre, sedang diproses,
+    atau sudah gagal tidak diantrekan lagi, sehingga polling berulang tidak pernah memicu render ganda.
+    -> jumlah preset yang benar-benar ditambahkan ke antrean."""
     global _worker
-    todo = [i for i in ids if motionlib.get(i) and not cached(i) and i not in _failed]
-    if not todo:
-        return
+    wanted = [i for i in dict.fromkeys(ids) if motionlib.get(i) and not cached(i)]
+    added = 0
     with _queue_cv:
-        for i in todo:
-            if i not in _queue:
-                _queue.append(i)
-        if _worker is None or not _worker.is_alive():
+        for i in wanted:
+            if i in _queue or i in _running or i in _failed:
+                continue
+            _queue.append(i)
+            added += 1
+        if _queue and (_worker is None or not _worker.is_alive()):
             _worker = threading.Thread(target=_drain, name="motion-gallery", daemon=True)
             _worker.start()
-        _queue_cv.notify()
+        _queue_cv.notify_all()
+    return added
+
+
+def wait_idle(timeout: float = 120.0) -> bool:
+    """Tunggu (tanpa polling/sleep) sampai antrean galeri kosong dan tidak ada yang diproses."""
+    with _queue_cv:
+        return _queue_cv.wait_for(lambda: not _queue and not _running, timeout)
 
 
 def _drain() -> None:
     import logging
+    global _worker
     while True:
         with _queue_cv:
             if not _queue:
+                if _worker is threading.current_thread():
+                    _worker = None          # pekerja baru dimulai bila ada permintaan berikutnya
                 return
             pid = _queue.pop(0)
+            _running.add(pid)               # antre -> proses secara atomik (tidak pernah tampak "belum")
         try:
-            render(pid)
-        except Exception as e:                      # satu preset gagal tidak menghentikan antrean
-            _failed[pid] = str(e)[:200]
+            if not cached(pid):             # mungkin sudah dirender lewat permintaan langsung thumb/preview
+                render(pid)
+        except Exception as e:              # satu preset gagal tidak menghentikan antrean
+            with _queue_cv:
+                _failed[pid] = str(e)[:200]
             logging.getLogger(__name__).warning("Galeri Motion Library %s gagal: %s", pid, e)
+        finally:
+            with _queue_cv:
+                _running.discard(pid)       # dilepas SETELAH berkas ditulis: status langsung "siap"/"gagal"
+                _queue_cv.notify_all()
 
 
 def render(pid: str) -> tuple[Path, Path]:

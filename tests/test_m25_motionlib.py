@@ -332,13 +332,20 @@ def test_gallery_uses_installer_bundle_and_renders_missing_in_background(client,
     monkeypatch.setattr(motion_gallery, "CACHE", tmp_path / "cache")
     monkeypatch.setattr(motion_gallery, "_failed", {})          # status modul dari tes lain tidak ikut
     monkeypatch.setattr(motion_gallery, "_queue", [])
+    monkeypatch.setattr(motion_gallery, "_running", set())
+    renders = []
+    real_render = motion_gallery.render
+    monkeypatch.setattr(motion_gallery, "render", lambda pid: renders.append(pid) or real_render(pid))
     assert motion_gallery.cached("gfx.ring")[0].parent == bundle          # bundel dipakai tanpa render
     st = client.get("/api/motion-presets/status", params={"ids": "gfx.ring,tr.iris"}).json()
-    assert st["gfx.ring"] == "siap" and st["tr.iris"] == "antre"          # yang belum ada diantrekan
-    deadline = time.time() + 180
-    while (st := client.get("/api/motion-presets/status", params={"ids": "tr.iris"}).json())["tr.iris"] != "siap":
-        assert time.time() < deadline, (st, motion_gallery._failed, motion_gallery._queue)
-        time.sleep(0.3)
+    assert st["gfx.ring"] == "siap" and st["tr.iris"] in ("antre", "proses")   # yang belum ada diantrekan
+    for _ in range(5):                                    # polling UI saat render berjalan tidak mengantrekan ulang
+        assert client.get("/api/motion-presets/status", params={"ids": "tr.iris"}).json()["tr.iris"] != "belum"
+    assert motion_gallery.wait_idle(180), (motion_gallery._queue, motion_gallery._running)
+    st = client.get("/api/motion-presets/status", params={"ids": "tr.iris"}).json()
+    assert st == {"tr.iris": "siap"}, (st, motion_gallery._failed)
+    assert "tr.iris" not in motion_gallery._queue and "tr.iris" not in motion_gallery._running
+    assert renders == ["tr.iris"]                                           # tepat sekali
     assert (tmp_path / "cache").is_dir() and list((tmp_path / "cache").glob("tr_iris-*.mp4"))
     # tanpa ids: hanya status, tidak mengantrekan seluruh galeri
     full = client.get("/api/motion-presets/status").json()

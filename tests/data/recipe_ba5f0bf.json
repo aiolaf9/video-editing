@@ -1,0 +1,124 @@
+{
+ "commit": "ba5f0bf",
+ "recipe": {
+  "v": 1,
+  "selection": {
+   "start": 1.0,
+   "end": 7.0
+  },
+  "target": 30,
+  "checked": [],
+  "aspect": "9:16",
+  "crop": {
+   "x": 0.5,
+   "y": 0.5,
+   "reframe": "auto",
+   "mode": "auto",
+   "zoom": 0.0,
+   "distance": "auto",
+   "sections": [
+    {
+     "start": 4.0,
+     "end": 7.0,
+     "layout": "center"
+    }
+   ]
+  },
+  "look": {
+   "color": "none",
+   "brightness": 0.0,
+   "contrast": 1.0,
+   "saturation": 1.0
+  },
+  "motion": {
+   "speed": 1.0,
+   "zoom": "slow",
+   "fade": true
+  },
+  "subtitles": {
+   "enabled": true,
+   "style": "neon",
+   "font": "Arial",
+   "size": 1.0,
+   "color": "#FFFFFF",
+   "highlight": "#FFE600",
+   "position": "bottom",
+   "uppercase": true,
+   "words_per_line": 3,
+   "outline_color": "#000000",
+   "outline": 1.0,
+   "shadow": 1.0,
+   "box": false,
+   "box_color": "#000000",
+   "box_opacity": 0.6,
+   "pos_y": null,
+   "emphasis": false,
+   "emphasis_color": "#FFD43B",
+   "sections": [
+    {
+     "start": 1.0,
+     "end": 3.0,
+     "style": "bounce"
+    }
+   ]
+  },
+  "audio": {
+   "music": null,
+   "volume": 0.25,
+   "ducking": true,
+   "normalize": true
+  },
+  "animations": true,
+  "overlays": [
+   {
+    "id": "h1",
+    "type": "hook",
+    "start": 1.0,
+    "end": 3.0,
+    "text": "Kenapa video ini viral?",
+    "label": "",
+    "items": [],
+    "strength": 0.14,
+    "asset": "",
+    "pos": "tr",
+    "scale": 0.22,
+    "opacity": 1.0
+   },
+   {
+    "id": "z1",
+    "type": "zoom",
+    "start": 3.5,
+    "end": 4.5,
+    "text": "",
+    "label": "",
+    "items": [],
+    "strength": 0.2,
+    "asset": "",
+    "pos": "tr",
+    "scale": 0.22,
+    "opacity": 1.0
+   },
+   {
+    "id": "l1",
+    "type": "lower_third",
+    "start": 4.0,
+    "end": 6.0,
+    "text": "Narasumber",
+    "label": "Tim NH",
+    "items": [],
+    "strength": 0.14,
+    "asset": "",
+    "pos": "tr",
+    "scale": 0.22,
+    "opacity": 1.0
+   }
+  ],
+  "text_fixes": {},
+  "seg_edits": {},
+  "reviewed": [],
+  "vocab_ignored": [],
+  "template_id": null,
+  "encoder": "cpu",
+  "language": null
+ }
+}

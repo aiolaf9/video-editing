@@ -258,3 +258,91 @@ def test_detector_finds_a_drawn_person_free_of_network(tmp_path):
     assert subject_detect.available()
     blank = np.full((360, 640, 3), 128, np.uint8)
     assert subject_detect.detect_frame(blank) == []
+
+
+def _texture_video(tmp_path):
+    """Video 1080x1920 bertekstur acak halus (tidak periodik, seed tetap): pengukuran zoom tidak tertipu pola."""
+    import subprocess
+
+    import numpy as np
+    from PIL import Image
+    rng = np.random.default_rng(7)
+    small = rng.integers(0, 255, (240, 135, 3), dtype=np.uint8)          # detail sedang: ±8 px per sel
+    img = Image.fromarray(small).resize((1080, 1920), Image.BICUBIC)
+    png = tmp_path / "tex.png"
+    img.save(png)
+    mp4 = tmp_path / "tex.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-loop", "1", "-framerate", "30", "-i", str(png), "-t", "4",
+                    "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "12", str(mp4)], check=True)
+    return mp4
+
+
+@pytest.mark.parametrize("pid,expect", [("cam.pan", "x"), ("cam.tilt", "y"), ("cam.punch_in", "zoom")])
+def test_camera_motion_matches_in_preview_and_final(tmp_path, pid, expect):
+    """Gerakan kamera terukur di MP4 FINAL (1080x1920) dan PRATINJAU (out_scale 1/3, jalur pratinjau aplikasi), arah &
+    besar sama: pan hanya horizontal, tilt hanya vertikal, punch-in hanya zoom."""
+    import subprocess
+
+    from app import camera_check, motionlib, pipeline
+    from app.render import build_command
+    src = _texture_video(tmp_path)
+    info = {"width": 1080, "height": 1920, "duration": 4.0, "fps": 30, "has_audio": False}
+    req = RenderRequest(start=0, end=4, aspect="9:16", fade=False, normalize_audio=False)
+    cam = motionlib.camera_terms([motionlib.resolve({"id": "c", "preset": pid, "params": {}, "start": 0.2,
+                                                     "end": 3.8}, "seimbang")])
+    res = {}
+    for kind, scale in (("final", 1.0), ("pratinjau", pipeline.PREVIEW_SCALE)):
+        def run(name, c):
+            out = tmp_path / f"{kind}-{name}.mp4"
+            cmd = build_command(src, out, req, info, None, None, tmp_path, None, [], [], None, out_scale=scale,
+                                camera_fx=c)
+            subprocess.run(["ffmpeg", "-y", "-v", "error", *cmd], check=True)
+            return out
+        base, fx = run("dasar", None), run("efek", cam)
+        res[kind] = camera_check.measure(base, fx, 0.8)
+    f, p = res["final"], res["pratinjau"]
+    if expect == "x":
+        assert abs(f["dx"]) > 0.02 and abs(f["dy"]) < 0.01, res
+    elif expect == "y":
+        assert abs(f["dy"]) > 0.01 and abs(f["dx"]) < 0.01, res
+    else:
+        assert f["zoom"] > 1.1 and abs(f["dx"]) < 0.01 and abs(f["dy"]) < 0.01, res
+    # pratinjau = final (dalam pecahan bingkai; toleransi 1 piksel analisis)
+    assert abs(f["dx"] - p["dx"]) <= 0.012 and abs(f["dy"] - p["dy"]) <= 0.012 and abs(f["zoom"] - p["zoom"]) <= 0.03, res
+
+
+@pytest.mark.parametrize("commit", ["ba5f0bf", "c86a89b"])
+def test_old_project_recipes_open_and_render(client, sample_video, fake_transcript, monkeypatch, commit):
+    """Resep ASLI yang dihasilkan kode M2 (ba5f0bf) dan beta M2.5 (c86a89b) -> dibuka, tidak berubah makna, dan
+    dirender MP4 oleh versi ini (tanpa area dilindungi: bawaan kosong)."""
+    import json
+    import time
+    from pathlib import Path
+
+    from app import media, storage, transcribe
+    old = json.loads((Path(__file__).parent / "data" / f"recipe_{commit}.json").read_text(encoding="utf-8"))["recipe"]
+    r = recipe.Recipe.model_validate(old)
+    assert r.protect == [] and r.overlays and r.subtitles.style == "neon"
+    assert {o.id for o in r.overlays} == {o["id"] for o in old["overlays"]}
+    if commit == "c86a89b":
+        assert r.motion.level == "dinamis" and any(o.type == "fx" for o in r.overlays)
+    monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: fake_transcript)
+    with sample_video.open("rb") as fh:
+        res = client.post("/api/projects", files={"file": ("lama.mp4", fh, "video/mp4")}).json()
+    pid = res["project"]["id"]
+    deadline = time.time() + 120
+    while client.get(f"/api/jobs/{res['job']['id']}").json()["status"] not in ("selesai", "gagal"):
+        assert time.time() < deadline
+        time.sleep(0.3)
+    cur = client.get(f"/api/projects/{pid}/recipe").json()
+    put = client.put(f"/api/projects/{pid}/recipe", json={"version": cur["version"], "recipe": old})
+    assert put.status_code == 200, put.text
+    job = client.post(f"/api/projects/{pid}/render-recipe", json={"version": put.json()["version"], "start": 1,
+                                                                  "end": 7}).json()
+    deadline = time.time() + 180
+    while (done := client.get(f"/api/jobs/{job['id']}").json())["status"] not in ("selesai", "gagal", "batal"):
+        assert time.time() < deadline
+        time.sleep(0.3)
+    assert done["status"] == "selesai", done
+    info = media.probe(storage.project_dir(pid) / "renders" / done["result"]["file"])
+    assert (info["width"], info["height"]) == (1080, 1920) and abs(info["duration"] - 6) < 0.3

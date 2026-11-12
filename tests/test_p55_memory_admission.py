@@ -496,13 +496,19 @@ def test_child_process_memory_counts_towards_reservation(monkeypatch):
 def test_real_ffmpeg_child_is_in_process_tree():
     import subprocess
 
-    before = resources.process_tree_usage()
+    import os
     proc = subprocess.Popen(["ffmpeg", "-v", "error", "-re", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=10",
                              "-f", "null", "-"], stdin=subprocess.DEVNULL)
     try:
-        time.sleep(1.0)
-        during = resources.process_tree_usage()
-        assert during["processes"] == before["processes"] + 1 and during["rss"] > before["rss"] + 5 * MB
+        time.sleep(1.0)                                   # beri FFmpeg waktu mengalokasikan buffer frame
+        # Kontrak: anak FFmpeg yang dijalankan proses ini termasuk pohon proses dan RSS-nya ikut terhitung.
+        # (Jumlah total proses tidak dibandingkan: job/galeri latar belakang tes lain bisa mulai/selesai kapan saja.)
+        assert proc.pid in _descendants(os.getpid())
+        child_rss = resources._proc_stat(proc.pid)[2]
+        assert child_rss > 5 * MB
+        tree = resources.process_tree_usage()
+        own = resources._proc_stat(os.getpid())[2]
+        assert tree["rss"] >= own + child_rss and tree["processes"] >= 2
     finally:
         proc.kill()
         proc.wait()

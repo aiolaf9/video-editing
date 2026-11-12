@@ -288,4 +288,68 @@ def m2_checks(c: "Client", pid: str, clip: dict, renders: Path, timeout: float) 
     _check((v["width"], v["height"]) == (1080, 1920), f"render M2 ukuran: {v['width']}x{v['height']}")
     out["render_size"] = f"{v['width']}x{v['height']}"
     out["render_file"] = done["result"]["file"]
+    out["camera"] = camera_checks(c, timeout)
     return out
+
+
+def camera_checks(c: "Client", timeout: float) -> dict:
+    """M2.5.1: gerakan kamera benar-benar terjadi di MP4 PRATINJAU dan FINAL aplikasi terpasang, dengan arah & besar
+    sama. Setiap MP4 ber-efek dibandingkan dengan MP4 tanpa efek pada detik yang sama (app/camera_check).
+    Sumber = klip derau statis yang dibuat FFmpeg bundel (tekstur ke segala arah): video uji biasa bisa berisi pita
+    warna polos yang membuat geser vertikal tak terukur (aperture problem), bukan karena render salah."""
+    from app import camera_check
+    tmp = Path(os.environ.get("VIDEO_APP_DATA") or ".") / "selftest-kamera"       # tetap ada untuk diperiksa
+    tmp.mkdir(parents=True, exist_ok=True)
+    ff = os.environ.get("FFMPEG_BIN") or "ffmpeg"
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    tex, clip = tmp / "tekstur.png", tmp / "kamera-sumber.mp4"
+    subprocess.run([ff, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=320x180,noise=alls=100:allf=u",
+                    "-frames:v", "1", str(tex)], check=True, creationflags=flags)
+    subprocess.run([ff, "-v", "error", "-y", "-loop", "1", "-framerate", "25", "-i", str(tex), "-f", "lavfi", "-i",
+                    "anullsrc=r=16000:cl=mono", "-t", "6", "-vf", "scale=1280:720:flags=bicubic,format=yuv420p",
+                    "-c:v", "libx264", "-crf", "14", "-c:a", "aac", "-shortest", str(clip)], check=True, creationflags=flags)
+    status, res = c.upload(clip, "id", "")
+    _check(status == 200, f"upload klip kamera: {status} {res}")
+    pid = res["project"]["id"]
+    job = _wait(c, res["job"]["id"], timeout)
+    _check(job["status"] == "selesai", f"analisis klip kamera gagal: {job}")
+    renders = Path(os.environ.get("VIDEO_APP_DATA") or ".") / "projects" / pid / "renders"
+    start = 0.0
+    variants = {"dasar": [], "pan": ["cam.pan"], "tilt": ["cam.tilt"], "punch": ["cam.punch_in"]}
+    files: dict = {}
+    for name, presets in variants.items():
+        items = [{"type": "fx", "preset": p, "start": start + 0.2, "end": start + 3.8} for p in presets]
+        status, plan = c.json("PUT", f"/api/projects/{pid}/plan", items)
+        _check(status == 200, f"rencana kamera {name}: {status} {plan}")
+        status, state = c.get(f"/api/projects/{pid}/recipe")
+        status, prev = c.json("POST", f"/api/projects/{pid}/preview-clip",
+                              {"version": state["version"], "start": start, "end": start + 4})
+        _check(status == 200, f"pratinjau kamera {name}: {status} {prev}")
+        status, mp4 = c.get(prev["url"])
+        _check(status == 200 and isinstance(mp4, bytes), f"unduh pratinjau kamera {name}: {status}")
+        pv = tmp / f"pratinjau-{name}.mp4"
+        pv.write_bytes(mp4)
+        files[("pratinjau", name)] = pv
+        if name in ("dasar", "pan", "tilt"):
+            status, job = c.json("POST", f"/api/projects/{pid}/render-recipe",
+                                 {"version": state["version"], "start": start, "end": start + 4, "title": f"Kamera {name}"})
+            _check(status == 200, f"render kamera {name}: {status} {job}")
+            done = _wait(c, job["id"], timeout)
+            _check(done["status"] == "selesai", f"render kamera {name} gagal: {done}")
+            files[("final", name)] = renders / done["result"]["file"]
+    res = {}
+    for (kind, name) in files:
+        if name != "dasar":
+            res[f"{kind}-{name}"] = camera_check.measure(files[(kind, "dasar")], files[(kind, name)], 0.8)
+    for kind in ("pratinjau", "final"):
+        pan, tilt = res[f"{kind}-pan"], res[f"{kind}-tilt"]
+        _check(abs(pan["dx"]) > 0.02 and abs(pan["dy"]) < 0.01, f"{kind}: pan tidak menggeser horizontal: {pan}")
+        _check(abs(tilt["dy"]) > 0.01 and abs(tilt["dx"]) < 0.01, f"{kind}: tilt tidak menggeser vertikal: {tilt}")
+    punch = res["pratinjau-punch"]
+    _check(punch["zoom"] > 1.1 and abs(punch["dx"]) < 0.01 and abs(punch["dy"]) < 0.01,
+           f"punch-in tidak memperbesar di titik jangkar: {punch}")
+    for name in ("pan", "tilt"):
+        f, p = res[f"final-{name}"], res[f"pratinjau-{name}"]
+        _check(abs(f["dx"] - p["dx"]) <= 0.012 and abs(f["dy"] - p["dy"]) <= 0.012,
+               f"gerakan {name} pratinjau berbeda dari final: {p} vs {f}")
+    return res

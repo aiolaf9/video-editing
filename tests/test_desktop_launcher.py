@@ -64,4 +64,6 @@ def test_launcher_selftest_from_source(tmp_path):
     assert m2["presets"] >= 10 and m2["motion_items"] == 9 and m2["render_size"] == "1080x1920"
     assert m2["motion_library"] >= 15                                  # M2.5: galeri + item fx di render
     assert m2["protect_moved"] >= 1                                    # M2.5.1: area dilindungi memindahkan grafis
+    cam = m2["camera"]                                                 # M2.5.1: zoom/geser nyata di pratinjau & final
+    assert abs(cam["final-pan"]["dx"]) > 0.02 and abs(cam["final-tilt"]["dy"]) > 0.01 and cam["pratinjau-punch"]["zoom"] > 1.1
     assert m2["preview_bytes"] > 5000 and m2["framing"]

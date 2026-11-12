@@ -34,6 +34,8 @@ env:
   WHISPER_ADDON_REPO: mobiuslabsgmbh/faster-whisper-large-v3-turbo
   PREV_RUN_ID: "42818439989"   # installer M1.1 (desktop/m1.1 @ 34ef605) untuk uji pembaruan M1.1 -> M2
   PREV_NAME: "M1.1"
+  PREV2_RUN_ID: "43070596349"  # installer beta M2.5 (desktop/m25 @ c86a89b, disetujui beta internal): proyek fx/Motion Library
+  PREV2_NAME: "M2.5 beta"
   PYTHONUTF8: "1"
 
 jobs:
@@ -206,6 +208,15 @@ jobs:
           $bundled = Get-ChildItem $internal -Directory -Filter "whisper-*" | ForEach-Object Name
           "Model di bundel: $($bundled -join ', ')"
           if (($bundled -join ',') -ne "whisper-small") { throw "bundel harus hanya berisi whisper-small" }
+          # M2.5.1: model deteksi lokal (saran Area Dilindungi) ikut dibundel, sha256 sama dengan yang dikunci aplikasi
+          $yolox = "$internal/models/yolox_nano.onnx"
+          if (-not (Test-Path $yolox)) { throw "model YOLOX-nano tidak dibundel" }
+          $yh = (Get-FileHash $yolox -Algorithm SHA256).Hash.ToLower()
+          if ($yh -ne "c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d") { throw "sha256 YOLOX-nano berbeda: $yh" }  # pragma: allowlist secret
+          if (-not (Test-Path "$internal/models/LICENSE-YOLOX.txt")) { throw "lisensi YOLOX tidak dibundel" }
+          $gal = @(Get-ChildItem "$internal/app/data/motion-gallery" -Filter *.mp4).Count
+          "Model YOLOX-nano dibundel (sha256 cocok); galeri Motion Library bundel: $gal klip"
+          if ($gal -ne 60) { throw "galeri bundel harus 60 klip, ada $gal" }
           $size = (Get-ChildItem dist/NH-AI-Clip-Studio -Recurse | Measure-Object Length -Sum).Sum
           "Ukuran folder aplikasi: {0:N1} MB" -f ($size / 1MB)
 
@@ -246,7 +257,7 @@ jobs:
           $ahash = (Get-FileHash $addon -Algorithm SHA256).Hash.ToLower()
           "NH-AI-Clip-Studio-Model-KualitasTinggi.exe (opsional): {0:N1} MB, sha256 {1}" -f ($addon.Length / 1MB), $ahash | Tee-Object -Append build/test/installer.txt
 
-      - name: Pasang versi sebelumnya (M1.1) & buat proyek dengannya (untuk uji pembaruan)
+      - name: Pasang versi sebelumnya (M1.1 lalu beta M2.5) & buat proyek dengan keduanya (untuk uji pembaruan)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -262,13 +273,24 @@ jobs:
           $p = Start-Process "$app\NH-AI-Clip-Studio.exe" -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-prev.json`"", "--language", "id", "--quality", "akurat" -Wait -PassThru
           Get-Content build/test/report-prev.json -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "selftest $env:PREV_NAME gagal ($($p.ExitCode))" }
+          # Versi kedua (beta M2.5) dipasang di atas M1.1 dan membuat proyek dengan item Motion Library: versi baru
+          # harus membuka & merender proyek dari KEDUA versi lama.
+          gh run download $env:PREV2_RUN_ID -R $env:GITHUB_REPOSITORY -n NH-AI-Clip-Studio-Setup -D build/prev2
+          if ($LASTEXITCODE -ne 0) { throw "unduh installer $env:PREV2_NAME gagal" }
+          $m2 = (Resolve-Path build/prev2/NH-AI-Clip-Studio-Setup.exe).Path
+          "Installer $($env:PREV2_NAME): {0:N1} MB, sha256 {1}" -f ((Get-Item $m2).Length / 1MB), (Get-FileHash $m2 -Algorithm SHA256).Hash.ToLower() | Tee-Object -Append build/test/update.txt
+          $p = Start-Process $m2 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/LOG=`"$PWD\build\test\install-prev2.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "instalasi $env:PREV2_NAME gagal ($($p.ExitCode))" }
+          $p = Start-Process "$app\NH-AI-Clip-Studio.exe" -ArgumentList "--selftest", "`"$PWD\build\test\speech.mp4`"", "--report", "`"$PWD\build\test\report-prev2.json`"", "--language", "id", "--quality", "akurat" -Wait -PassThru
+          Get-Content build/test/report-prev2.json -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "selftest $env:PREV2_NAME gagal ($($p.ExitCode))" }
           $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
           python -m desktop.datacheck snapshot "$data" build/test/data-before.json
           python -m desktop.datacheck snapshot "$env:USERPROFILE\Videos\NH AI Clip Studio" build/test/export-before.json
           if ($LASTEXITCODE -ne 0) { throw "snapshot gagal" }
           $snap = Get-Content build/test/data-before.json -Raw | ConvertFrom-Json
           "Data $($env:PREV_NAME): $(@($snap.files.PSObject.Properties).Count) berkas; tabel: $($snap.tables | ConvertTo-Json -Compress)" | Tee-Object -Append build/test/update.txt
-          if ($snap.tables.projects -lt 1 -or $snap.tables.renders -lt 1) { throw "$env:PREV_NAME tidak membuat proyek/render" }
+          if ($snap.tables.projects -lt 2 -or $snap.tables.renders -lt 2) { throw "versi lama tidak membuat proyek/render" }
           exit 0
 
       - name: Pasang M2 di atas M1.1 (update), periksa & render ulang data lama, selftest, GUI, uninstall
@@ -285,6 +307,7 @@ jobs:
           "Terpasang di $app; shortcut: $($lnk.FullName)"
           if (Test-Path "$app\_internal\whisper-base") { throw "berkas model base M1 masih tertinggal setelah update" }
           if (-not (Test-Path "$app\Panduan Uji Akurasi NH.txt")) { throw "panduan uji NH tidak terpasang" }
+          if (-not (Test-Path "$app\_internal\models\yolox_nano.onnx")) { throw "model YOLOX-nano tidak terpasang" }
           $data = "$env:LOCALAPPDATA\NH AI Clip Studio"
           # Uji pembaruan: berkas & tabel proyek versi lama utuh setelah installer baru dijalankan, lalu terbaca
           # DAN dirender ulang oleh versi baru dari resep lamanya (resep tidak berubah).

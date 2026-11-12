@@ -100,6 +100,33 @@ Label kelas tidak andal (kambing tidak ada di COCO → terbaca anjing/beruang/bu
 
   Sumber 1080p lebih berat (±0,6x real-time di 4 inti, M2.5); pada PC 2 inti perkirakan ±3x durasi klip.
 
+## 3.4 Perbaikan setelah review c3f2b04
+
+**Race galeri (CI run 43120628624).** Bug nyata, bukan asumsi tes: pekerja galeri mengeluarkan preset dari antrean
+lalu merendernya (±2,5 dtk); selama itu berkas belum ada, sehingga polling status berikutnya melaporkan "antre" dan
+`warm()` mengantrekan preset yang sama lagi -> render ganda dan antrean berisi preset yang sudah "siap". Dibuktikan
+deterministik (render tiruan ditahan Event, tanpa sleep): status "antre" saat diproses, render dipanggil 2x.
+Perbaikan: status pekerjaan dijaga satu lock, `belum -> antre -> proses -> siap | gagal`; `warm()` idempoten
+(tidak mengantrekan yang antre/diproses/siap/gagal); preset dilepas dari "proses" setelah berkasnya tertulis;
+`wait_idle()` berbasis Condition. Tes regresi `tests/test_m251_gallery_jobs.py` (selesai, gagal, 8 klien
+bersamaan, endpoint) gagal di kode lama dan lulus 20/20 putaran di kode baru.
+
+**Gerakan kamera pratinjau = final.** `app/camera_check.py` mengukur zoom & geser dari MP4 terhadap MP4 tanpa efek
+pada detik yang sama (zoom & geser ditaksir bersama). Hasil (detik 0,8; pecahan bingkai):
+
+| Efek | Final 1080x1920 | Pratinjau 360x640 |
+|---|---|---|
+| Geser horizontal | zoom 1,12; dx −0,044; dy 0 | sama |
+| Geser vertikal | zoom 1,13; dx 0; dy −0,034 | sama |
+| Punch-in | zoom 1,17; dx 0; dy 0 | sama |
+
+Dikunci tes (`test_camera_motion_matches_in_preview_and_final`, gagal di kode c86a89b) dan selftest aplikasi
+terpasang (klip derau bertekstur dari FFmpeg bundel, koneksi keluar diblokir di CI Windows).
+
+**Proyek lama.** CI Windows kini memasang M1.1, lalu beta M2.5 (c86a89b) di atasnya; keduanya membuat proyek
+(termasuk item Motion Library), lalu versi baru dipasang dan memeriksa + merender ulang semua proyek lama.
+Tes Linux memakai resep asli yang dihasilkan kode M2 (ba5f0bf) dan beta M2.5 (c86a89b).
+
 ## 4. Kekurangan yang belum teratasi
 1. Area dilindungi **tidak mengikuti subjek otomatis**; subjek bergerak perlu dipisah per rentang (atau saran
    eksperimental yang tetap harus diperiksa).
